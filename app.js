@@ -66,7 +66,23 @@ const storage = multer.diskStorage({
     cb(null, 'catvideo-' + uniqueSuffix + ext);
   }
 });
-const upload = multer({ storage });
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB limit (adjust as needed)
+    files: 1,
+    fields: 1
+  },
+  fileFilter: (req, file, cb) => {
+    // Optional: validate file types
+    const allowedTypes = ['video/mp4', 'video/quicktime', 'video/x-msvideo'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only video files are allowed.'));
+    }
+  }
+});
 
 // Upload cat video endpoint
 app.post('/api/upload-cat-video', upload.single('video'), (req, res) => {
