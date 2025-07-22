@@ -71,7 +71,7 @@ const upload = multer({ storage });
 // Upload cat video endpoint
 app.post('/api/upload-cat-video', upload.single('video'), (req, res) => {
   ensureCatsFileExists();
-  const posts = JSON.parse(fs.readFileSync(BLOG_FILE, 'utf-8'));
+  const posts = JSON.parse(fs.readFileSync(CATS_FILE, 'utf-8'));
 
   if (!req.file || !req.body.title) {
     return res.status(400).json({ error: 'Title and video file are required.' });
