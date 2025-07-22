@@ -10,7 +10,8 @@ const PORT = 3000;
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
 // Now pointing to root directory
 const BLOG_FILE = path.join(__dirname, 'blog.json');
