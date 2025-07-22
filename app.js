@@ -79,8 +79,8 @@ app.post('/api/upload-cat-video', upload.single('video'), (req, res) => {
 
   const newPost = {
     id: Date.now().toString(),
-    title: req.body.title,
-    videoUrl: `/videos/${req.file.filename}`,
+    name: req.body.title,
+    url: `/videos/${req.file.filename}`,
     createdAt: new Date().toISOString()
   };
 
