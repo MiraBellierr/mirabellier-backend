@@ -86,7 +86,7 @@ const VideoStorage = multer.diskStorage({
 });
 
 // Image upload
-const imageUpload = multer({ imageStorage });
+const imageUpload = multer({ storage: imageStorage });
 
 // Video upload
 const videoUpload = multer({
@@ -137,11 +137,12 @@ app.get('/cat-videos', (req, res) => {
 
 // Route: Upload image
 app.post('/posts-img', imageUpload.single('image'), (req, res) => {
+  console.log(req.file);
     if (!req.file) {
         return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const imagePath = `/images/${req.file.filename}`;
+    const imagePath = `/images/${req.file.originalname}`;
     res.json({ path: imagePath });
 });
 
