@@ -137,7 +137,6 @@ app.get('/cat-videos', (req, res) => {
 
 // Route: Upload image
 app.post('/posts-img', imageUpload.single('image'), (req, res) => {
-  console.log(req.file);
     if (!req.file) {
         return res.status(400).json({ error: 'No file uploaded' });
     }
