@@ -142,7 +142,7 @@ app.post('/posts-img', imageUpload.single('image'), (req, res) => {
         return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const imagePath = `/images/${req.file.originalname}`;
+    const imagePath = `/images/${req.file.filename}`;
     res.json({ path: imagePath });
 });
 
