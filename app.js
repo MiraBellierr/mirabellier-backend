@@ -86,7 +86,7 @@ const VideoStorage = multer.diskStorage({
 });
 
 // Image upload
-const imageUpload = multer({ storage });
+const imageUpload = multer({ imageStorage });
 
 // Video upload
 const videoUpload = multer({
