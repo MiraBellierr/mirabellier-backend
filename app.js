@@ -52,8 +52,8 @@ app.post('/posts', (req, res) => {
 
 // Create images folder if not exists
 const IMAGES_DIR = path.join(__dirname, 'images');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir);
+if (!fs.existsSync(IMAGES_DIR)) {
+    fs.mkdirSync(IMAGES_DIR);
 }
 
 // Ensure videos directory exists
