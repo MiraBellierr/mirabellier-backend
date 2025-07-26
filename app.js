@@ -31,13 +31,13 @@ const ensureCatsFileExists = () => {
 };
 
 // API Endpoints
-app.get('/api/posts', (req, res) => {
+app.get('/posts', (req, res) => {
   ensureBlogFileExists();
   const posts = JSON.parse(fs.readFileSync(BLOG_FILE, 'utf-8'));
   res.json(posts);
 });
 
-app.post('/api/posts', (req, res) => {
+app.post('/posts', (req, res) => {
   ensureBlogFileExists();
   const posts = JSON.parse(fs.readFileSync(BLOG_FILE, 'utf-8'));
   const newPost = {
@@ -50,14 +50,31 @@ app.post('/api/posts', (req, res) => {
   res.status(201).json(newPost);
 });
 
+// Create images folder if not exists
+const IMAGES_DIR = path.join(__dirname, 'images');
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir);
+}
+
 // Ensure videos directory exists
 const VIDEOS_DIR = path.join(__dirname, 'videos');
 if (!fs.existsSync(VIDEOS_DIR)) {
   fs.mkdirSync(VIDEOS_DIR);
 }
 
+// Multer setup for images upload
+const imageStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, IMAGES_DIR);
+    },
+    filename: (req, file, cb) => {
+        const uniqueName = `${Date.now()}-${file.originalname}`;
+        cb(null, uniqueName);
+    }
+});
+
 // Multer setup for video uploads
-const storage = multer.diskStorage({
+const VideoStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, VIDEOS_DIR);
   },
@@ -67,8 +84,13 @@ const storage = multer.diskStorage({
     cb(null, 'catvideo-' + uniqueSuffix + ext);
   }
 });
-const upload = multer({
-  storage: storage,
+
+// Image upload
+const imageUpload = multer({ storage });
+
+// Video upload
+const videoUpload = multer({
+  storage: VideoStorage,
   limits: {
     fileSize: 50 * 1024 * 1024, // 50MB limit
     files: 1,
@@ -87,7 +109,7 @@ const upload = multer({
 });
 
 // Upload cat video endpoint
-app.post('/api/upload-cat-video', upload.single('video'), (req, res) => {
+app.post('/upload-cat-video', videoUpload.single('video'), (req, res) => {
   ensureCatsFileExists();
   const posts = JSON.parse(fs.readFileSync(CATS_FILE, 'utf-8'));
 
@@ -107,14 +129,25 @@ app.post('/api/upload-cat-video', upload.single('video'), (req, res) => {
   res.status(201).json(newPost);
 });
 
-app.get('/api/cat-videos', (req, res) => {
+app.get('/cat-videos', (req, res) => {
   ensureCatsFileExists();
   const cats = JSON.parse(fs.readFileSync(CATS_FILE, 'utf-8'));
   res.json(cats);
 });
 
+// Route: Upload image
+app.post('/posts-img', imageUpload.single('image'), (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const imagePath = `/images/${req.file.filename}`;
+    res.json({ path: imagePath });
+});
+
 // Serve videos statically
 app.use('/videos', express.static(VIDEOS_DIR));
+app.use('/images', express.static(IMAGES_DIR));
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
