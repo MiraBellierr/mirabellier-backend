@@ -7,9 +7,7 @@ const bodyParser = require('body-parser');
 const multer = require('multer');
 const util = require('util');
 const ffmpeg = require('fluent-ffmpeg');
-const ytdl = require('youtube-dl-exec');
 
-const unlinkAsync = util.promisify(fs.unlink);
 const ffprobe = util.promisify(ffmpeg.ffprobe);
 
 ffmpeg.setFfmpegPath(process.env.FFMPEG);
@@ -123,141 +121,33 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
     ensureCatsFileExists();
     const posts = JSON.parse(fs.readFileSync(CATS_FILE, 'utf-8'));
 
-    if ((!req.file && !req.body.youtubeUrl) || (req.file && req.body.youtubeUrl)) {
-      return res.status(400).json({ error: 'Either video file or YouTube URL is required, but not both.' });
+    if (!req.file) {
+      return res.status(400).json({ error: 'Video file is required.' });
     }
 
-    let finalFilename, finalPath, metadata;
-    let tempFilesToCleanup = [];
+    const finalFilename = req.file.filename;
+    const finalPath = req.file.path;
 
-    // Handle YouTube Shorts URL
-    if (req.body.youtubeUrl) {
-      const youtubeUrl = req.body.youtubeUrl;
-      if (!youtubeUrl.includes('youtube.com/shorts/') && !youtubeUrl.includes('youtu.be/')) {
-        return res.status(400).json({ error: 'Only YouTube Shorts URLs are allowed.' });
-      }
-
-      const tempName = `yt_temp_${Date.now()}`;
-      const tempPath = path.join(__dirname, 'videos', tempName);
-      const cookiesPath = path.join(__dirname, 'cookies.txt');
-      
-      if (!fs.existsSync(cookiesPath)) {
-        console.error('Cookies file not found at:', cookiesPath);
-        throw new Error('Authentication required - cookies file missing');
-      }
-
-      // Download YouTube video with cookies authentication
-      await ytdl(youtubeUrl, {
-        output: tempPath,
-        format: 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        noCheckCertificates: true,
-        noWarnings: true,
-        preferFreeFormats: true,
-        cookies: cookiesPath,
-        addHeader: [
-          'referer:youtube.com', 
-          'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        ]
-      });
-
-      // Find downloaded files
-      const files = fs.readdirSync(path.join(__dirname, 'videos'));
-      const downloadedFiles = files.filter(f => f.startsWith(tempName));
-      if (downloadedFiles.length === 0) {
-        throw new Error('Failed to find downloaded YouTube video');
-      }
-
-      const mainFile = downloadedFiles.find(f => ['.mp4', '.mkv', '.mov'].some(ext => f.endsWith(ext))) || downloadedFiles[0];
-      const mainFilePath = path.join(__dirname, 'videos', mainFile);
-      
-      tempFilesToCleanup = downloadedFiles
-        .filter(f => f !== mainFile)
-        .map(f => path.join(__dirname, 'videos', f));
-
-      finalFilename = `yt_${Date.now()}_h264.mp4`;
-      finalPath = path.join(__dirname, 'videos', finalFilename);
-      
-      // Convert using the specific FFmpeg command
-      await new Promise((resolve, reject) => {
-        ffmpeg(mainFilePath)
-          .videoCodec('libx264')
-          .audioCodec('aac')
-          .outputOptions([
-            '-threads 2',                   // Limit CPU threads
-            '-preset fast',                 // Faster encoding (uses more CPU but less memory)
-            '-crf 23',                      // Balanced quality
-            '-movflags +faststart',
-            '-profile:v high',
-            '-level 4.0',
-            '-max_muxing_queue_size 1024'   // Prevent muxing errors
-          ])
-          .on('error', reject)
-          .on('end', () => {
-            // Delete the original downloaded file after conversion
-            fs.unlinkSync(mainFilePath);
-            resolve();
-          })
-          .save(finalPath);
-      });
-
+    // Get metadata to extract title
+    let metadata = {};
+    try {
       metadata = await ffprobe(finalPath);
-    } 
-    // Handle regular file upload
-    else {
-      const originalPath = req.file.path;
-      const originalFilename = req.file.filename;
-      metadata = await ffprobe(originalPath);
-
-      const baseName = originalFilename.includes('.') 
-        ? originalFilename.substring(0, originalFilename.lastIndexOf('.'))
-        : originalFilename;
-      finalFilename = `${baseName}_h264.mp4`;
-      finalPath = path.join(path.dirname(originalPath), finalFilename);
-
-      // Apply the same FFmpeg command to uploaded files
-      await new Promise((resolve, reject) => {
-        ffmpeg(originalPath)
-          .videoCodec('libx264')
-          .audioCodec('aac')
-          .outputOptions([
-            '-threads 2',                   // Limit CPU threads
-            '-preset fast',                 // Faster encoding (uses more CPU but less memory)
-            '-crf 23',                      // Balanced quality
-            '-movflags +faststart',
-            '-profile:v high',
-            '-level 4.0',
-            '-max_muxing_queue_size 1024'   // Prevent muxing errors
-          ])
-          .on('error', reject)
-          .on('end', () => {
-            // Delete the original file after conversion
-            fs.unlinkSync(originalPath);
-            resolve();
-          })
-          .save(finalPath);
-      });
-
-      metadata = await ffprobe(finalPath);
+    } catch (err) {
+      console.warn('Could not read video metadata:', err.message);
     }
 
-    // Cleanup temporary files
-    await Promise.all(
-      tempFilesToCleanup.map(file => 
-        unlinkAsync(file).catch(err => console.error('Error deleting temp file:', err))
-    ));
-
-    // Get title
+    // Get title (try custom title first, then metadata title, then filename without extension)
     const autoTitle = req.body.customTitle || 
-                     metadata.format.tags?.title || 
-                     (req.body.youtubeUrl ? `YouTube Short ${Date.now()}` : 
-                     finalFilename.replace(/\.[^/.]+$/, ''));
+                     metadata.format?.tags?.title || 
+                     finalFilename.replace(/\.[^/.]+$/, '');
 
     const newPost = {
       id: Date.now().toString(),
       name: autoTitle,
       url: `/videos/${finalFilename}`,
       createdAt: new Date().toISOString(),
-      source: req.body.youtubeUrl ? 'youtube' : 'upload'
+      source: 'upload',
+      originalMetadata: metadata.format?.tags || null
     };
 
     posts.push(newPost);
@@ -267,17 +157,8 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
   } catch (err) {
     console.error('Error processing video:', err);
     
-    // Clean up any remaining temporary files
-    if (tempFilesToCleanup && tempFilesToCleanup.length > 0) {
-      await Promise.all(
-        tempFilesToCleanup.map(file => 
-          unlinkAsync(file).catch(cleanupErr => 
-            console.error('Error during cleanup:', cleanupErr)))
-      );
-    }
-    
     res.status(500).json({ 
-      error: 'Video processing failed',
+      error: 'Video upload failed',
       details: err.message,
       type: err.name || 'ProcessingError'
     });
