@@ -1,9 +1,18 @@
+require("dotenv").config();
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const multer = require('multer');
+const util = require('util');
+const ffmpeg = require('fluent-ffmpeg');
+const ytdl = require('youtube-dl-exec');
+
+const unlinkAsync = util.promisify(fs.unlink);
+const ffprobe = util.promisify(ffmpeg.ffprobe);
+
+ffmpeg.setFfmpegPath(process.env.FFMPEG);
 
 const app = express();
 const PORT = 3000;
@@ -109,24 +118,134 @@ const videoUpload = multer({
 });
 
 // Upload cat video endpoint
-app.post('/upload-cat-video', videoUpload.single('video'), (req, res) => {
-  ensureCatsFileExists();
-  const posts = JSON.parse(fs.readFileSync(CATS_FILE, 'utf-8'));
+app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
+  try {
+    ensureCatsFileExists();
+    const posts = JSON.parse(fs.readFileSync(CATS_FILE, 'utf-8'));
 
-  if (!req.file || !req.body.title) {
-    return res.status(400).json({ error: 'Title and video file are required.' });
+    if ((!req.file && !req.body.youtubeUrl) || (req.file && req.body.youtubeUrl)) {
+      return res.status(400).json({ error: 'Either video file or YouTube URL is required, but not both.' });
+    }
+
+    let finalFilename, finalPath, metadata;
+    let tempFilesToCleanup = []; // Track temporary files for cleanup
+
+    // Handle YouTube Shorts URL
+    if (req.body.youtubeUrl) {
+      const youtubeUrl = req.body.youtubeUrl;
+      if (!youtubeUrl.includes('youtube.com/shorts/') && !youtubeUrl.includes('youtu.be/')) {
+        return res.status(400).json({ error: 'Only YouTube Shorts URLs are allowed.' });
+      }
+
+      const tempName = `yt_temp_${Date.now()}`;
+      const tempPath = path.join(__dirname, 'videos', tempName);
+      
+      // Download YouTube video - let youtube-dl choose the filename
+      await ytdl(youtubeUrl, {
+        output: tempPath,
+        format: 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        noCheckCertificates: true,
+        noWarnings: true,
+        preferFreeFormats: true,
+        addHeader: ['referer:youtube.com', 'user-agent:googlebot']
+      });
+
+      // Find all files that start with our temp name
+      const files = fs.readdirSync(path.join(__dirname, 'videos'));
+      const downloadedFiles = files.filter(f => f.startsWith(tempName));
+      if (downloadedFiles.length === 0) {
+        throw new Error('Failed to find downloaded YouTube video');
+      }
+
+      // Find the main video file (prioritize .mp4)
+      const mainFile = downloadedFiles.find(f => f.endsWith('.mp4')) || downloadedFiles[0];
+      const mainFilePath = path.join(__dirname, 'videos', mainFile);
+      
+      // Track all temp files for cleanup
+      tempFilesToCleanup = downloadedFiles
+        .filter(f => f !== mainFile)
+        .map(f => path.join(__dirname, 'videos', f));
+
+      // Rename to our final filename
+      finalFilename = `yt_${Date.now()}_h264.mp4`;
+      finalPath = path.join(__dirname, 'videos', finalFilename);
+      fs.renameSync(mainFilePath, finalPath);
+
+      metadata = await ffprobe(finalPath);
+    } 
+    // Handle regular file upload
+    else {
+      const originalPath = req.file.path;
+      const originalFilename = req.file.filename;
+      metadata = await ffprobe(originalPath);
+
+      // Check if video is H.264
+      const isH264 = metadata.streams.some(stream => 
+        stream.codec_type === 'video' && stream.codec_name === 'h264'
+      );
+
+      // Check if audio is AAC
+      const isAAC = metadata.streams.some(stream => 
+        stream.codec_type === 'audio' && stream.codec_name === 'aac'
+      );
+
+      if (isH264 && isAAC) {
+        finalFilename = originalFilename;
+        finalPath = originalPath;
+      } else {
+        const baseName = originalFilename.includes('.') 
+          ? originalFilename.substring(0, originalFilename.lastIndexOf('.'))
+          : originalFilename;
+        finalFilename = `${baseName}_h264.mp4`;
+        finalPath = path.join(path.dirname(originalPath), finalFilename);
+
+        await new Promise((resolve, reject) => {
+          const command = ffmpeg(originalPath)
+            .videoCodec(isH264 ? 'copy' : 'libx264')
+            .audioCodec(isAAC ? 'copy' : 'aac')
+            .outputOptions([
+              '-movflags faststart',
+              '-preset fast',
+              '-crf 23'
+            ])
+            .on('error', reject)
+            .on('end', resolve)
+            .save(finalPath);
+        });
+
+        // Delete original file if we converted it
+        await unlinkAsync(originalPath);
+      }
+    }
+
+    // Cleanup any temporary files from YouTube download
+    await Promise.all(
+      tempFilesToCleanup.map(file => 
+        unlinkAsync(file).catch(err => console.error('Error deleting temp file:', err))
+    ));
+
+    // Get title from metadata, YouTube URL, or filename
+    const autoTitle = metadata.format.tags?.title || 
+                     req.body.customTitle ||
+                     (req.body.youtubeUrl ? `YouTube Short ${Date.now()}` : 
+                     finalFilename.replace(/\.[^/.]+$/, ''));
+
+    const newPost = {
+      id: Date.now().toString(),
+      name: autoTitle,
+      url: `/videos/${finalFilename}`,
+      createdAt: new Date().toISOString(),
+      source: req.body.youtubeUrl ? 'youtube' : 'upload'
+    };
+
+    posts.push(newPost);
+    fs.writeFileSync(CATS_FILE, JSON.stringify(posts, null, 2));
+    res.status(201).json(newPost);
+
+  } catch (err) {
+    console.error('Error processing video:', err);
+    res.status(500).json({ error: 'Video processing failed', details: err.message });
   }
-
-  const newPost = {
-    id: Date.now().toString(),
-    name: req.body.title,
-    url: `/videos/${req.file.filename}`,
-    createdAt: new Date().toISOString()
-  };
-
-  posts.push(newPost);
-  fs.writeFileSync(CATS_FILE, JSON.stringify(posts, null, 2));
-  res.status(201).json(newPost);
 });
 
 app.get('/cat-videos', (req, res) => {
