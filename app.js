@@ -103,7 +103,7 @@ const videoUpload = multer({
   limits: {
     fileSize: 50 * 1024 * 1024, // 50MB limit
     files: 1,
-    fields: 1,
+    fields: 5,
     fieldSize: 50 * 1024 * 1024 // 50MB limit for each field
   },
   fileFilter: (req, file, cb) => {
