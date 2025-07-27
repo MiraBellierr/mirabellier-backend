@@ -183,9 +183,13 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
           .videoCodec('libx264')
           .audioCodec('aac')
           .outputOptions([
+            '-threads 2',                   // Limit CPU threads
+            '-preset fast',                 // Faster encoding (uses more CPU but less memory)
+            '-crf 23',                      // Balanced quality
+            '-movflags +faststart',
             '-profile:v high',
             '-level 4.0',
-            '-movflags +faststart'
+            '-max_muxing_queue_size 1024'   // Prevent muxing errors
           ])
           .on('error', reject)
           .on('end', () => {
@@ -216,9 +220,13 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
           .videoCodec('libx264')
           .audioCodec('aac')
           .outputOptions([
+            '-threads 2',                   // Limit CPU threads
+            '-preset fast',                 // Faster encoding (uses more CPU but less memory)
+            '-crf 23',                      // Balanced quality
+            '-movflags +faststart',
             '-profile:v high',
             '-level 4.0',
-            '-movflags +faststart'
+            '-max_muxing_queue_size 1024'   // Prevent muxing errors
           ])
           .on('error', reject)
           .on('end', () => {
