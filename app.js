@@ -139,9 +139,8 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
 
       const tempName = `yt_temp_${Date.now()}`;
       const tempPath = path.join(__dirname, 'videos', tempName);
-      const cookiesPath = path.join(__dirname, 'cookies.txt'); // Path to cookies file
+      const cookiesPath = path.join(__dirname, 'cookies.txt');
       
-      // Verify cookies file exists
       if (!fs.existsSync(cookiesPath)) {
         console.error('Cookies file not found at:', cookiesPath);
         throw new Error('Authentication required - cookies file missing');
@@ -154,21 +153,20 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
         noCheckCertificates: true,
         noWarnings: true,
         preferFreeFormats: true,
-        cookies: cookiesPath, // Add cookies authentication
+        cookies: cookiesPath,
         addHeader: [
           'referer:youtube.com', 
           'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         ]
       });
 
-      // Find all files that start with our temp name
+      // Find downloaded files
       const files = fs.readdirSync(path.join(__dirname, 'videos'));
       const downloadedFiles = files.filter(f => f.startsWith(tempName));
       if (downloadedFiles.length === 0) {
         throw new Error('Failed to find downloaded YouTube video');
       }
 
-      // Find the main video file
       const mainFile = downloadedFiles.find(f => ['.mp4', '.mkv', '.mov'].some(ext => f.endsWith(ext))) || downloadedFiles[0];
       const mainFilePath = path.join(__dirname, 'videos', mainFile);
       
@@ -179,13 +177,24 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
       finalFilename = `yt_${Date.now()}_h264.mp4`;
       finalPath = path.join(__dirname, 'videos', finalFilename);
       
-      try {
-        fs.renameSync(mainFilePath, finalPath);
-      } catch (renameErr) {
-        console.log('Rename failed, trying copy+delete...');
-        fs.copyFileSync(mainFilePath, finalPath);
-        fs.unlinkSync(mainFilePath);
-      }
+      // Convert using the specific FFmpeg command
+      await new Promise((resolve, reject) => {
+        ffmpeg(mainFilePath)
+          .videoCodec('libx264')
+          .audioCodec('aac')
+          .outputOptions([
+            '-profile:v high',
+            '-level 4.0',
+            '-movflags +faststart'
+          ])
+          .on('error', reject)
+          .on('end', () => {
+            // Delete the original downloaded file after conversion
+            fs.unlinkSync(mainFilePath);
+            resolve();
+          })
+          .save(finalPath);
+      });
 
       metadata = await ffprobe(finalPath);
     } 
@@ -195,42 +204,32 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
       const originalFilename = req.file.filename;
       metadata = await ffprobe(originalPath);
 
-      // Check if video is H.264
-      const isH264 = metadata.streams.some(stream => 
-        stream.codec_type === 'video' && stream.codec_name === 'h264'
-      );
+      const baseName = originalFilename.includes('.') 
+        ? originalFilename.substring(0, originalFilename.lastIndexOf('.'))
+        : originalFilename;
+      finalFilename = `${baseName}_h264.mp4`;
+      finalPath = path.join(path.dirname(originalPath), finalFilename);
 
-      // Check if audio is AAC
-      const isAAC = metadata.streams.some(stream => 
-        stream.codec_type === 'audio' && stream.codec_name === 'aac'
-      );
+      // Apply the same FFmpeg command to uploaded files
+      await new Promise((resolve, reject) => {
+        ffmpeg(originalPath)
+          .videoCodec('libx264')
+          .audioCodec('aac')
+          .outputOptions([
+            '-profile:v high',
+            '-level 4.0',
+            '-movflags +faststart'
+          ])
+          .on('error', reject)
+          .on('end', () => {
+            // Delete the original file after conversion
+            fs.unlinkSync(originalPath);
+            resolve();
+          })
+          .save(finalPath);
+      });
 
-      if (isH264 && isAAC) {
-        finalFilename = originalFilename;
-        finalPath = originalPath;
-      } else {
-        const baseName = originalFilename.includes('.') 
-          ? originalFilename.substring(0, originalFilename.lastIndexOf('.'))
-          : originalFilename;
-        finalFilename = `${baseName}_h264.mp4`;
-        finalPath = path.join(path.dirname(originalPath), finalFilename);
-
-        await new Promise((resolve, reject) => {
-          const command = ffmpeg(originalPath)
-            .videoCodec(isH264 ? 'copy' : 'libx264')
-            .audioCodec(isAAC ? 'copy' : 'aac')
-            .outputOptions([
-              '-movflags faststart',
-              '-preset fast',
-              '-crf 23'
-            ])
-            .on('error', reject)
-            .on('end', resolve)
-            .save(finalPath);
-        });
-
-        await unlinkAsync(originalPath);
-      }
+      metadata = await ffprobe(finalPath);
     }
 
     // Cleanup temporary files
