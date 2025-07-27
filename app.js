@@ -128,7 +128,7 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
     }
 
     let finalFilename, finalPath, metadata;
-    let tempFilesToCleanup = []; // Track temporary files for cleanup
+    let tempFilesToCleanup = [];
 
     // Handle YouTube Shorts URL
     if (req.body.youtubeUrl) {
@@ -139,15 +139,26 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
 
       const tempName = `yt_temp_${Date.now()}`;
       const tempPath = path.join(__dirname, 'videos', tempName);
+      const cookiesPath = path.join(__dirname, 'cookies.txt'); // Path to cookies file
       
-      // Download YouTube video - let youtube-dl choose the filename
+      // Verify cookies file exists
+      if (!fs.existsSync(cookiesPath)) {
+        console.error('Cookies file not found at:', cookiesPath);
+        throw new Error('Authentication required - cookies file missing');
+      }
+
+      // Download YouTube video with cookies authentication
       await ytdl(youtubeUrl, {
         output: tempPath,
         format: 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         noCheckCertificates: true,
         noWarnings: true,
         preferFreeFormats: true,
-        addHeader: ['referer:youtube.com', 'user-agent:googlebot']
+        cookies: cookiesPath, // Add cookies authentication
+        addHeader: [
+          'referer:youtube.com', 
+          'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        ]
       });
 
       // Find all files that start with our temp name
@@ -157,19 +168,24 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
         throw new Error('Failed to find downloaded YouTube video');
       }
 
-      // Find the main video file (prioritize .mp4)
-      const mainFile = downloadedFiles.find(f => f.endsWith('.mp4')) || downloadedFiles[0];
+      // Find the main video file
+      const mainFile = downloadedFiles.find(f => ['.mp4', '.mkv', '.mov'].some(ext => f.endsWith(ext))) || downloadedFiles[0];
       const mainFilePath = path.join(__dirname, 'videos', mainFile);
       
-      // Track all temp files for cleanup
       tempFilesToCleanup = downloadedFiles
         .filter(f => f !== mainFile)
         .map(f => path.join(__dirname, 'videos', f));
 
-      // Rename to our final filename
       finalFilename = `yt_${Date.now()}_h264.mp4`;
       finalPath = path.join(__dirname, 'videos', finalFilename);
-      fs.renameSync(mainFilePath, finalPath);
+      
+      try {
+        fs.renameSync(mainFilePath, finalPath);
+      } catch (renameErr) {
+        console.log('Rename failed, trying copy+delete...');
+        fs.copyFileSync(mainFilePath, finalPath);
+        fs.unlinkSync(mainFilePath);
+      }
 
       metadata = await ffprobe(finalPath);
     } 
@@ -213,20 +229,19 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
             .save(finalPath);
         });
 
-        // Delete original file if we converted it
         await unlinkAsync(originalPath);
       }
     }
 
-    // Cleanup any temporary files from YouTube download
+    // Cleanup temporary files
     await Promise.all(
       tempFilesToCleanup.map(file => 
         unlinkAsync(file).catch(err => console.error('Error deleting temp file:', err))
     ));
 
-    // Get title from metadata, YouTube URL, or filename
-    const autoTitle = metadata.format.tags?.title || 
-                     req.body.customTitle ||
+    // Get title
+    const autoTitle = req.body.customTitle || 
+                     metadata.format.tags?.title || 
                      (req.body.youtubeUrl ? `YouTube Short ${Date.now()}` : 
                      finalFilename.replace(/\.[^/.]+$/, ''));
 
@@ -244,7 +259,21 @@ app.post('/upload-cat-video', videoUpload.single('video'), async (req, res) => {
 
   } catch (err) {
     console.error('Error processing video:', err);
-    res.status(500).json({ error: 'Video processing failed', details: err.message });
+    
+    // Clean up any remaining temporary files
+    if (tempFilesToCleanup && tempFilesToCleanup.length > 0) {
+      await Promise.all(
+        tempFilesToCleanup.map(file => 
+          unlinkAsync(file).catch(cleanupErr => 
+            console.error('Error during cleanup:', cleanupErr)))
+      );
+    }
+    
+    res.status(500).json({ 
+      error: 'Video processing failed',
+      details: err.message,
+      type: err.name || 'ProcessingError'
+    });
   }
 });
 
