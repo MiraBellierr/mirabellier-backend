@@ -221,7 +221,7 @@ const VideoStorage = multer.diskStorage({
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const ext = path.extname(file.originalname);
-    cb(null, 'catvideo-' + uniqueSuffix + ext);
+    cb(null, 'mirabellier-video-' + uniqueSuffix + ext);
   }
 });
 
