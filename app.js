@@ -404,8 +404,8 @@ app.post('/posts-img', imageUpload.single('image'), (req, res) => {
     res.json({ path: imagePath });
 });
 
-// List images with metadata
-app.get('/images', (req, res) => {
+// List images with metadata (non-conflicting path)
+app.get('/images/list', (req, res) => {
   try {
     if (!fs.existsSync(IMAGES_DIR)) return res.json([]);
     const files = fs.readdirSync(IMAGES_DIR).filter(f => {
@@ -426,6 +426,25 @@ app.get('/images', (req, res) => {
   } catch (err) {
     console.error('Error reading images', err);
     res.status(500).json({ error: 'Failed to read images' });
+  }
+});
+
+// Get metadata for a single image (non-conflicting path)
+app.get('/images/meta/:filename', (req, res) => {
+  try {
+    const filename = req.params.filename;
+    // prevent path traversal
+    if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      return res.status(400).json({ error: 'invalid filename' });
+    }
+    const full = path.join(IMAGES_DIR, filename);
+    if (!fs.existsSync(full)) return res.status(404).json({ error: 'not found' });
+    const stat = fs.statSync(full);
+    if (!stat.isFile()) return res.status(404).json({ error: 'not found' });
+    res.json({ filename, url: `/images/${filename}`, size: stat.size, modifiedAt: stat.mtime.toISOString() });
+  } catch (err) {
+    console.error('Error reading image metadata', err);
+    res.status(500).json({ error: 'failed' });
   }
 });
 
