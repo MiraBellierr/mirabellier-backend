@@ -404,6 +404,31 @@ app.post('/posts-img', imageUpload.single('image'), (req, res) => {
     res.json({ path: imagePath });
 });
 
+// List images with metadata
+app.get('/images', (req, res) => {
+  try {
+    if (!fs.existsSync(IMAGES_DIR)) return res.json([]);
+    const files = fs.readdirSync(IMAGES_DIR).filter(f => {
+      const full = path.join(IMAGES_DIR, f);
+      try { return fs.statSync(full).isFile(); } catch (e) { return false; }
+    });
+    const list = files.map(f => {
+      const full = path.join(IMAGES_DIR, f);
+      const stat = fs.statSync(full);
+      return {
+        filename: f,
+        url: `/images/${f}`,
+        size: stat.size,
+        modifiedAt: stat.mtime.toISOString()
+      };
+    }).sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+    res.json(list);
+  } catch (err) {
+    console.error('Error reading images', err);
+    res.status(500).json({ error: 'Failed to read images' });
+  }
+});
+
 // Serve videos statically
 app.use('/videos', express.static(VIDEOS_DIR));
 app.use('/images', express.static(IMAGES_DIR));
@@ -501,7 +526,8 @@ app.post('/me', imageUpload.single('avatar'), (req, res) => {
   try {
     const user = authFromReq(req)
     if (!user) return res.status(401).json({ error: 'unauthenticated' })
-    const avatar = req.file ? `/images/${req.file.filename}` : undefined
+    // Accept either an uploaded file or an existing avatar path in the body
+    const avatar = req.file ? `/images/${req.file.filename}` : (req.body && req.body.avatar ? req.body.avatar : undefined)
     const updated = updateUserById(user.id, { username: req.body.username, password: req.body.password, avatar })
     res.json(userPublic(updated))
   } catch (err) {
