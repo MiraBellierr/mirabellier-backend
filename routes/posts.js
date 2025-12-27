@@ -108,7 +108,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       }
 
       const slug = slugify(title)
-      const spaPath = `/blog/${slug}-${id}`
+      const spaPath = `/blog/${slug}-${id}?shared=1`
       const requestPath = req.originalUrl || req.path || `/blog/${raw}`
 
       const html = `<!doctype html>
@@ -128,10 +128,7 @@ module.exports = function registerPostsRoutes(app, deps) {
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}" />` : ''}
     <link rel="canonical" href="${protocol}://${host}${spaPath}" />
-    <meta http-equiv="refresh" content="0;url=${spaPath}" />
-    <noscript>
-      <meta http-equiv="refresh" content="0;url=${spaPath}" />
-    </noscript>
+    <script>setTimeout(()=>{window.location.href='${spaPath}'},100)</script>
   </head>
   <body>
     <h1>${escapeHtml(title)}</h1>
