@@ -4,7 +4,7 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT;
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
@@ -38,6 +38,8 @@ require('./routes/auth')(app, {
   authFromReq,
   imageUpload: uploads.imageUpload,
 });
+
+require('./routes/anime')(app, { db, authFromReq });
 
 app.use('/videos', express.static(uploads.VIDEOS_DIR));
 app.use('/images', express.static(uploads.IMAGES_DIR));
