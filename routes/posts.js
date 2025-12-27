@@ -131,9 +131,6 @@ module.exports = function registerPostsRoutes(app, deps) {
     <script>setTimeout(()=>{window.location.href='${spaPath}'},100)</script>
   </head>
   <body>
-    <h1>${escapeHtml(title)}</h1>
-    <p>${escapeHtml(description)}</p>
-    <p><a href="${spaPath}">Open in app</a></p>
   </body>
 </html>`
 
