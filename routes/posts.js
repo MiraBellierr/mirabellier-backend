@@ -108,8 +108,9 @@ module.exports = function registerPostsRoutes(app, deps) {
       }
 
       const slug = slugify(title)
-      const spaPath = `/blog/${slug}-${id}?shared=1`
+      // prefer original requested path (slugged) so SPA canonical URL matches incoming URL
       const requestPath = req.originalUrl || req.path || `/blog/${raw}`
+      const spaPath = requestPath
 
       const html = `<!doctype html>
 <html>
