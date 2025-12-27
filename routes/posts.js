@@ -52,7 +52,10 @@ module.exports = function registerPostsRoutes(app, deps) {
   // Server-side SEO page for individual blog post (for social crawlers)
   app.get('/blog/:id', (req, res) => {
     try {
-      const id = req.params.id
+      // support slugged URLs like /blog/this-is-title-12345
+      const raw = req.params.id || ''
+      const maybeId = raw.includes('-') ? raw.split('-').pop() : raw
+      const id = maybeId || raw
       const p = db.prepare('SELECT p.*, u.username as authorName, u.avatar as authorAvatar FROM posts p LEFT JOIN users u ON p.userId = u.id WHERE p.id = ?').get(id)
       if (!p) return res.status(404).send('Not found')
 
@@ -106,6 +109,7 @@ module.exports = function registerPostsRoutes(app, deps) {
 
       const slug = slugify(title)
       const spaPath = `/#/blog/${slug}-${id}`
+      const requestPath = req.originalUrl || req.path || `/blog/${raw}`
 
       const html = `<!doctype html>
 <html>
@@ -118,7 +122,7 @@ module.exports = function registerPostsRoutes(app, deps) {
     <meta property="og:title" content="${escapeHtml(title)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
     ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}" />` : ''}
-    <meta property="og:url" content="${protocol}://${host}/blog/${id}" />
+    <meta property="og:url" content="${protocol}://${host}${requestPath}" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${escapeHtml(title)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
