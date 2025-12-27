@@ -149,7 +149,7 @@ module.exports = function registerPostsRoutes(app, deps) {
   app.get('/tags', (req, res) => {
     try {
       const rows = db.prepare('SELECT tags FROM posts WHERE tags IS NOT NULL').all();
-      const all: string[] = [];
+      const all = [];
       rows.forEach(r => {
         try {
           const parsed = JSON.parse(r.tags);
