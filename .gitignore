@@ -1,7 +1,5 @@
 node_modules
 images
 videos
-blog.json
-videos.json
 .env
 database.sqlite3
