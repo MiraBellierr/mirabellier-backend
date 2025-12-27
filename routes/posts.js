@@ -128,7 +128,10 @@ module.exports = function registerPostsRoutes(app, deps) {
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}" />` : ''}
     <link rel="canonical" href="${protocol}://${host}${spaPath}" />
-    <script>setTimeout(()=>{window.location.replace('${spaPath}')},100)</script>
+    <meta http-equiv="refresh" content="0;url=${spaPath}" />
+    <noscript>
+      <meta http-equiv="refresh" content="0;url=${spaPath}" />
+    </noscript>
   </head>
   <body>
     <h1>${escapeHtml(title)}</h1>
