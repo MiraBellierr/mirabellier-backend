@@ -108,7 +108,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       }
 
       const slug = slugify(title)
-      const spaPath = `/#/blog/${slug}-${id}`
+      const spaPath = `/blog?search=${encodeURIComponent(title)}`
       const requestPath = req.originalUrl || req.path || `/blog/${raw}`
 
       const html = `<!doctype html>
