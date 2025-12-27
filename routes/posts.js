@@ -49,6 +49,98 @@ module.exports = function registerPostsRoutes(app, deps) {
     }
   })
 
+  // Server-side SEO page for individual blog post (for social crawlers)
+  app.get('/blog/:id', (req, res) => {
+    try {
+      const id = req.params.id
+      const p = db.prepare('SELECT p.*, u.username as authorName, u.avatar as authorAvatar FROM posts p LEFT JOIN users u ON p.userId = u.id WHERE p.id = ?').get(id)
+      if (!p) return res.status(404).send('Not found')
+
+      const title = p.title || 'Untitled'
+      let description = p.shortDescription || ''
+      if (!description && p.content) {
+        try {
+          const parsed = JSON.parse(p.content)
+          if (parsed && typeof parsed === 'object') {
+            // try to extract a short text from editor content
+            const walk = (node) => {
+              if (!node) return ''
+              if (Array.isArray(node)) return node.map(walk).join(' ')
+              if (typeof node === 'string') return node
+              if (node.type === 'text') return node.text || ''
+              if (node.content) return walk(node.content)
+              return ''
+            }
+            description = walk(parsed).slice(0, 160)
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      const thumbnail = p.thumbnail || null
+
+      const escapeHtml = (str) => String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+      const host = req.get('host')
+      const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http'
+
+      let imageUrl = ''
+      if (thumbnail) {
+        if (/^https?:\/\//i.test(thumbnail)) imageUrl = thumbnail
+        else if (thumbnail.startsWith('/')) imageUrl = `${protocol}://${host}${thumbnail}`
+        else imageUrl = `${protocol}://${host}/images/${thumbnail}`
+      }
+
+      const slugify = (input) => {
+        if (!input) return ''
+        return String(input)
+          .toLowerCase()
+          .normalize('NFKD')
+          .replace(/[^a-z0-9\s-]/g, '')
+          .trim()
+          .replace(/\s+/g, '-')
+          .replace(/-+/g, '-')
+          .slice(0,80)
+      }
+
+      const slug = slugify(title)
+      const spaPath = `/#/blog/${slug}-${id}`
+
+      const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}" />
+    <meta property="og:type" content="article" />
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}" />` : ''}
+    <meta property="og:url" content="${protocol}://${host}/blog/${id}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:description" content="${escapeHtml(description)}" />
+    ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}" />` : ''}
+    <link rel="canonical" href="${protocol}://${host}${spaPath}" />
+    <script>setTimeout(()=>{window.location.href='${spaPath}'},100)</script>
+  </head>
+  <body>
+    <h1>${escapeHtml(title)}</h1>
+    <p>${escapeHtml(description)}</p>
+    <p><a href="${spaPath}">Open in app</a></p>
+  </body>
+</html>`
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      res.send(html)
+    } catch (err) {
+      console.error('GET /blog/:id error', err)
+      res.status(500).send('Server error')
+    }
+  })
+
   app.post('/posts', (req, res) => {
     try {
       const userFromToken = authFromReq(req);
