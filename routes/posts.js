@@ -2,6 +2,7 @@ const express = require('express');
 
 module.exports = function registerPostsRoutes(app, deps) {
   const { db, getUserById, userPublic, authFromReq } = deps;
+  const MAX_TAGS = 5;
 
   app.get('/posts', (req, res) => {
     try {
@@ -10,6 +11,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         id: p.id,
         title: p.title,
         content: p.content ? JSON.parse(p.content) : null,
+        tags: p.tags ? (Array.isArray(JSON.parse(p.tags)) ? JSON.parse(p.tags).map(t => String(t).trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 10)).filter(Boolean).slice(0, MAX_TAGS) : []) : [],
         shortDescription: p.shortDescription || null,
         thumbnail: p.thumbnail || null,
         userId: p.userId,
@@ -34,6 +36,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         id: p.id,
         title: p.title,
         content: p.content ? JSON.parse(p.content) : null,
+        tags: p.tags ? (Array.isArray(JSON.parse(p.tags)) ? JSON.parse(p.tags).map(t => String(t).trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 10)).filter(Boolean).slice(0, MAX_TAGS) : []) : [],
         shortDescription: p.shortDescription || null,
         thumbnail: p.thumbnail || null,
         userId: p.userId,
@@ -142,6 +145,27 @@ module.exports = function registerPostsRoutes(app, deps) {
     }
   })
 
+  // Return all unique tags used across posts
+  app.get('/tags', (req, res) => {
+    try {
+      const rows = db.prepare('SELECT tags FROM posts WHERE tags IS NOT NULL').all();
+      const all: string[] = [];
+      rows.forEach(r => {
+        try {
+          const parsed = JSON.parse(r.tags);
+          if (Array.isArray(parsed)) parsed.forEach((t) => all.push(String(t).trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 10)));
+        } catch (e) {
+          // ignore
+        }
+      });
+      const uniq = Array.from(new Set(all)).filter(Boolean).slice(0, 1000);
+      res.json(uniq);
+    } catch (err) {
+      console.error('GET /tags error', err);
+      res.status(500).json({ error: 'failed to fetch tags' });
+    }
+  });
+
   app.post('/posts', (req, res) => {
     try {
       const userFromToken = authFromReq(req);
@@ -152,10 +176,14 @@ module.exports = function registerPostsRoutes(app, deps) {
       const contentObj = req.body.content || req.body.body || {};
       const shortDescription = req.body.shortDescription || req.body.description || null;
       const thumbnail = req.body.thumbnail || null;
+      let tags = Array.isArray(req.body.tags) ? req.body.tags : (typeof req.body.tags === 'string' ? (req.body.tags ? req.body.tags.split(',').map(t=>t.trim()).filter(Boolean) : []) : []);
+      if (!Array.isArray(tags)) tags = [];
+      tags = tags.map(t => String(t).trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 10)).filter(Boolean);
+      tags = Array.from(new Set(tags)).slice(0, MAX_TAGS);
       const createdAt = new Date().toISOString();
 
-      db.prepare('INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, title, JSON.stringify(contentObj), userId || null, req.body.author || null, shortDescription, thumbnail, createdAt);
+      db.prepare('INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, tags, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, title, JSON.stringify(contentObj), userId || null, req.body.author || null, shortDescription, thumbnail, JSON.stringify(tags), createdAt);
 
       const u = userId ? getUserById(userId) : null;
       const resp = {
@@ -164,6 +192,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         content: contentObj,
         shortDescription,
         thumbnail,
+        tags,
         userId: userId || null,
         author: userId ? (u ? u.username : (req.body.author || 'Unknown')) : (req.body.author || 'Unknown'),
         authorAvatar: userId ? (u ? u.avatar : null) : null,
@@ -194,9 +223,13 @@ module.exports = function registerPostsRoutes(app, deps) {
       const contentObj = req.body.content !== undefined ? req.body.content : (existing.content ? JSON.parse(existing.content) : {});
       const shortDescription = req.body.shortDescription !== undefined ? req.body.shortDescription : existing.shortDescription;
       const thumbnail = req.body.thumbnail !== undefined ? req.body.thumbnail : existing.thumbnail;
+      let tags = req.body.tags !== undefined ? (Array.isArray(req.body.tags) ? req.body.tags : (typeof req.body.tags === 'string' ? (req.body.tags ? req.body.tags.split(',').map(t=>t.trim()).filter(Boolean) : []) : [])) : (existing.tags ? JSON.parse(existing.tags) : []);
+      if (!Array.isArray(tags)) tags = [];
+      tags = tags.map(t => String(t).trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 10)).filter(Boolean);
+      tags = Array.from(new Set(tags)).slice(0, MAX_TAGS);
 
-      db.prepare('UPDATE posts SET title = ?, content = ?, shortDescription = ?, thumbnail = ? WHERE id = ?')
-        .run(title, JSON.stringify(contentObj), shortDescription, thumbnail, id);
+      db.prepare('UPDATE posts SET title = ?, content = ?, shortDescription = ?, thumbnail = ?, tags = ? WHERE id = ?')
+        .run(title, JSON.stringify(contentObj), shortDescription, thumbnail, JSON.stringify(tags), id);
 
       const u = user ? getUserById(user.id) : null;
       const resp = {
@@ -205,6 +238,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         content: contentObj,
         shortDescription: shortDescription || null,
         thumbnail: thumbnail || null,
+        tags: tags || [],
         userId: existing.userId || null,
         author: existing.userId ? (u ? u.username : existing.author || 'Unknown') : (existing.author || 'Unknown'),
         authorAvatar: existing.userId ? (u ? u.avatar : null) : null,
