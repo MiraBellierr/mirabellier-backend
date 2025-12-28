@@ -18,7 +18,7 @@ module.exports = function (app, { db, authFromReq }) {
   router.post('/', express.json(), (req, res) => {
     try {
       const user = authFromReq(req)
-      if (!user || user.username !== 'mira') {
+      if (!user || user.discordId !== '548050617889980426') {
         return res.status(403).json({ error: 'Forbidden' })
       }
 
@@ -47,7 +47,7 @@ module.exports = function (app, { db, authFromReq }) {
   router.delete('/:id', (req, res) => {
     try {
       const user = authFromReq(req)
-      if (!user || user.username !== 'mira') {
+      if (!user || user.discordId !== '548050617889980426') {
         return res.status(403).json({ error: 'Forbidden' })
       }
       const id = req.params.id
