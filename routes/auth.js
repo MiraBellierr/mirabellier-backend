@@ -201,6 +201,7 @@ module.exports = function registerAuthRoutes(app, deps) {
       
       const spaPath = `/#/profile/${username}`;
       const requestPath = req.originalUrl || req.path || `/profile/${username}`;
+      const redirectUrl = `${protocol}://${host}${spaPath}`;
       
       const html = `<!doctype html>
 <html>
@@ -221,8 +222,8 @@ module.exports = function registerAuthRoutes(app, deps) {
     <meta name="twitter:title" content="${title}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
-    <link rel="canonical" href="${protocol}://${host}${spaPath}" />
-    <script>setTimeout(()=>{window.location.href='${spaPath}'},100)</script>
+    <link rel="canonical" href="${redirectUrl}" />
+    <script>setTimeout(()=>{window.location.href='${redirectUrl}'},100)</script>
   </head>
   <body>
   </body>
