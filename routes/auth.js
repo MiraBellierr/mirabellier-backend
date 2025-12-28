@@ -199,7 +199,7 @@ module.exports = function registerAuthRoutes(app, deps) {
       // Get stats
       const postsCount = db.prepare('SELECT COUNT(*) as count FROM posts WHERE userId = ?').get(user.id)?.count || 0;
       
-      const spaPath = `/#/profile/${username}`;
+      const spaPath = `/profile/${username}`;
       const requestPath = req.originalUrl || req.path || `/profile/${username}`;
       const redirectUrl = `${protocol}://${host}${spaPath}`;
       
