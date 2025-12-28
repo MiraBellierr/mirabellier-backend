@@ -1,37 +1,48 @@
+const passport = require('passport');
+const DiscordStrategy = require('passport-discord').Strategy;
+
 module.exports = function registerAuthRoutes(app, deps) {
-  const { createUser, makeToken, createSession, getUserByUsername, getUserById, getUserByToken, updateUserById, userPublic, authFromReq, imageUpload } = deps;
+  const { makeToken, createSession, getUserByUsername, getUserById, getUserByToken, updateUserById, userPublic, authFromReq, imageUpload, findOrCreateDiscordUser } = deps;
 
-  app.post('/register', (req, res) => {
-    try {
-      const { username, password } = req.body;
-      if (!username || !password) return res.status(400).json({ error: 'username and password required' });
-      if (getUserByUsername(username)) return res.status(409).json({ error: 'username taken' });
-      const newUser = createUser(username, password);
-      const token = makeToken();
-      createSession(token, newUser.id);
-      res.status(201).json({ token, user: userPublic(newUser) });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: 'register failed' });
+  // Configure Discord Strategy
+  passport.use(new DiscordStrategy({
+      clientID: process.env.DISCORD_CLIENT_ID,
+      clientSecret: process.env.DISCORD_CLIENT_SECRET,
+      callbackURL: process.env.DISCORD_CALLBACK_URL || 'http://localhost:3000/auth/discord/callback',
+      scope: ['identify']
+    },
+    function(accessToken, refreshToken, profile, cb) {
+      try {
+        // Find or create user based on Discord profile
+        const user = findOrCreateDiscordUser(profile);
+        return cb(null, user);
+      } catch (err) {
+        return cb(err);
+      }
     }
-  });
+  ));
 
-  app.post('/login', (req, res) => {
-    try {
-      const { username, password } = req.body;
-      if (!username || !password) return res.status(400).json({ error: 'username and password required' });
-      const user = getUserByUsername(username);
-      if (!user) return res.status(401).json({ error: 'invalid credentials' });
-      const bcrypt = require('bcryptjs');
-      if (!bcrypt.compareSync(password, user.passwordHash)) return res.status(401).json({ error: 'invalid credentials' });
-      const token = makeToken();
-      createSession(token, user.id);
-      res.json({ token, user: userPublic(user) });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: 'login failed' });
+  // Discord OAuth login
+  app.get('/auth/discord', passport.authenticate('discord'));
+
+  // Discord OAuth callback
+  app.get('/auth/discord/callback', 
+    passport.authenticate('discord', { session: false, failureRedirect: '/login' }),
+    (req, res) => {
+      try {
+        const user = req.user;
+        const token = makeToken();
+        createSession(token, user.id);
+        
+        // Redirect to frontend with token
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
+      } catch (err) {
+        console.error(err);
+        res.redirect('/login?error=auth_failed');
+      }
     }
-  });
+  );
 
   app.get('/me', (req, res) => {
     try {
@@ -91,8 +102,7 @@ module.exports = function registerAuthRoutes(app, deps) {
       const avatar = req.files?.avatar ? `/images/${req.files.avatar[0].filename}` : (req.body && req.body.avatar ? req.body.avatar : undefined);
       const banner = req.files?.banner ? `/images/${req.files.banner[0].filename}` : (req.body && req.body.banner ? req.body.banner : undefined);
       const updated = updateUserById(user.id, { 
-        username: req.body.username, 
-        password: req.body.password, 
+        username: req.body.username,
         avatar,
         banner,
         bio: req.body.bio,
