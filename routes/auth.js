@@ -189,7 +189,7 @@ module.exports = function registerAuthRoutes(app, deps) {
       // Get stats
       const postsCount = db.prepare('SELECT COUNT(*) as count FROM posts WHERE userId = ?').get(user.id)?.count || 0;
       
-      const spaPath = `/#/profile/${username}`;
+      const spaPath = `/profile/${username}`;
       const requestPath = req.originalUrl || req.path || `/u/${username}`;
       
       const html = `<!doctype html>
@@ -215,9 +215,6 @@ module.exports = function registerAuthRoutes(app, deps) {
     <script>setTimeout(()=>{window.location.href='${spaPath}'},100)</script>
   </head>
   <body>
-    <h1>${title}</h1>
-    <p>${escapeHtml(description)}</p>
-    <p>${postsCount} posts</p>
   </body>
 </html>`;
       
