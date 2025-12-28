@@ -113,7 +113,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       const slug = slugify(title)
       const spaPath = `/blog/${slug ? (slug + '-' + id) : id}`
       const requestPath = req.originalUrl || req.path || `/blog/${raw}`
-      const redirectUrl = `${protocol}://${host}${spaPath}`
+      const redirectUrl = `${protocol}://${host}/`
 
       const html = `<!doctype html>
 <html>
@@ -131,8 +131,8 @@ module.exports = function registerPostsRoutes(app, deps) {
     <meta name="twitter:title" content="${escapeHtml(title)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}" />` : ''}
-    <link rel="canonical" href="${redirectUrl}" />
-    <script>setTimeout(()=>{window.location.href='${redirectUrl}'},100)</script>
+    <link rel="canonical" href="${protocol}://${host}${spaPath}" />
+    <script>window.location.replace('${redirectUrl}')</script>
   </head>
   <body>
   </body>
