@@ -183,8 +183,8 @@ module.exports = function registerAuthRoutes(app, deps) {
         else bannerUrl = `${protocol}://${host}/images/${user.banner}`;
       }
       
-      // Use banner if available, otherwise use avatar
-      const imageUrl = bannerUrl || avatarUrl;
+      // Use banner if available, otherwise use avatar, or default image
+      const imageUrl = bannerUrl || avatarUrl || `${protocol}://${host}/background.jpg`;
       
       // Get stats
       const postsCount = db.prepare('SELECT COUNT(*) as count FROM posts WHERE userId = ?').get(user.id)?.count || 0;
@@ -202,13 +202,15 @@ module.exports = function registerAuthRoutes(app, deps) {
     <meta property="og:type" content="profile" />
     <meta property="og:title" content="${title}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
-    ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}" />` : ''}
+    <meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
     <meta property="og:url" content="${protocol}://${host}${requestPath}" />
     <meta property="profile:username" content="${escapeHtml(user.username)}" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${title}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
-    ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}" />` : ''}
+    <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
     <link rel="canonical" href="${protocol}://${host}${spaPath}" />
     <script>setTimeout(()=>{window.location.href='${spaPath}'},100)</script>
   </head>
