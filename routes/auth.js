@@ -161,7 +161,7 @@ module.exports = function registerAuthRoutes(app, deps) {
   });
 
   // Server-side rendered profile page for social sharing
-  app.get('/u/:username', (req, res) => {
+  app.get('/profile/:username', (req, res) => {
     try {
       const username = req.params.username;
       const user = getUserByUsername(username);
@@ -199,8 +199,8 @@ module.exports = function registerAuthRoutes(app, deps) {
       // Get stats
       const postsCount = db.prepare('SELECT COUNT(*) as count FROM posts WHERE userId = ?').get(user.id)?.count || 0;
       
-      const spaPath = `/profile/${username}`;
-      const requestPath = req.originalUrl || req.path || `/u/${username}`;
+      const spaPath = `/#/profile/${username}`;
+      const requestPath = req.originalUrl || req.path || `/profile/${username}`;
       
       const html = `<!doctype html>
 <html>

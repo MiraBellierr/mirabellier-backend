@@ -111,7 +111,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       }
 
       const slug = slugify(title)
-      const spaPath = `/blog?search=${encodeURIComponent(title)}`
+      const spaPath = `/#/blog/${slug ? (slug + '-' + id) : id}`
       const requestPath = req.originalUrl || req.path || `/blog/${raw}`
 
       const html = `<!doctype html>
