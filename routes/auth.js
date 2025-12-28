@@ -201,7 +201,7 @@ module.exports = function registerAuthRoutes(app, deps) {
       
       const spaPath = `/profile/${username}`;
       const requestPath = req.originalUrl || req.path || `/profile/${username}`;
-      const redirectUrl = `${protocol}://${host}/`;
+      const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
       
       const html = `<!doctype html>
 <html>
