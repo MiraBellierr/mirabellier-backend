@@ -19,6 +19,8 @@ module.exports = function registerPostsRoutes(app, deps) {
         authorAvatar: p.userId ? (p.authorAvatar || null) : (p.authorAvatar || null),
         createdAt: p.createdAt
       }));
+      // Cache for 60 seconds, allow stale content for 300s while revalidating
+      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
       res.json(posts);
     } catch (err) {
       console.error('GET /posts error', err);
@@ -45,6 +47,8 @@ module.exports = function registerPostsRoutes(app, deps) {
         createdAt: p.createdAt,
       }
 
+      // Cache individual posts for 5 minutes
+      res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
       res.json(post)
     } catch (err) {
       console.error('GET /posts/:id error', err)

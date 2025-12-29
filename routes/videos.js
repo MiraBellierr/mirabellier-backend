@@ -73,6 +73,8 @@ module.exports = function registerVideoRoutes(app, deps) {
           user: r.userId ? { id: r.userId, username: r.authorUsername, avatar: r.authorAvatar } : null
         };
       });
+      // Cache videos list for 60 seconds
+      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
       res.json(enriched);
     } catch (e) {
       console.error('Error reading videos', e);

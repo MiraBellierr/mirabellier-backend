@@ -7,6 +7,8 @@ module.exports = function (app, { db, authFromReq }) {
   router.get('/', (req, res) => {
     try {
       const rows = db.prepare('SELECT id, title, url, img, ord FROM anime ORDER BY ord ASC').all()
+      // Cache anime list for 10 minutes
+      res.setHeader('Cache-Control', 'public, max-age=600, stale-while-revalidate=1200');
       res.json(rows)
     } catch (err) {
       console.error(err)

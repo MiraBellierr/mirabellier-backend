@@ -60,6 +60,8 @@ module.exports = function registerAuthRoutes(app, deps) {
       const id = req.params.id;
       const user = getUserById(id);
       if (!user) return res.status(404).json({ error: 'not found' });
+      // Cache user profiles for 5 minutes
+      res.setHeader('Cache-Control', 'public, max-age=300');
       res.json(userPublic(user));
     } catch (err) {
       console.error('GET /user/:id error', err);
@@ -72,6 +74,8 @@ module.exports = function registerAuthRoutes(app, deps) {
       const username = req.params.username;
       const user = getUserByUsername(username);
       if (!user) return res.status(404).json({ error: 'not found' });
+      // Cache user profiles for 5 minutes
+      res.setHeader('Cache-Control', 'public, max-age=300');
       res.json(userPublic(user));
     } catch (err) {
       console.error('GET /user/by-username/:username error', err);
@@ -95,12 +99,30 @@ module.exports = function registerAuthRoutes(app, deps) {
     }
   });
 
-  app.post('/me', imageUpload.fields([{ name: 'avatar', maxCount: 1 }, { name: 'banner', maxCount: 1 }]), (req, res) => {
+  app.post('/me', imageUpload.fields([{ name: 'avatar', maxCount: 1 }, { name: 'banner', maxCount: 1 }]), async (req, res) => {
     try {
       const user = authFromReq(req);
       if (!user) return res.status(401).json({ error: 'unauthenticated' });
-      const avatar = req.files?.avatar ? `/images/${req.files.avatar[0].filename}` : (req.body && req.body.avatar ? req.body.avatar : undefined);
-      const banner = req.files?.banner ? `/images/${req.files.banner[0].filename}` : (req.body && req.body.banner ? req.body.banner : undefined);
+      
+      let avatar = req.body && req.body.avatar ? req.body.avatar : undefined;
+      let banner = req.body && req.body.banner ? req.body.banner : undefined;
+      
+      // Optimize uploaded avatar
+      if (req.files?.avatar) {
+        const { optimizeImage, IMAGES_DIR } = require('../lib/uploads');
+        const avatarFile = req.files.avatar[0];
+        await optimizeImage(require('path').join(IMAGES_DIR, avatarFile.filename));
+        avatar = `/images/${avatarFile.filename}`;
+      }
+      
+      // Optimize uploaded banner
+      if (req.files?.banner) {
+        const { optimizeImage, IMAGES_DIR } = require('../lib/uploads');
+        const bannerFile = req.files.banner[0];
+        await optimizeImage(require('path').join(IMAGES_DIR, bannerFile.filename));
+        banner = `/images/${bannerFile.filename}`;
+      }
+      
       const updated = updateUserById(user.id, { 
         username: req.body.username,
         avatar,
