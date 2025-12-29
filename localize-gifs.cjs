@@ -39,12 +39,13 @@ async function processAll() {
   for (const { name, url } of targets) {
     try {
       const buf = await download(url)
+      // Use quality 70 for better compression of large anime images
       const webp = await sharp(buf, { animated: true })
-        .webp({ quality: 80, effort: 6, smartSubsample: true, loop: 0 })
+        .webp({ quality: 70, effort: 6, smartSubsample: true, loop: 0 })
         .toBuffer()
       const outPath = path.join(outDir, `${name}.webp`)
       fs.writeFileSync(outPath, webp)
-      console.log(`Saved ${outPath} (${(webp.length / 1024).toFixed(1)} KB)`) // log size for quick sanity check
+      console.log(`Saved ${outPath} (${(webp.length / 1024).toFixed(1)} KB)`)
     } catch (err) {
       console.error(`Failed to process ${name}:`, err.message)
     }
