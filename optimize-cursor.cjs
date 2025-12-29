@@ -1,4 +1,4 @@
-// Convert cursor GIF to optimized 20x20 WebP
+// Convert cursor GIF to optimized 24x24 WebP
 const fs = require('fs')
 const path = require('path')
 const sharp = require('sharp')
@@ -9,16 +9,16 @@ const iconsDir = path.join(__dirname, '..', 'src', 'assets', 'icons')
 async function optimizeCursor() {
   try {
     const inputPath = path.join(publicDir, 'cursors', 'Normal.gif')
-    const outputPath = path.join(iconsDir, 'cursor-20.webp')
+    const outputPath = path.join(iconsDir, 'cursor-24.webp')
 
     if (!fs.existsSync(inputPath)) {
       console.log(`Cursor source not found: ${inputPath}`)
       return
     }
 
-    // Convert GIF to 20x20 WebP with extreme compression
+    // Convert GIF to 24x24 WebP with extreme compression
     const webp = await sharp(inputPath, { animated: false })
-      .resize(20, 20, { fit: 'cover', position: 'center' })
+      .resize(24, 24, { fit: 'cover', position: 'center' })
       .webp({ quality: 40, effort: 6, smartSubsample: true })
       .toBuffer()
 

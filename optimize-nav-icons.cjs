@@ -1,4 +1,4 @@
-// Optimize navigation icons to 20x20 WebP with maximum compression
+// Optimize navigation icons to 24x24 WebP with maximum compression
 const fs = require('fs')
 const path = require('path')
 const sharp = require('sharp')
@@ -16,16 +16,16 @@ const assetsDir = path.join(__dirname, '..', 'src', 'assets')
 async function optimizeIcon(name, originalSize) {
   try {
     const inputPath = path.join(assetsDir, `${name}.webp`)
-    const outputPath = path.join(assetsDir, 'icons', `${name}-20.webp`)
+    const outputPath = path.join(assetsDir, 'icons', `${name}-24.webp`)
 
     if (!fs.existsSync(inputPath)) {
       console.log(`Skipping ${name}: source file not found`)
       return
     }
 
-    // Resize to 20x20 with extreme compression (quality 40, effort 6)
+    // Resize to 24x24 with extreme compression (quality 40, effort 6)
     const webp = await sharp(inputPath, { animated: false })
-      .resize(20, 20, { fit: 'cover', position: 'center' })
+      .resize(24, 24, { fit: 'cover', position: 'center' })
       .webp({ quality: 40, effort: 6, smartSubsample: true })
       .toBuffer()
 
@@ -42,7 +42,7 @@ async function main() {
   const iconsDir = path.join(assetsDir, 'icons')
   fs.mkdirSync(iconsDir, { recursive: true })
 
-  console.log('Optimizing navigation icons to 20x20...')
+  console.log('Optimizing navigation icons to 24x24...')
   for (const { name, size } of iconSizes) {
     await optimizeIcon(name, size)
   }
