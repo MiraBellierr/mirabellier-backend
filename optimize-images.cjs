@@ -48,11 +48,61 @@ async function optimizeImages() {
     }
   }
 
-  console.log('✨ Image optimization complete!');
+  // Create 20x20 navigation icons
+  console.log('🔍 Creating 20x20 navigation icons...\n');
+  
+  const iconsDir = path.join(assetsDir, 'icons');
+  if (!fs.existsSync(iconsDir)) {
+    fs.mkdirSync(iconsDir, { recursive: true });
+  }
+
+  const navIcons = [
+    { input: 'img1.webp', output: 'icons/home-20.webp', name: 'home' },
+    { input: 'img2.webp', output: 'icons/about-20.webp', name: 'about' },
+    { input: 'img3.webp', output: 'icons/blog-20.webp', name: 'blog' },
+    { input: 'img4.webp', output: 'icons/art-20.webp', name: 'art' },
+    { input: 'cats.webp', output: 'icons/cats-20.webp', name: 'cats' },
+  ];
+
+  for (const { input, output, name } of navIcons) {
+    const inputPath = path.join(assetsDir, input);
+    const outputPath = path.join(assetsDir, output);
+
+    try {
+      await sharp(inputPath)
+        .resize(20, 20, { fit: 'cover', position: 'center' })
+        .webp({ quality: 90, effort: 6 })
+        .toFile(outputPath);
+
+      const stats = fs.statSync(outputPath);
+      console.log(`✅ ${name} icon: ${(stats.size / 1024).toFixed(2)} KB`);
+    } catch (error) {
+      console.error(`❌ Error creating ${name} icon:`, error.message);
+    }
+  }
+
+  // Create 20x20 cursor icon
+  try {
+    const cursorPath = path.join(__dirname, '../public/cursors/Normal.gif');
+    const cursorOutput = path.join(assetsDir, 'icons/cursor-20.webp');
+    
+    if (fs.existsSync(cursorPath)) {
+      await sharp(cursorPath, { animated: false })
+        .resize(20, 20)
+        .webp({ quality: 90 })
+        .toFile(cursorOutput);
+      
+      const stats = fs.statSync(cursorOutput);
+      console.log(`✅ cursor icon: ${(stats.size / 1024).toFixed(2)} KB`);
+    }
+  } catch (error) {
+    console.error('❌ Error creating cursor icon:', error.message);
+  }
+
+  console.log('\n✨ Image optimization complete!');
   console.log('\n📝 Next steps:');
   console.log('1. Update import statements in src/parts/Navigation.tsx');
-  console.log('2. Update import statement in src/parts/Divider.tsx');
-  console.log('3. Test the application to ensure images load correctly');
+  console.log('2. Test the application to ensure images load correctly');
 }
 
 optimizeImages().catch(console.error);
