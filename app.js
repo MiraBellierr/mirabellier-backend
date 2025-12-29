@@ -36,10 +36,14 @@ app.use(passport.initialize());
 // Add timing headers for performance monitoring
 app.use((req, res, next) => {
   const start = Date.now();
-  res.on('finish', () => {
+  const originalSend = res.send;
+  res.send = function(...args) {
     const duration = Date.now() - start;
-    res.setHeader('Server-Timing', `total;dur=${duration}`);
-  });
+    if (!res.headersSent) {
+      res.setHeader('Server-Timing', `total;dur=${duration}`);
+    }
+    return originalSend.apply(res, args);
+  };
   next();
 });
 
