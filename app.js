@@ -7,7 +7,7 @@ const passport = require('passport');
 const compression = require('compression');
 
 const app = express();
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 5000;
 
 // Compression middleware - compress all responses
 app.use(compression({
