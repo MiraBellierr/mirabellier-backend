@@ -62,6 +62,7 @@ function authFromReq(req) {
 
 require('./routes/posts')(app, { db, getUserById: users.getUserById, userPublic: users.userPublic, authFromReq });
 require('./routes/videos')(app, { db, getUserById: users.getUserById, userPublic: users.userPublic, authFromReq, videoUpload: uploads.videoUpload });
+require('./routes/pics')(app, { db, getUserById: users.getUserById, userPublic: users.userPublic, authFromReq, imageUpload: uploads.imageUpload, optimizeImage: uploads.optimizeImage });
 require('./routes/images')(app, { IMAGES_DIR: uploads.IMAGES_DIR });
 require('./routes/auth')(app, {
   makeToken: users.makeToken,
