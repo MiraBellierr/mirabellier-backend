@@ -1,6 +1,6 @@
 # Mirabellier.com Backend
 
-Express.js REST API server providing authentication, blog management, and media upload services for the Mirabellier.com platform.
+![mirabellier-backend](https://socialify.git.ci/MiraBellierr/mirabellier-backend/image?custom_language=Express&description=1&font=Inter&forks=1&issues=1&language=1&logo=https%3A%2F%2Fmirabellier.com%2Fbackground.jpg&name=1&owner=1&pattern=Solid&pulls=1&stargazers=1&theme=Auto)
 
 ## 🚀 Features
 
