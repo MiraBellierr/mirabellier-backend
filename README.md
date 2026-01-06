@@ -1,6 +1,6 @@
-# Miraiscute Backend
+# Mirabellier.com Backend
 
-Express.js REST API server providing authentication, blog management, and media upload services for the Miraiscute platform.
+Express.js REST API server providing authentication, blog management, and media upload services for the Mirabellier.com platform.
 
 ## 🚀 Features
 
@@ -17,7 +17,7 @@ Express.js REST API server providing authentication, blog management, and media 
 ## 📁 Project Structure
 
 ```
-miraiscute-backend/
+mirabellier-backend/
 ├── app.js              # Main application entry point
 ├── database.sqlite3    # SQLite database file
 ├── lib/                # Core utilities and helpers
@@ -50,13 +50,13 @@ miraiscute-backend/
 ## 📦 Installation
 
 ```bash
-cd miraiscute-backend
+cd mirabellier-backend
 npm install
 ```
 
 ## 🔧 Environment Variables
 
-Create a `.env` file in the `miraiscute-backend/` directory:
+Create a `.env` file in the `mirabellier-backend/` directory:
 
 ```env
 # Server Configuration
@@ -409,7 +409,7 @@ Check terminal output for real-time logs.
 ### PM2 Example
 
 ```bash
-pm2 start app.js --name miraiscute-api
+pm2 start app.js --name mirabellier-api
 pm2 save
 pm2 startup
 ```
