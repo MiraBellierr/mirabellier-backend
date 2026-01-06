@@ -1,4 +1,5 @@
 const express = require('express');
+const { generateSitemap } = require('../lib/sitemap');
 
 module.exports = function registerPostsRoutes(app, deps) {
   const { db, getUserById, userPublic, authFromReq } = deps;
@@ -204,6 +205,9 @@ module.exports = function registerPostsRoutes(app, deps) {
         createdAt
       };
 
+      // Generate sitemap after successful post creation
+      generateSitemap(db);
+
       res.status(201).json(resp);
     } catch (err) {
       console.error('POST /posts error', err);
@@ -249,6 +253,9 @@ module.exports = function registerPostsRoutes(app, deps) {
         authorAvatar: existing.userId ? (u ? u.avatar : null) : null,
         createdAt: existing.createdAt
       };
+
+      // Generate sitemap after successful post update
+      generateSitemap(db);
 
       res.json(resp);
     } catch (err) {
