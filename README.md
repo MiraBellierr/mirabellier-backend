@@ -103,69 +103,69 @@ Server will be available at `http://localhost:3000`
 
 ## 📝 Available Scripts
 
-| Command | Description |
-|---------|-------------|
-| `npm start` | Start production server |
+| Command       | Description                           |
+| ------------- | ------------------------------------- |
+| `npm start`   | Start production server               |
 | `npm run dev` | Start development server with nodemon |
 
 ## 🔌 API Endpoints
 
 ### Authentication
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/auth/discord` | Initiate Discord OAuth flow |
-| `GET` | `/auth/discord/callback` | Discord OAuth callback |
-| `GET` | `/auth/user` | Get current authenticated user |
-| `POST` | `/auth/logout` | Logout user |
-| `PUT` | `/auth/user` | Update user profile |
+| Method | Endpoint                 | Description                    |
+| ------ | ------------------------ | ------------------------------ |
+| `GET`  | `/auth/discord`          | Initiate Discord OAuth flow    |
+| `GET`  | `/auth/discord/callback` | Discord OAuth callback         |
+| `GET`  | `/auth/user`             | Get current authenticated user |
+| `POST` | `/auth/logout`           | Logout user                    |
+| `PUT`  | `/auth/user`             | Update user profile            |
 
 ### Blog Posts
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| `GET` | `/posts` | Get all posts | No |
-| `GET` | `/posts/:id` | Get single post | No |
-| `POST` | `/posts` | Create new post | Yes |
-| `PUT` | `/posts/:id` | Update post | Yes |
-| `DELETE` | `/posts/:id` | Delete post | Yes |
-| `POST` | `/posts-img` | Upload post image | Yes |
+| Method   | Endpoint     | Description       | Auth Required |
+| -------- | ------------ | ----------------- | ------------- |
+| `GET`    | `/posts`     | Get all posts     | No            |
+| `GET`    | `/posts/:id` | Get single post   | No            |
+| `POST`   | `/posts`     | Create new post   | Yes           |
+| `PUT`    | `/posts/:id` | Update post       | Yes           |
+| `DELETE` | `/posts/:id` | Delete post       | Yes           |
+| `POST`   | `/posts-img` | Upload post image | Yes           |
 
 ### Videos
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| `GET` | `/videos` | Get all videos | No |
-| `GET` | `/videos/:id` | Get single video | No |
-| `POST` | `/videos` | Upload video | Yes |
-| `PUT` | `/videos/:id` | Update video | Yes |
-| `DELETE` | `/videos/:id` | Delete video | Yes |
+| Method   | Endpoint      | Description      | Auth Required |
+| -------- | ------------- | ---------------- | ------------- |
+| `GET`    | `/videos`     | Get all videos   | No            |
+| `GET`    | `/videos/:id` | Get single video | No            |
+| `POST`   | `/videos`     | Upload video     | Yes           |
+| `PUT`    | `/videos/:id` | Update video     | Yes           |
+| `DELETE` | `/videos/:id` | Delete video     | Yes           |
 
 ### Pictures
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| `GET` | `/pics` | Get all pictures | No |
-| `GET` | `/pics/:id` | Get single picture | No |
-| `POST` | `/pics` | Upload picture | Yes |
-| `PUT` | `/pics/:id` | Update picture | Yes |
-| `DELETE` | `/pics/:id` | Delete picture | Yes |
+| Method   | Endpoint    | Description        | Auth Required |
+| -------- | ----------- | ------------------ | ------------- |
+| `GET`    | `/pics`     | Get all pictures   | No            |
+| `GET`    | `/pics/:id` | Get single picture | No            |
+| `POST`   | `/pics`     | Upload picture     | Yes           |
+| `PUT`    | `/pics/:id` | Update picture     | Yes           |
+| `DELETE` | `/pics/:id` | Delete picture     | Yes           |
 
 ### Static Files
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/images/:filename` | Serve image files |
-| `GET` | `/videos/:filename` | Serve video files |
+| Method | Endpoint            | Description       |
+| ------ | ------------------- | ----------------- |
+| `GET`  | `/images/:filename` | Serve image files |
+| `GET`  | `/videos/:filename` | Serve video files |
 
 ### Anime
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| `GET` | `/anime` | Get anime list | No |
-| `POST` | `/anime` | Add anime entry | Yes (Admin) |
-| `PUT` | `/anime/:id` | Update anime | Yes (Admin) |
-| `DELETE` | `/anime/:id` | Delete anime | Yes (Admin) |
+| Method   | Endpoint     | Description     | Auth Required |
+| -------- | ------------ | --------------- | ------------- |
+| `GET`    | `/anime`     | Get anime list  | No            |
+| `POST`   | `/anime`     | Add anime entry | Yes (Admin)   |
+| `PUT`    | `/anime/:id` | Update anime    | Yes (Admin)   |
+| `DELETE` | `/anime/:id` | Delete anime    | Yes (Admin)   |
 
 ## 🔐 Authentication
 
@@ -269,18 +269,18 @@ CREATE TABLE pics (
 
 ```javascript
 // Upload image
-const formData = new FormData()
-formData.append('image', file)
+const formData = new FormData();
+formData.append("image", file);
 
-const response = await fetch('http://localhost:3000/posts-img', {
-  method: 'POST',
+const response = await fetch("http://localhost:3000/posts-img", {
+  method: "POST",
   headers: {
-    'Authorization': 'Bearer YOUR_TOKEN'
+    Authorization: "Bearer YOUR_TOKEN",
   },
-  body: formData
-})
+  body: formData,
+});
 
-const data = await response.json()
+const data = await response.json();
 // { path: '/images/filename.jpg', webp: '/images/filename.webp' }
 ```
 
@@ -289,6 +289,7 @@ const data = await response.json()
 ### Compression
 
 All API responses are gzipped (except when explicitly disabled):
+
 - Level 6 compression (balanced)
 - Only compresses responses > 1KB
 - Can be disabled with `x-no-compression` header
@@ -296,18 +297,21 @@ All API responses are gzipped (except when explicitly disabled):
 ### Keep-Alive
 
 HTTP Keep-Alive enabled for faster subsequent requests:
+
 - Timeout: 5 seconds
 - Max requests per connection: 100
 
 ### Caching Headers
 
 Static files (images/videos) served with aggressive caching:
+
 - Cache-Control: `public, max-age=31536000, immutable`
 - Cached for 1 year (365 days)
 
 ### Server-Timing Headers
 
 Every response includes timing information for performance monitoring:
+
 ```
 Server-Timing: total;dur=123
 ```
@@ -323,12 +327,12 @@ const imageUpload = multer({
   storage: multer.diskStorage({
     destination: IMAGES_DIR,
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
-      cb(null, uniqueSuffix + path.extname(file.originalname))
-    }
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, uniqueSuffix + path.extname(file.originalname));
+    },
   }),
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
-})
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+});
 ```
 
 ### Database Initialization
@@ -336,7 +340,7 @@ const imageUpload = multer({
 Database is automatically created on first run. To manually initialize:
 
 ```javascript
-const { db } = require('./lib/db')
+const { db } = require("./lib/db");
 // Database is ready to use
 ```
 
@@ -345,6 +349,7 @@ const { db } = require('./lib/db')
 ### Port Already in Use
 
 Change the port in `.env`:
+
 ```env
 PORT=5000
 ```
@@ -370,15 +375,18 @@ SQLite may lock if multiple processes access it. Ensure only one server instance
 Add your frontend URL to CORS configuration in `app.js`:
 
 ```javascript
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-  credentials: true
-}))
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:5173",
+    credentials: true,
+  }),
+);
 ```
 
 ## 📊 Monitoring & Logging
 
 The server logs:
+
 - All incoming requests (method, path, duration)
 - Database queries (in development)
 - Upload operations
