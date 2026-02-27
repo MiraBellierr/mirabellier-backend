@@ -31,8 +31,8 @@ app.use((req, res, next) => {
 });
 
 app.use(cors());
-app.use(bodyParser.json({ limit: "50mb" }));
-app.use(bodyParser.urlencoded({ limit: "50mb", extended: true }));
+app.use(bodyParser.json({ limit: "1gb" }));
+app.use(bodyParser.urlencoded({ limit: "1gb", extended: true }));
 app.use(passport.initialize());
 
 // Add timing headers for performance monitoring
