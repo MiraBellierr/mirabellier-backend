@@ -1,4 +1,44 @@
-const express = require("express");
+function buildNestedComments(rawComments, getUserById, userPublic) {
+  const commentsById = {};
+  rawComments.forEach((comment) => {
+    commentsById[comment.id] = {
+      ...comment,
+      children: [],
+      user: comment.userId ? userPublic(getUserById(comment.userId)) : null,
+    };
+  });
+
+  const nested = [];
+  rawComments.forEach((comment) => {
+    const node = commentsById[comment.id];
+    if (!node) return;
+
+    if (comment.parentId && commentsById[comment.parentId]) {
+      commentsById[comment.parentId].children.push(node);
+      return;
+    }
+
+    nested.push(node);
+  });
+
+  return nested;
+}
+
+function mapPicRow(row, getUserById, userPublic) {
+  const rawComments = row.comments ? JSON.parse(row.comments) : [];
+  return {
+    ...row,
+    likes: row.likes ? JSON.parse(row.likes) : [],
+    comments: buildNestedComments(rawComments, getUserById, userPublic),
+    author: row.authorUsername,
+    authorAvatar: row.authorAvatar,
+  };
+}
+
+function resolvePictureOwnerId(authFromReq, req) {
+  const userFromToken = authFromReq(req);
+  return userFromToken ? userFromToken.id : req.body.userId || null;
+}
 
 module.exports = function registerPicsRoutes(app, deps) {
   const {
@@ -12,54 +52,48 @@ module.exports = function registerPicsRoutes(app, deps) {
 
   app.post("/upload-pic", imageUpload.single("image"), async (req, res) => {
     try {
-      if (!req.file)
+      if (!req.file) {
         return res.status(400).json({ error: "Image file is required." });
+      }
 
-      const finalFilename = req.file.filename;
-      const title = req.body.title || finalFilename.replace(/\.[^/.]+$/, "");
-
+      const filename = req.file.filename;
+      const title = req.body.title || filename.replace(/\.[^/.]+$/, "");
       const id = Date.now().toString();
       const createdAt = new Date().toISOString();
-      const userFromToken = authFromReq(req);
-      const userId = userFromToken ? userFromToken.id : req.body.userId || null;
+      const userId = resolvePictureOwnerId(authFromReq, req);
+      const url = `/images/${filename}`;
 
-      // Optimize the image
       if (req.file.path) {
         await optimizeImage(req.file.path);
       }
 
       db.prepare(
-        `INSERT INTO pics (id, title, url, userId, likes, comments, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        "INSERT INTO pics (id, title, url, userId, likes, comments, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
       ).run(
         id,
         title,
-        `/images/${finalFilename}`,
+        url,
         userId,
         JSON.stringify([]),
         JSON.stringify([]),
         createdAt,
       );
 
-      const newPic = {
+      res.status(201).json({
         id,
         title,
-        url: `/images/${finalFilename}`,
+        url,
         userId: userId || null,
         likes: [],
         comments: [],
         createdAt,
-      };
-
-      res.status(201).json(newPic);
+      });
     } catch (err) {
-      console.error("Error processing picture:", err);
-      res
-        .status(500)
-        .json({
-          error: "Picture upload failed",
-          details: err.message,
-          type: err.name || "ProcessingError",
-        });
+      res.status(500).json({
+        error: "Picture upload failed",
+        details: err.message,
+        type: err.name || "ProcessingError",
+      });
     }
   });
 
@@ -67,88 +101,65 @@ module.exports = function registerPicsRoutes(app, deps) {
     try {
       const rows = db
         .prepare(
-          `SELECT p.*, u.username as authorUsername, u.avatar as authorAvatar FROM pics p LEFT JOIN users u ON u.id = p.userId ORDER BY createdAt DESC`,
+          "SELECT p.*, u.username as authorUsername, u.avatar as authorAvatar FROM pics p LEFT JOIN users u ON u.id = p.userId ORDER BY createdAt DESC",
         )
         .all();
-      const enriched = rows.map((r) => {
-        const rawComments = r.comments ? JSON.parse(r.comments) : [];
-        const byId = {};
-        rawComments.forEach((c) => {
-          byId[c.id] = {
-            ...c,
-            children: [],
-            user: c.userId ? userPublic(getUserById(c.userId)) : null,
-          };
-        });
-        const nestedComments = [];
-        rawComments.forEach((c) => {
-          const node = byId[c.id];
-          if (c.parentId && byId[c.parentId]) {
-            byId[c.parentId].children.push(node);
-          } else {
-            nestedComments.push(node);
-          }
-        });
-        return {
-          ...r,
-          likes: r.likes ? JSON.parse(r.likes) : [],
-          comments: nestedComments,
-          author: r.authorUsername,
-          authorAvatar: r.authorAvatar,
-        };
-      });
+
+      const enriched = rows.map((row) =>
+        mapPicRow(row, getUserById, userPublic),
+      );
       res.json(enriched);
-    } catch (err) {
-      console.error("Error reading pics:", err);
+    } catch {
       res.status(500).json({ error: "Failed to fetch pics" });
     }
   });
 
   app.post("/pics/:id/like", (req, res) => {
     try {
-      const { id } = req.params;
       const userFromToken = authFromReq(req);
       if (!userFromToken) {
         return res.status(401).json({ error: "Unauthorized" });
       }
 
-      const pic = db.prepare("SELECT likes FROM pics WHERE id = ?").get(id);
-      if (!pic) return res.status(404).json({ error: "Picture not found" });
+      const pictureId = req.params.id;
+      const picture = db
+        .prepare("SELECT likes FROM pics WHERE id = ?")
+        .get(pictureId);
+      if (!picture) return res.status(404).json({ error: "Picture not found" });
 
-      const likes = pic.likes ? JSON.parse(pic.likes) : [];
+      const likes = picture.likes ? JSON.parse(picture.likes) : [];
       const userId = userFromToken.id;
-      const likeIndex = likes.indexOf(userId);
+      const existingIndex = likes.indexOf(userId);
 
-      if (likeIndex > -1) {
-        likes.splice(likeIndex, 1);
-      } else {
-        likes.push(userId);
-      }
+      if (existingIndex > -1) likes.splice(existingIndex, 1);
+      else likes.push(userId);
 
       db.prepare("UPDATE pics SET likes = ? WHERE id = ?").run(
         JSON.stringify(likes),
-        id,
+        pictureId,
       );
+
       res.json({ likes, liked: likes.includes(userId) });
-    } catch (err) {
-      console.error("Error liking pic:", err);
+    } catch {
       res.status(500).json({ error: "Failed to like picture" });
     }
   });
 
   app.post("/pics/:id/comment", (req, res) => {
     try {
-      const { id } = req.params;
-      const { text, parentId } = req.body;
       const userFromToken = authFromReq(req);
       if (!userFromToken) {
         return res.status(401).json({ error: "Unauthorized" });
       }
 
-      const pic = db.prepare("SELECT comments FROM pics WHERE id = ?").get(id);
-      if (!pic) return res.status(404).json({ error: "Picture not found" });
+      const pictureId = req.params.id;
+      const { text, parentId } = req.body;
+      const picture = db
+        .prepare("SELECT comments FROM pics WHERE id = ?")
+        .get(pictureId);
+      if (!picture) return res.status(404).json({ error: "Picture not found" });
 
-      const comments = pic.comments ? JSON.parse(pic.comments) : [];
+      const comments = picture.comments ? JSON.parse(picture.comments) : [];
       const newComment = {
         id: Date.now().toString(),
         text,
@@ -161,11 +172,11 @@ module.exports = function registerPicsRoutes(app, deps) {
       comments.push(newComment);
       db.prepare("UPDATE pics SET comments = ? WHERE id = ?").run(
         JSON.stringify(comments),
-        id,
+        pictureId,
       );
+
       res.status(201).json(newComment);
-    } catch (err) {
-      console.error("Error adding comment:", err);
+    } catch {
       res.status(500).json({ error: "Failed to add comment" });
     }
   });

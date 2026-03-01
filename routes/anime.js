@@ -1,6 +1,41 @@
 const express = require("express");
 
-module.exports = function (app, { db, authFromReq }) {
+const OWNER_DISCORD_ID = "548050617889980426";
+const EDITOR_USERNAME = "mira";
+
+function isOwner(user) {
+  return Boolean(user && user.discordId === OWNER_DISCORD_ID);
+}
+
+function canPatch(user) {
+  return Boolean(user && user.username === EDITOR_USERNAME);
+}
+
+function buildPatchFields(body) {
+  const updates = [];
+  const params = [];
+
+  if (typeof body.title !== "undefined") {
+    updates.push("title = ?");
+    params.push(body.title);
+  }
+  if (typeof body.url !== "undefined") {
+    updates.push("url = ?");
+    params.push(body.url);
+  }
+  if (typeof body.img !== "undefined") {
+    updates.push("img = ?");
+    params.push(body.img);
+  }
+  if (typeof body.ord !== "undefined") {
+    updates.push("ord = ?");
+    params.push(body.ord);
+  }
+
+  return { updates, params };
+}
+
+module.exports = function registerAnimeRoutes(app, { db, authFromReq }) {
   const router = express.Router();
 
   router.get("/", (req, res) => {
@@ -8,14 +43,14 @@ module.exports = function (app, { db, authFromReq }) {
       const rows = db
         .prepare("SELECT id, title, url, img, ord FROM anime ORDER BY ord ASC")
         .all();
+
       // Cache anime list for 10 minutes
       res.setHeader(
         "Cache-Control",
         "public, max-age=600, stale-while-revalidate=1200",
       );
       res.json(rows);
-    } catch (err) {
-      console.error(err);
+    } catch {
       res.status(500).json({ error: "Failed to fetch anime list" });
     }
   });
@@ -23,29 +58,31 @@ module.exports = function (app, { db, authFromReq }) {
   router.post("/", express.json(), (req, res) => {
     try {
       const user = authFromReq(req);
-      if (!user || user.discordId !== "548050617889980426") {
-        return res.status(403).json({ error: "Forbidden" });
-      }
+      if (!isOwner(user)) return res.status(403).json({ error: "Forbidden" });
 
       const list = Array.isArray(req.body) ? req.body : [];
-      const del = db.prepare("DELETE FROM anime");
-      const ins = db.prepare(
+      const deleteAll = db.prepare("DELETE FROM anime");
+      const insert = db.prepare(
         "INSERT INTO anime (id, title, url, img, ord) VALUES (?, ?, ?, ?, ?)",
       );
-      const trx = db.transaction((items) => {
-        del.run();
-        for (let i = 0; i < items.length; i++) {
-          const it = items[i];
-          const id = it.id || `${Date.now()}-${i}`;
-          ins.run(id, it.title || "", it.url || "", it.img || "", i);
+      const transaction = db.transaction((items) => {
+        deleteAll.run();
+        for (let index = 0; index < items.length; index += 1) {
+          const item = items[index];
+          const id = item.id || `${Date.now()}-${index}`;
+          insert.run(
+            id,
+            item.title || "",
+            item.url || "",
+            item.img || "",
+            index,
+          );
         }
       });
 
-      trx(list);
-
+      transaction(list);
       res.json({ ok: true });
-    } catch (err) {
-      console.error(err);
+    } catch {
       res.status(500).json({ error: "Failed to update anime list" });
     }
   });
@@ -53,14 +90,11 @@ module.exports = function (app, { db, authFromReq }) {
   router.delete("/:id", (req, res) => {
     try {
       const user = authFromReq(req);
-      if (!user || user.discordId !== "548050617889980426") {
-        return res.status(403).json({ error: "Forbidden" });
-      }
-      const id = req.params.id;
-      db.prepare("DELETE FROM anime WHERE id = ?").run(id);
+      if (!isOwner(user)) return res.status(403).json({ error: "Forbidden" });
+
+      db.prepare("DELETE FROM anime WHERE id = ?").run(req.params.id);
       res.json({ ok: true });
-    } catch (err) {
-      console.error(err);
+    } catch {
       res.status(500).json({ error: "Failed to delete" });
     }
   });
@@ -68,41 +102,19 @@ module.exports = function (app, { db, authFromReq }) {
   router.patch("/:id", express.json(), (req, res) => {
     try {
       const user = authFromReq(req);
-      if (!user || user.username !== "mira") {
-        return res.status(403).json({ error: "Forbidden" });
-      }
+      if (!canPatch(user)) return res.status(403).json({ error: "Forbidden" });
 
       const id = req.params.id;
-      const { title, url, img, ord } = req.body || {};
-
-      const updates = [];
-      const params = [];
-      if (typeof title !== "undefined") {
-        updates.push("title = ?");
-        params.push(title);
-      }
-      if (typeof url !== "undefined") {
-        updates.push("url = ?");
-        params.push(url);
-      }
-      if (typeof img !== "undefined") {
-        updates.push("img = ?");
-        params.push(img);
-      }
-      if (typeof ord !== "undefined") {
-        updates.push("ord = ?");
-        params.push(ord);
-      }
-
+      const { updates, params } = buildPatchFields(req.body || {});
       if (updates.length === 0) {
         return res.status(400).json({ error: "No fields to update" });
       }
 
       params.push(id);
-      const stmt = db.prepare(
+      const statement = db.prepare(
         `UPDATE anime SET ${updates.join(", ")} WHERE id = ?`,
       );
-      const info = stmt.run(...params);
+      const info = statement.run(...params);
       if (info.changes === 0)
         return res.status(404).json({ error: "Not found" });
 
@@ -110,8 +122,7 @@ module.exports = function (app, { db, authFromReq }) {
         .prepare("SELECT id, title, url, img, ord FROM anime WHERE id = ?")
         .get(id);
       res.json(row);
-    } catch (err) {
-      console.error(err);
+    } catch {
       res.status(500).json({ error: "Failed to update item" });
     }
   });

@@ -1,183 +1,120 @@
-const express = require("express");
 const { generateSitemap } = require("../lib/sitemap");
 
-module.exports = function registerPostsRoutes(app, deps) {
-  const { db, getUserById, userPublic, authFromReq } = deps;
-  const MAX_TAGS = 5;
+const MAX_TAGS = 5;
 
-  app.get("/posts", (req, res) => {
-    try {
-      const rows = db
-        .prepare(
-          "SELECT p.*, u.username as authorName, u.avatar as authorAvatar FROM posts p LEFT JOIN users u ON p.userId = u.id ORDER BY createdAt DESC",
-        )
-        .all();
-      const posts = rows.map((p) => ({
-        id: p.id,
-        title: p.title,
-        content: p.content ? JSON.parse(p.content) : null,
-        tags: p.tags
-          ? Array.isArray(JSON.parse(p.tags))
-            ? JSON.parse(p.tags)
-                .map((t) =>
-                  String(t)
-                    .trim()
-                    .replace(/[^A-Za-z0-9_-]/g, "")
-                    .slice(0, 10),
-                )
-                .filter(Boolean)
-                .slice(0, MAX_TAGS)
-            : []
-          : [],
-        shortDescription: p.shortDescription || null,
-        thumbnail: p.thumbnail || null,
-        userId: p.userId,
-        author: p.userId
-          ? p.authorName || p.author || "Unknown"
-          : p.author || "Unknown",
-        authorAvatar: p.userId
-          ? p.authorAvatar || null
-          : p.authorAvatar || null,
-        createdAt: p.createdAt,
-      }));
-      // Cache for 60 seconds, allow stale content for 300s while revalidating
-      res.setHeader(
-        "Cache-Control",
-        "public, max-age=60, stale-while-revalidate=300",
-      );
-      res.json(posts);
-    } catch (err) {
-      console.error("GET /posts error", err);
-      res.status(500).json({ error: "failed to fetch posts" });
-    }
-  });
+function sanitizeTag(value) {
+  return String(value)
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, "")
+    .slice(0, 10);
+}
 
-  app.get("/posts/:id", (req, res) => {
-    try {
-      const id = req.params.id;
-      const p = db
-        .prepare(
-          "SELECT p.*, u.username as authorName, u.avatar as authorAvatar FROM posts p LEFT JOIN users u ON p.userId = u.id WHERE p.id = ?",
-        )
-        .get(id);
-      if (!p) return res.status(404).json({ error: "Not found" });
+function normalizeTags(rawTags) {
+  if (!Array.isArray(rawTags)) return [];
 
-      const post = {
-        id: p.id,
-        title: p.title,
-        content: p.content ? JSON.parse(p.content) : null,
-        tags: p.tags
-          ? Array.isArray(JSON.parse(p.tags))
-            ? JSON.parse(p.tags)
-                .map((t) =>
-                  String(t)
-                    .trim()
-                    .replace(/[^A-Za-z0-9_-]/g, "")
-                    .slice(0, 10),
-                )
-                .filter(Boolean)
-                .slice(0, MAX_TAGS)
-            : []
-          : [],
-        shortDescription: p.shortDescription || null,
-        thumbnail: p.thumbnail || null,
-        userId: p.userId,
-        author: p.userId
-          ? p.authorName || p.author || "Unknown"
-          : p.author || "Unknown",
-        authorAvatar: p.userId
-          ? p.authorAvatar || null
-          : p.authorAvatar || null,
-        createdAt: p.createdAt,
-      };
+  return Array.from(new Set(rawTags.map(sanitizeTag).filter(Boolean))).slice(
+    0,
+    MAX_TAGS,
+  );
+}
 
-      // Cache individual posts for 5 minutes
-      res.setHeader(
-        "Cache-Control",
-        "public, max-age=300, stale-while-revalidate=600",
-      );
-      res.json(post);
-    } catch (err) {
-      console.error("GET /posts/:id error", err);
-      res.status(500).json({ error: "failed to fetch post" });
-    }
-  });
+function parseTagsInput(tagsInput) {
+  if (Array.isArray(tagsInput)) return tagsInput;
 
-  // Server-side SEO page for individual blog post (for social crawlers)
-  app.get("/blog/:id", (req, res) => {
-    try {
-      // support slugged URLs like /blog/this-is-title-12345
-      const raw = req.params.id || "";
-      const maybeId = raw.includes("-") ? raw.split("-").pop() : raw;
-      const id = maybeId || raw;
-      const p = db
-        .prepare(
-          "SELECT p.*, u.username as authorName, u.avatar as authorAvatar FROM posts p LEFT JOIN users u ON p.userId = u.id WHERE p.id = ?",
-        )
-        .get(id);
-      if (!p) return res.status(404).send("Not found");
+  if (typeof tagsInput === "string") {
+    if (!tagsInput) return [];
+    return tagsInput
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  }
 
-      const title = p.title || "Untitled";
-      let description = p.shortDescription || "";
-      if (!description && p.content) {
-        try {
-          const parsed = JSON.parse(p.content);
-          if (parsed && typeof parsed === "object") {
-            // try to extract a short text from editor content
-            const walk = (node) => {
-              if (!node) return "";
-              if (Array.isArray(node)) return node.map(walk).join(" ");
-              if (typeof node === "string") return node;
-              if (node.type === "text") return node.text || "";
-              if (node.content) return walk(node.content);
-              return "";
-            };
-            description = walk(parsed).slice(0, 160);
-          }
-        } catch (e) {
-          // ignore
-        }
-      }
+  return [];
+}
 
-      const thumbnail = p.thumbnail || null;
+function parseStoredTags(tagsValue) {
+  if (!tagsValue) return [];
+  const parsed = JSON.parse(tagsValue);
+  if (!Array.isArray(parsed)) return [];
+  return normalizeTags(parsed);
+}
 
-      const escapeHtml = (str) =>
-        String(str || "")
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;");
+function parseStoredContent(contentValue) {
+  return contentValue ? JSON.parse(contentValue) : null;
+}
 
-      const host = req.get("host");
-      const protocol =
-        req.headers["x-forwarded-proto"] || req.protocol || "http";
+function mapPostRow(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    content: parseStoredContent(row.content),
+    tags: parseStoredTags(row.tags),
+    shortDescription: row.shortDescription || null,
+    thumbnail: row.thumbnail || null,
+    userId: row.userId,
+    author: row.userId
+      ? row.authorName || row.author || "Unknown"
+      : row.author || "Unknown",
+    authorAvatar: row.userId
+      ? row.authorAvatar || null
+      : row.authorAvatar || null,
+    createdAt: row.createdAt,
+  };
+}
 
-      let imageUrl = "";
-      if (thumbnail) {
-        if (/^https?:\/\//i.test(thumbnail)) imageUrl = thumbnail;
-        else if (thumbnail.startsWith("/"))
-          imageUrl = `${protocol}://${host}${thumbnail}`;
-        else imageUrl = `${protocol}://${host}/images/${thumbnail}`;
-      }
+function extractPlainText(node) {
+  if (!node) return "";
+  if (Array.isArray(node)) return node.map(extractPlainText).join(" ");
+  if (typeof node === "string") return node;
+  if (node.type === "text") return node.text || "";
+  if (node.content) return extractPlainText(node.content);
+  return "";
+}
 
-      const slugify = (input) => {
-        if (!input) return "";
-        return String(input)
-          .toLowerCase()
-          .normalize("NFKD")
-          .replace(/[^a-z0-9\s-]/g, "")
-          .trim()
-          .replace(/\s+/g, "-")
-          .replace(/-+/g, "-")
-          .slice(0, 80);
-      };
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
-      const slug = slugify(title);
-      const spaPath = `/blog/${slug ? slug + "-" + id : id}`;
-      const requestPath = req.originalUrl || req.path || `/blog/${raw}`;
-      const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
+function slugify(input) {
+  if (!input) return "";
+  return String(input)
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 80);
+}
 
-      const html = `<!doctype html>
+function parseBlogId(rawId) {
+  if (!rawId) return "";
+  if (!rawId.includes("-")) return rawId;
+  return rawId.split("-").pop() || rawId;
+}
+
+function buildImageUrl(thumbnail, protocol, host) {
+  if (!thumbnail) return "";
+  if (/^https?:\/\//i.test(thumbnail)) return thumbnail;
+  if (thumbnail.startsWith("/")) return `${protocol}://${host}${thumbnail}`;
+  return `${protocol}://${host}/images/${thumbnail}`;
+}
+
+function buildBlogRedirectPage({
+  title,
+  description,
+  imageUrl,
+  protocol,
+  host,
+  requestPath,
+  spaPath,
+  redirectUrl,
+}) {
+  return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
@@ -199,11 +136,114 @@ module.exports = function registerPostsRoutes(app, deps) {
   <body>
   </body>
 </html>`;
+}
+
+function resolvePostAuthor(existingUserId, user, fallbackAuthor) {
+  if (!existingUserId) return fallbackAuthor || "Unknown";
+  return user ? user.username : fallbackAuthor || "Unknown";
+}
+
+function resolveAuthorAvatar(existingUserId, user) {
+  if (!existingUserId) return null;
+  return user ? user.avatar : null;
+}
+
+module.exports = function registerPostsRoutes(app, deps) {
+  const { db, getUserById, authFromReq } = deps;
+
+  app.get("/posts", (req, res) => {
+    try {
+      const rows = db
+        .prepare(
+          "SELECT p.*, u.username as authorName, u.avatar as authorAvatar FROM posts p LEFT JOIN users u ON p.userId = u.id ORDER BY createdAt DESC",
+        )
+        .all();
+
+      const posts = rows.map(mapPostRow);
+      // Cache for 60 seconds, allow stale content for 300s while revalidating
+      res.setHeader(
+        "Cache-Control",
+        "public, max-age=60, stale-while-revalidate=300",
+      );
+      res.json(posts);
+    } catch {
+      res.status(500).json({ error: "failed to fetch posts" });
+    }
+  });
+
+  app.get("/posts/:id", (req, res) => {
+    try {
+      const row = db
+        .prepare(
+          "SELECT p.*, u.username as authorName, u.avatar as authorAvatar FROM posts p LEFT JOIN users u ON p.userId = u.id WHERE p.id = ?",
+        )
+        .get(req.params.id);
+
+      if (!row) return res.status(404).json({ error: "Not found" });
+
+      const post = mapPostRow(row);
+      // Cache individual posts for 5 minutes
+      res.setHeader(
+        "Cache-Control",
+        "public, max-age=300, stale-while-revalidate=600",
+      );
+      res.json(post);
+    } catch {
+      res.status(500).json({ error: "failed to fetch post" });
+    }
+  });
+
+  // Server-side SEO page for individual blog post (for social crawlers)
+  app.get("/blog/:id", (req, res) => {
+    try {
+      const rawId = req.params.id || "";
+      const id = parseBlogId(rawId) || rawId;
+      const post = db
+        .prepare(
+          "SELECT p.*, u.username as authorName, u.avatar as authorAvatar FROM posts p LEFT JOIN users u ON p.userId = u.id WHERE p.id = ?",
+        )
+        .get(id);
+
+      if (!post) return res.status(404).send("Not found");
+
+      const title = post.title || "Untitled";
+      let description = post.shortDescription || "";
+
+      if (!description && post.content) {
+        try {
+          const parsed = JSON.parse(post.content);
+          if (parsed && typeof parsed === "object") {
+            description = extractPlainText(parsed).slice(0, 160);
+          }
+        } catch {
+          // Keep existing behavior: ignore invalid rich text payloads.
+        }
+      }
+
+      const host = req.get("host");
+      const protocol =
+        req.headers["x-forwarded-proto"] || req.protocol || "http";
+      const imageUrl = buildImageUrl(post.thumbnail || null, protocol, host);
+
+      const slug = slugify(title);
+      const spaPath = `/blog/${slug ? `${slug}-${id}` : id}`;
+      const requestPath = req.originalUrl || req.path || `/blog/${rawId}`;
+      const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
+
+      const html = buildBlogRedirectPage({
+        title,
+        description,
+        imageUrl,
+        protocol,
+        host,
+        requestPath,
+        spaPath,
+        redirectUrl,
+      });
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(html);
-    } catch (err) {
-      console.error("GET /blog/:id error", err);
+    } catch {
       res.status(500).send("Server error");
     }
   });
@@ -214,27 +254,24 @@ module.exports = function registerPostsRoutes(app, deps) {
       const rows = db
         .prepare("SELECT tags FROM posts WHERE tags IS NOT NULL")
         .all();
-      const all = [];
-      rows.forEach((r) => {
+
+      const allTags = [];
+      rows.forEach((row) => {
         try {
-          const parsed = JSON.parse(r.tags);
-          if (Array.isArray(parsed))
-            parsed.forEach((t) =>
-              all.push(
-                String(t)
-                  .trim()
-                  .replace(/[^A-Za-z0-9_-]/g, "")
-                  .slice(0, 10),
-              ),
-            );
-        } catch (e) {
-          // ignore
+          const parsed = JSON.parse(row.tags);
+          if (Array.isArray(parsed)) {
+            parsed.forEach((tag) => allTags.push(sanitizeTag(tag)));
+          }
+        } catch {
+          // Ignore invalid tag entries to keep endpoint resilient.
         }
       });
-      const uniq = Array.from(new Set(all)).filter(Boolean).slice(0, 1000);
-      res.json(uniq);
-    } catch (err) {
-      console.error("GET /tags error", err);
+
+      const uniqueTags = Array.from(new Set(allTags))
+        .filter(Boolean)
+        .slice(0, 1000);
+      res.json(uniqueTags);
+    } catch {
       res.status(500).json({ error: "failed to fetch tags" });
     }
   });
@@ -250,26 +287,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       const shortDescription =
         req.body.shortDescription || req.body.description || null;
       const thumbnail = req.body.thumbnail || null;
-      let tags = Array.isArray(req.body.tags)
-        ? req.body.tags
-        : typeof req.body.tags === "string"
-          ? req.body.tags
-            ? req.body.tags
-                .split(",")
-                .map((t) => t.trim())
-                .filter(Boolean)
-            : []
-          : [];
-      if (!Array.isArray(tags)) tags = [];
-      tags = tags
-        .map((t) =>
-          String(t)
-            .trim()
-            .replace(/[^A-Za-z0-9_-]/g, "")
-            .slice(0, 10),
-        )
-        .filter(Boolean);
-      tags = Array.from(new Set(tags)).slice(0, MAX_TAGS);
+      const tags = normalizeTags(parseTagsInput(req.body.tags));
       const createdAt = new Date().toISOString();
 
       db.prepare(
@@ -286,8 +304,8 @@ module.exports = function registerPostsRoutes(app, deps) {
         createdAt,
       );
 
-      const u = userId ? getUserById(userId) : null;
-      const resp = {
+      const user = userId ? getUserById(userId) : null;
+      const response = {
         id,
         title,
         content: contentObj,
@@ -296,20 +314,17 @@ module.exports = function registerPostsRoutes(app, deps) {
         tags,
         userId: userId || null,
         author: userId
-          ? u
-            ? u.username
+          ? user
+            ? user.username
             : req.body.author || "Unknown"
           : req.body.author || "Unknown",
-        authorAvatar: userId ? (u ? u.avatar : null) : null,
+        authorAvatar: userId ? (user ? user.avatar : null) : null,
         createdAt,
       };
 
-      // Generate sitemap after successful post creation
       generateSitemap(db);
-
-      res.status(201).json(resp);
-    } catch (err) {
-      console.error("POST /posts error", err);
+      res.status(201).json(response);
+    } catch {
       res.status(500).json({ error: "failed to save post" });
     }
   });
@@ -342,31 +357,13 @@ module.exports = function registerPostsRoutes(app, deps) {
         req.body.thumbnail !== undefined
           ? req.body.thumbnail
           : existing.thumbnail;
-      let tags =
+      const rawTags =
         req.body.tags !== undefined
-          ? Array.isArray(req.body.tags)
-            ? req.body.tags
-            : typeof req.body.tags === "string"
-              ? req.body.tags
-                ? req.body.tags
-                    .split(",")
-                    .map((t) => t.trim())
-                    .filter(Boolean)
-                : []
-              : []
+          ? parseTagsInput(req.body.tags)
           : existing.tags
             ? JSON.parse(existing.tags)
             : [];
-      if (!Array.isArray(tags)) tags = [];
-      tags = tags
-        .map((t) =>
-          String(t)
-            .trim()
-            .replace(/[^A-Za-z0-9_-]/g, "")
-            .slice(0, 10),
-        )
-        .filter(Boolean);
-      tags = Array.from(new Set(tags)).slice(0, MAX_TAGS);
+      const tags = normalizeTags(rawTags);
 
       db.prepare(
         "UPDATE posts SET title = ?, content = ?, shortDescription = ?, thumbnail = ?, tags = ? WHERE id = ?",
@@ -379,8 +376,8 @@ module.exports = function registerPostsRoutes(app, deps) {
         id,
       );
 
-      const u = user ? getUserById(user.id) : null;
-      const resp = {
+      const authorUser = getUserById(user.id);
+      const response = {
         id,
         title,
         content: contentObj,
@@ -388,21 +385,14 @@ module.exports = function registerPostsRoutes(app, deps) {
         thumbnail: thumbnail || null,
         tags: tags || [],
         userId: existing.userId || null,
-        author: existing.userId
-          ? u
-            ? u.username
-            : existing.author || "Unknown"
-          : existing.author || "Unknown",
-        authorAvatar: existing.userId ? (u ? u.avatar : null) : null,
+        author: resolvePostAuthor(existing.userId, authorUser, existing.author),
+        authorAvatar: resolveAuthorAvatar(existing.userId, authorUser),
         createdAt: existing.createdAt,
       };
 
-      // Generate sitemap after successful post update
       generateSitemap(db);
-
-      res.json(resp);
-    } catch (err) {
-      console.error("PUT /posts/:id error", err);
+      res.json(response);
+    } catch {
       res.status(500).json({ error: "failed to update post" });
     }
   });
@@ -422,8 +412,7 @@ module.exports = function registerPostsRoutes(app, deps) {
 
       db.prepare("DELETE FROM posts WHERE id = ?").run(id);
       res.json({ ok: true });
-    } catch (err) {
-      console.error("DELETE /posts/:id error", err);
+    } catch {
       res.status(500).json({ error: "failed to delete post" });
     }
   });

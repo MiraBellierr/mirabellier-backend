@@ -1,21 +1,8 @@
+const path = require("path");
 const passport = require("passport");
 const DiscordStrategy = require("passport-discord").Strategy;
 
-module.exports = function registerAuthRoutes(app, deps) {
-  const {
-    makeToken,
-    createSession,
-    getUserByUsername,
-    getUserById,
-    getUserByToken,
-    updateUserById,
-    userPublic,
-    authFromReq,
-    imageUpload,
-    findOrCreateDiscordUser,
-  } = deps;
-
-  // Configure Discord Strategy
+function configureDiscordStrategy(findOrCreateDiscordUser) {
   passport.use(
     new DiscordStrategy(
       {
@@ -26,9 +13,8 @@ module.exports = function registerAuthRoutes(app, deps) {
           "http://localhost:3000/auth/discord/callback",
         scope: ["identify"],
       },
-      function (accessToken, refreshToken, profile, cb) {
+      (accessToken, refreshToken, profile, cb) => {
         try {
-          // Find or create user based on Discord profile
           const user = findOrCreateDiscordUser(profile);
           return cb(null, user);
         } catch (err) {
@@ -37,248 +23,67 @@ module.exports = function registerAuthRoutes(app, deps) {
       },
     ),
   );
+}
 
-  // Discord OAuth login
-  app.get("/auth/discord", passport.authenticate("discord"));
+function getBearerToken(req) {
+  const auth = req.headers.authorization;
+  if (!auth) return null;
+  const parts = auth.split(" ");
+  if (parts.length !== 2) return null;
+  return parts[1];
+}
 
-  // Discord OAuth callback
-  app.get(
-    "/auth/discord/callback",
-    passport.authenticate("discord", {
-      session: false,
-      failureRedirect: "/login",
-    }),
-    (req, res) => {
-      try {
-        const user = req.user;
-        const token = makeToken();
-        createSession(token, user.id);
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
-        // Redirect to frontend with token
-        const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
-        res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
-      } catch (err) {
-        console.error(err);
-        res.redirect("/login?error=auth_failed");
+function resolveAssetUrl(asset, protocol, host) {
+  if (!asset) return "";
+  if (/^https?:\/\//i.test(asset)) return asset;
+  if (asset.startsWith("/")) return `${protocol}://${host}${asset}`;
+  return `${protocol}://${host}/images/${asset}`;
+}
+
+function countLikesForUser(videoRows, userId) {
+  let count = 0;
+
+  videoRows.forEach((video) => {
+    if (!video.likes) return;
+    try {
+      const likes = JSON.parse(video.likes);
+      if (Array.isArray(likes) && likes.includes(userId)) {
+        count++;
       }
-    },
-  );
-
-  app.get("/me", (req, res) => {
-    try {
-      const user = authFromReq(req);
-      if (!user) return res.status(401).json({ error: "unauthenticated" });
-      res.json(userPublic(user));
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "failed" });
+    } catch {
+      // Preserve resilience: ignore malformed records.
     }
   });
 
-  app.get("/user/:id", (req, res) => {
-    try {
-      const id = req.params.id;
-      const user = getUserById(id);
-      if (!user) return res.status(404).json({ error: "not found" });
-      // Cache user profiles for 5 minutes
-      res.setHeader("Cache-Control", "public, max-age=300");
-      res.json(userPublic(user));
-    } catch (err) {
-      console.error("GET /user/:id error", err);
-      res.status(500).json({ error: "failed" });
-    }
-  });
+  return count;
+}
 
-  app.get("/user/by-username/:username", (req, res) => {
-    try {
-      const username = req.params.username;
-      const user = getUserByUsername(username);
-      if (!user) return res.status(404).json({ error: "not found" });
-      // Cache user profiles for 5 minutes
-      res.setHeader("Cache-Control", "public, max-age=300");
-      res.json(userPublic(user));
-    } catch (err) {
-      console.error("GET /user/by-username/:username error", err);
-      res.status(500).json({ error: "failed" });
-    }
-  });
+function buildProfileSeoPage({
+  user,
+  protocol,
+  host,
+  requestPath,
+  spaPath,
+  redirectUrl,
+}) {
+  const title = `${escapeHtml(user.username)}'s Profile`;
+  const description =
+    user.bio || `Check out ${escapeHtml(user.username)}'s profile`;
 
-  app.post("/logout", (req, res) => {
-    try {
-      const auth = req.headers.authorization;
-      if (!auth) return res.status(401).json({ error: "unauthenticated" });
-      const parts = auth.split(" ");
-      if (parts.length !== 2)
-        return res.status(401).json({ error: "unauthenticated" });
-      const token = parts[1];
-      const { db } = require("../lib/db");
-      db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
-      res.json({ ok: true });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "logout failed" });
-    }
-  });
+  const avatarUrl = resolveAssetUrl(user.avatar, protocol, host);
+  const bannerUrl = resolveAssetUrl(user.banner, protocol, host);
+  const imageUrl =
+    bannerUrl || avatarUrl || `${protocol}://${host}/background.jpg`;
 
-  app.post(
-    "/me",
-    imageUpload.fields([
-      { name: "avatar", maxCount: 1 },
-      { name: "banner", maxCount: 1 },
-    ]),
-    async (req, res) => {
-      try {
-        const user = authFromReq(req);
-        if (!user) return res.status(401).json({ error: "unauthenticated" });
-
-        let avatar = req.body && req.body.avatar ? req.body.avatar : undefined;
-        let banner = req.body && req.body.banner ? req.body.banner : undefined;
-
-        // Optimize uploaded avatar
-        if (req.files?.avatar) {
-          const { optimizeImage, IMAGES_DIR } = require("../lib/uploads");
-          const avatarFile = req.files.avatar[0];
-          await optimizeImage(
-            require("path").join(IMAGES_DIR, avatarFile.filename),
-          );
-          avatar = `/images/${avatarFile.filename}`;
-        }
-
-        // Optimize uploaded banner
-        if (req.files?.banner) {
-          const { optimizeImage, IMAGES_DIR } = require("../lib/uploads");
-          const bannerFile = req.files.banner[0];
-          await optimizeImage(
-            require("path").join(IMAGES_DIR, bannerFile.filename),
-          );
-          banner = `/images/${bannerFile.filename}`;
-        }
-
-        const updated = updateUserById(user.id, {
-          username: req.body.username,
-          avatar,
-          banner,
-          bio: req.body.bio,
-          location: req.body.location,
-          website: req.body.website,
-        });
-        res.json(userPublic(updated));
-      } catch (err) {
-        console.error(err);
-        if (err.message === "username taken")
-          return res.status(409).json({ error: "username taken" });
-        res.status(500).json({ error: "update failed" });
-      }
-    },
-  );
-
-  app.get("/user/:id/stats", (req, res) => {
-    try {
-      const id = req.params.id;
-      const user = getUserById(id);
-      if (!user) return res.status(404).json({ error: "not found" });
-
-      const { db } = require("../lib/db");
-
-      // Count posts by user
-      const postsCount =
-        db
-          .prepare("SELECT COUNT(*) as count FROM posts WHERE userId = ?")
-          .get(id)?.count || 0;
-
-      // Count likes from videos
-      const videos = db.prepare("SELECT likes FROM videos").all();
-      let likesCount = 0;
-      videos.forEach((v) => {
-        if (v.likes) {
-          try {
-            const likesArr = JSON.parse(v.likes);
-            if (Array.isArray(likesArr) && likesArr.includes(id)) {
-              likesCount++;
-            }
-          } catch (e) {}
-        }
-      });
-
-      // Count comments from videos
-      const commentsCount = 0; // Comments not implemented yet in schema
-
-      // Get recent posts
-      const recentPosts = db
-        .prepare(
-          "SELECT id, title, createdAt FROM posts WHERE userId = ? ORDER BY createdAt DESC LIMIT 5",
-        )
-        .all(id);
-
-      res.json({
-        postsCount,
-        likesCount,
-        commentsCount,
-        recentPosts,
-      });
-    } catch (err) {
-      console.error("GET /user/:id/stats error", err);
-      res.status(500).json({ error: "failed" });
-    }
-  });
-
-  // Server-side rendered profile page for social sharing
-  app.get("/profile/:username", (req, res) => {
-    try {
-      const username = req.params.username;
-      const user = getUserByUsername(username);
-      if (!user) return res.status(404).send("User not found");
-
-      const { db } = require("../lib/db");
-
-      const escapeHtml = (str) =>
-        String(str || "")
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;");
-
-      const host = req.get("host");
-      const protocol =
-        req.headers["x-forwarded-proto"] || req.protocol || "http";
-
-      const title = `${escapeHtml(user.username)}'s Profile`;
-      const description =
-        user.bio || `Check out ${escapeHtml(user.username)}'s profile`;
-
-      // Resolve avatar URL
-      let avatarUrl = "";
-      if (user.avatar) {
-        if (/^https?:\/\//i.test(user.avatar)) avatarUrl = user.avatar;
-        else if (user.avatar.startsWith("/"))
-          avatarUrl = `${protocol}://${host}${user.avatar}`;
-        else avatarUrl = `${protocol}://${host}/images/${user.avatar}`;
-      }
-
-      // Resolve banner URL
-      let bannerUrl = "";
-      if (user.banner) {
-        if (/^https?:\/\//i.test(user.banner)) bannerUrl = user.banner;
-        else if (user.banner.startsWith("/"))
-          bannerUrl = `${protocol}://${host}${user.banner}`;
-        else bannerUrl = `${protocol}://${host}/images/${user.banner}`;
-      }
-
-      // Use banner if available, otherwise use avatar, or default image
-      const imageUrl =
-        bannerUrl || avatarUrl || `${protocol}://${host}/background.jpg`;
-
-      // Get stats
-      const postsCount =
-        db
-          .prepare("SELECT COUNT(*) as count FROM posts WHERE userId = ?")
-          .get(user.id)?.count || 0;
-
-      const spaPath = `/profile/${username}`;
-      const requestPath = req.originalUrl || req.path || `/profile/${username}`;
-      const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
-
-      const html = `<!doctype html>
+  return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
@@ -303,11 +108,358 @@ module.exports = function registerAuthRoutes(app, deps) {
   <body>
   </body>
 </html>`;
+}
+
+async function maybeOptimizeUploadedImage(
+  files,
+  key,
+  optimizeImage,
+  imagesDir,
+) {
+  if (!files?.[key]) return undefined;
+
+  const uploadedFile = files[key][0];
+  await optimizeImage(path.join(imagesDir, uploadedFile.filename));
+  return `/images/${uploadedFile.filename}`;
+}
+
+function normalizeOrigin(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return null;
+  }
+}
+
+function isLocalhostHost(hostname) {
+  const normalized = String(hostname || "").toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]"
+  );
+}
+
+function resolveFrontendOrigin(rawOrigin, fallbackFrontendUrl) {
+  const fallbackOrigin = normalizeOrigin(fallbackFrontendUrl);
+  const requestedOrigin = normalizeOrigin(rawOrigin);
+
+  if (!requestedOrigin) return fallbackOrigin || "http://localhost:5173";
+
+  const fallback = fallbackOrigin ? new URL(fallbackOrigin) : null;
+  const requested = new URL(requestedOrigin);
+
+  if (fallback && requested.origin === fallback.origin) {
+    return requested.origin;
+  }
+
+  if (isLocalhostHost(requested.hostname)) {
+    return requested.origin;
+  }
+
+  return fallbackOrigin || "http://localhost:5173";
+}
+
+const OAUTH_ORIGIN_COOKIE = "oauth_frontend_origin";
+
+function appendSetCookieHeader(res, cookieValue) {
+  const existing = res.getHeader("Set-Cookie");
+
+  if (!existing) {
+    res.setHeader("Set-Cookie", [cookieValue]);
+    return;
+  }
+
+  if (Array.isArray(existing)) {
+    res.setHeader("Set-Cookie", [...existing, cookieValue]);
+    return;
+  }
+
+  res.setHeader("Set-Cookie", [existing, cookieValue]);
+}
+
+function setOauthOriginCookie(res, origin) {
+  appendSetCookieHeader(
+    res,
+    `${OAUTH_ORIGIN_COOKIE}=${encodeURIComponent(origin)}; Path=/; HttpOnly; Max-Age=600; SameSite=Lax`,
+  );
+}
+
+function clearOauthOriginCookie(res) {
+  appendSetCookieHeader(
+    res,
+    `${OAUTH_ORIGIN_COOKIE}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax`,
+  );
+}
+
+function readCookieValue(req, key) {
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return "";
+
+  const parts = cookieHeader.split(";");
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex === -1) continue;
+
+    const cookieKey = trimmed.slice(0, separatorIndex);
+    if (cookieKey !== key) continue;
+
+    const rawValue = trimmed.slice(separatorIndex + 1);
+    try {
+      return decodeURIComponent(rawValue);
+    } catch {
+      return rawValue;
+    }
+  }
+
+  return "";
+}
+
+function getRequestedFrontendOrigin(req) {
+  if (typeof req.query.redirect_origin === "string") {
+    return req.query.redirect_origin;
+  }
+
+  if (typeof req.headers.origin === "string") {
+    return req.headers.origin;
+  }
+
+  if (typeof req.headers.referer === "string") {
+    return req.headers.referer;
+  }
+
+  return "";
+}
+
+module.exports = function registerAuthRoutes(app, deps) {
+  const {
+    db,
+    IMAGES_DIR,
+    optimizeImage,
+    makeToken,
+    createSession,
+    getUserByUsername,
+    getUserById,
+    updateUserById,
+    userPublic,
+    authFromReq,
+    imageUpload,
+    findOrCreateDiscordUser,
+  } = deps;
+
+  configureDiscordStrategy(findOrCreateDiscordUser);
+
+  // Discord OAuth login
+  app.get("/auth/discord", (req, res, next) => {
+    const configuredFrontendUrl =
+      process.env.FRONTEND_URL || "http://localhost:5173";
+    const rawRequestedOrigin = getRequestedFrontendOrigin(req);
+    const frontendOrigin = resolveFrontendOrigin(
+      rawRequestedOrigin,
+      configuredFrontendUrl,
+    );
+    setOauthOriginCookie(res, frontendOrigin);
+
+    return passport.authenticate("discord", { state: frontendOrigin })(
+      req,
+      res,
+      next,
+    );
+  });
+
+  // Discord OAuth callback
+  app.get(
+    "/auth/discord/callback",
+    passport.authenticate("discord", {
+      session: false,
+      failureRedirect: "/login",
+    }),
+    (req, res) => {
+      try {
+        const user = req.user;
+        const token = makeToken();
+        createSession(token, user.id);
+
+        const configuredFrontendUrl =
+          process.env.FRONTEND_URL || "http://localhost:5173";
+        const stateOrigin =
+          typeof req.query.state === "string" ? req.query.state : "";
+        const cookieOrigin = readCookieValue(req, OAUTH_ORIGIN_COOKIE);
+        const frontendOrigin = resolveFrontendOrigin(
+          stateOrigin || cookieOrigin,
+          configuredFrontendUrl,
+        );
+        clearOauthOriginCookie(res);
+
+        res.redirect(`${frontendOrigin}/auth/callback?token=${token}`);
+      } catch {
+        res.redirect("/login?error=auth_failed");
+      }
+    },
+  );
+
+  app.get("/me", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      res.json(userPublic(user));
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  app.get("/user/:id", (req, res) => {
+    try {
+      const user = getUserById(req.params.id);
+      if (!user) return res.status(404).json({ error: "not found" });
+
+      // Cache user profiles for 5 minutes
+      res.setHeader("Cache-Control", "public, max-age=300");
+      res.json(userPublic(user));
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  app.get("/user/by-username/:username", (req, res) => {
+    try {
+      const user = getUserByUsername(req.params.username);
+      if (!user) return res.status(404).json({ error: "not found" });
+
+      // Cache user profiles for 5 minutes
+      res.setHeader("Cache-Control", "public, max-age=300");
+      res.json(userPublic(user));
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  app.post("/logout", (req, res) => {
+    try {
+      const token = getBearerToken(req);
+      if (!token) return res.status(401).json({ error: "unauthenticated" });
+
+      db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+      res.json({ ok: true });
+    } catch {
+      res.status(500).json({ error: "logout failed" });
+    }
+  });
+
+  app.post(
+    "/me",
+    imageUpload.fields([
+      { name: "avatar", maxCount: 1 },
+      { name: "banner", maxCount: 1 },
+    ]),
+    async (req, res) => {
+      try {
+        const user = authFromReq(req);
+        if (!user) return res.status(401).json({ error: "unauthenticated" });
+
+        let avatar = req.body && req.body.avatar ? req.body.avatar : undefined;
+        let banner = req.body && req.body.banner ? req.body.banner : undefined;
+
+        const optimizedAvatar = await maybeOptimizeUploadedImage(
+          req.files,
+          "avatar",
+          optimizeImage,
+          IMAGES_DIR,
+        );
+        if (optimizedAvatar !== undefined) avatar = optimizedAvatar;
+
+        const optimizedBanner = await maybeOptimizeUploadedImage(
+          req.files,
+          "banner",
+          optimizeImage,
+          IMAGES_DIR,
+        );
+        if (optimizedBanner !== undefined) banner = optimizedBanner;
+
+        const updated = updateUserById(user.id, {
+          username: req.body.username,
+          avatar,
+          banner,
+          bio: req.body.bio,
+          location: req.body.location,
+          website: req.body.website,
+        });
+
+        res.json(userPublic(updated));
+      } catch (err) {
+        if (err.message === "username taken") {
+          return res.status(409).json({ error: "username taken" });
+        }
+        res.status(500).json({ error: "update failed" });
+      }
+    },
+  );
+
+  app.get("/user/:id/stats", (req, res) => {
+    try {
+      const id = req.params.id;
+      const user = getUserById(id);
+      if (!user) return res.status(404).json({ error: "not found" });
+
+      const postsCount =
+        db
+          .prepare("SELECT COUNT(*) as count FROM posts WHERE userId = ?")
+          .get(id)?.count || 0;
+
+      const videos = db.prepare("SELECT likes FROM videos").all();
+      const likesCount = countLikesForUser(videos, id);
+      const commentsCount = 0; // Comments not implemented yet in schema
+
+      const recentPosts = db
+        .prepare(
+          "SELECT id, title, createdAt FROM posts WHERE userId = ? ORDER BY createdAt DESC LIMIT 5",
+        )
+        .all(id);
+
+      res.json({
+        postsCount,
+        likesCount,
+        commentsCount,
+        recentPosts,
+      });
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // Server-side rendered profile page for social sharing
+  app.get("/profile/:username", (req, res) => {
+    try {
+      const username = req.params.username;
+      const user = getUserByUsername(username);
+      if (!user) return res.status(404).send("User not found");
+
+      const host = req.get("host");
+      const protocol =
+        req.headers["x-forwarded-proto"] || req.protocol || "http";
+      const spaPath = `/profile/${username}`;
+      const requestPath = req.originalUrl || req.path || `/profile/${username}`;
+      const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
+
+      const html = buildProfileSeoPage({
+        user,
+        protocol,
+        host,
+        requestPath,
+        spaPath,
+        redirectUrl,
+      });
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(html);
-    } catch (err) {
-      console.error("GET /u/:username error", err);
+    } catch {
       res.status(500).send("Server error");
     }
   });
