@@ -209,9 +209,37 @@ function buildPostDescription(post) {
   return post.title || "Untitled";
 }
 
+function buildPostExcerpt(post, maxLength = 320) {
+  if (!post.content) return "";
+
+  try {
+    const parsed = JSON.parse(post.content);
+    if (parsed && typeof parsed === "object") {
+      const extracted = extractPlainText(parsed)
+        .replace(/\s+/g, " ")
+        .trim();
+      if (extracted) {
+        return extracted.slice(0, maxLength);
+      }
+    }
+  } catch {
+    // Ignore malformed content and return no excerpt.
+  }
+
+  return "";
+}
+
+function isLikelyCrawler(userAgent) {
+  const value = String(userAgent || "").toLowerCase();
+  return /bot|crawler|spider|google-inspectiontool|googlebot|bingbot|slurp|duckduckbot|baiduspider|yandex|facebookexternalhit|twitterbot|linkedinbot|slackbot|discordbot/.test(
+    value,
+  );
+}
+
 function buildBlogRedirectPage({
   title,
   description,
+  excerpt,
   imageUrl,
   authorName,
   authorUrl,
@@ -222,6 +250,7 @@ function buildBlogRedirectPage({
   host,
   spaPath,
   redirectUrl,
+  redirectToSpa,
 }) {
   const canonicalUrl = `${protocol}://${host}${spaPath}`;
   const articleJsonLd = {
@@ -279,12 +308,13 @@ function buildBlogRedirectPage({
     ${imageUrl ? `<meta name="twitter:image:alt" content="${escapeHtml(title)}" />` : ""}
     <link rel="canonical" href="${canonicalUrl}" />
     <script type="application/ld+json">${escapeJsonForHtml(articleJsonLd)}</script>
-    <script>window.location.replace('${redirectUrl}')</script>
+    ${redirectToSpa ? `<script>window.location.replace('${redirectUrl}')</script>` : ""}
   </head>
   <body>
     <main>
       <h1>${escapeHtml(title)}</h1>
       <p>${escapeHtml(description)}</p>
+      ${excerpt && excerpt !== description ? `<p>${escapeHtml(excerpt)}</p>` : ""}
       <p><a href="${escapeHtml(canonicalUrl)}">Read full post</a></p>
     </main>
   </body>
@@ -425,6 +455,7 @@ module.exports = function registerPostsRoutes(app, deps) {
 
       const title = post.title || "Untitled";
       const description = buildPostDescription(post);
+      const excerpt = buildPostExcerpt(post);
       const tags = parseStoredTags(post.tags);
       const publishedTime = post.createdAt || new Date().toISOString();
       const modifiedTime = post.updatedAt || post.createdAt || publishedTime;
@@ -439,6 +470,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       const authorUrl = post.userId
         ? buildProfileUrl(authorName, protocol, host)
         : "";
+      const redirectToSpa = !isLikelyCrawler(req.get("user-agent"));
 
       const slug = slugify(title);
       const spaPath = `/blog/${slug ? `${slug}-${id}` : id}`;
@@ -447,6 +479,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       const html = buildBlogRedirectPage({
         title,
         description,
+        excerpt,
         imageUrl,
         authorName,
         authorUrl,
@@ -457,6 +490,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         host,
         spaPath,
         redirectUrl,
+        redirectToSpa,
       });
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
