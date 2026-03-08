@@ -43,12 +43,82 @@ function parseStoredContent(contentValue) {
   return contentValue ? JSON.parse(contentValue) : null;
 }
 
-function mapPostRow(row) {
+function buildNestedComments(rawComments, getUserById, userPublic) {
+  const commentsById = {};
+
+  rawComments.forEach((comment) => {
+    commentsById[comment.id] = {
+      ...comment,
+      children: [],
+      user: comment.userId ? userPublic(getUserById(comment.userId)) : null,
+    };
+  });
+
+  const nested = [];
+  rawComments.forEach((comment) => {
+    const node = commentsById[comment.id];
+    if (!node) return;
+
+    if (comment.parentId) {
+      const parent = commentsById[comment.parentId];
+      if (parent) {
+        parent.children.push(node);
+        return;
+      }
+    }
+
+    nested.push(node);
+  });
+
+  return nested;
+}
+
+function parseLikesForList(likesValue) {
+  try {
+    if (!likesValue) return [];
+    if (typeof likesValue === "string") {
+      const parsed = JSON.parse(likesValue);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+    return Array.isArray(likesValue) ? likesValue : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseLikesForMutation(likesValue) {
+  return parseLikesForList(likesValue);
+}
+
+function parseCommentsForMutation(commentsValue) {
+  try {
+    if (!commentsValue) return [];
+    if (typeof commentsValue === "string") {
+      const parsed = JSON.parse(commentsValue);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+    return Array.isArray(commentsValue) ? commentsValue : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseCommentsForList(commentsValue, getUserById, userPublic) {
+  return buildNestedComments(
+    parseCommentsForMutation(commentsValue),
+    getUserById,
+    userPublic,
+  );
+}
+
+function mapPostRow(row, getUserById, userPublic) {
   return {
     id: row.id,
     title: row.title,
     content: parseStoredContent(row.content),
     tags: parseStoredTags(row.tags),
+    likes: parseLikesForList(row.likes),
+    comments: parseCommentsForList(row.comments, getUserById, userPublic),
     shortDescription: row.shortDescription || null,
     thumbnail: row.thumbnail || null,
     userId: row.userId,
@@ -149,7 +219,7 @@ function resolveAuthorAvatar(existingUserId, user) {
 }
 
 module.exports = function registerPostsRoutes(app, deps) {
-  const { db, getUserById, authFromReq } = deps;
+  const { db, getUserById, userPublic, authFromReq } = deps;
 
   app.get("/posts", (req, res) => {
     try {
@@ -159,12 +229,8 @@ module.exports = function registerPostsRoutes(app, deps) {
         )
         .all();
 
-      const posts = rows.map(mapPostRow);
-      // Cache for 60 seconds, allow stale content for 300s while revalidating
-      res.setHeader(
-        "Cache-Control",
-        "public, max-age=60, stale-while-revalidate=300",
-      );
+      const posts = rows.map((row) => mapPostRow(row, getUserById, userPublic));
+      res.setHeader("Cache-Control", "no-store");
       res.json(posts);
     } catch {
       res.status(500).json({ error: "failed to fetch posts" });
@@ -181,15 +247,79 @@ module.exports = function registerPostsRoutes(app, deps) {
 
       if (!row) return res.status(404).json({ error: "Not found" });
 
-      const post = mapPostRow(row);
-      // Cache individual posts for 5 minutes
-      res.setHeader(
-        "Cache-Control",
-        "public, max-age=300, stale-while-revalidate=600",
-      );
+      const post = mapPostRow(row, getUserById, userPublic);
+      res.setHeader("Cache-Control", "no-store");
       res.json(post);
     } catch {
       res.status(500).json({ error: "failed to fetch post" });
+    }
+  });
+
+  app.post("/posts/:id/comments", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+
+      const postId = req.params.id;
+      const text = (req.body.text || "").toString().trim().slice(0, 2000);
+      const parentId = req.body.parentId ? String(req.body.parentId) : null;
+
+      if (!text) return res.status(400).json({ error: "text required" });
+
+      const row = db.prepare("SELECT comments FROM posts WHERE id = ?").get(postId);
+      if (!row) return res.status(404).json({ error: "post not found" });
+
+      const comments = parseCommentsForMutation(row.comments);
+      const comment = {
+        id: Date.now().toString(),
+        userId: user.id,
+        text,
+        parentId,
+        createdAt: new Date().toISOString(),
+      };
+
+      comments.push(comment);
+      db.prepare("UPDATE posts SET comments = ? WHERE id = ?").run(
+        JSON.stringify(comments),
+        postId,
+      );
+
+      res
+        .status(201)
+        .json({ ...comment, user: userPublic(user), children: [] });
+    } catch {
+      res.status(500).json({ error: "failed to add comment" });
+    }
+  });
+
+  app.post("/posts/:id/like", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+
+      const postId = req.params.id;
+      const action = req.body && req.body.action ? req.body.action : "like";
+      const row = db.prepare("SELECT likes FROM posts WHERE id = ?").get(postId);
+      if (!row) return res.status(404).json({ error: "post not found" });
+
+      let likes = parseLikesForMutation(row.likes);
+
+      if (action === "like") {
+        if (!likes.includes(user.id)) likes.push(user.id);
+      } else if (action === "unlike") {
+        likes = likes.filter((id) => id !== user.id);
+      } else {
+        return res.status(400).json({ error: "invalid action" });
+      }
+
+      db.prepare("UPDATE posts SET likes = ? WHERE id = ?").run(
+        JSON.stringify(likes),
+        postId,
+      );
+
+      res.json({ likes, liked: likes.includes(user.id) });
+    } catch {
+      res.status(500).json({ error: "failed to update likes" });
     }
   });
 
@@ -291,7 +421,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       const createdAt = new Date().toISOString();
 
       db.prepare(
-        "INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, tags, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, tags, likes, comments, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         id,
         title,
@@ -301,6 +431,8 @@ module.exports = function registerPostsRoutes(app, deps) {
         shortDescription,
         thumbnail,
         JSON.stringify(tags),
+        JSON.stringify([]),
+        JSON.stringify([]),
         createdAt,
       );
 
@@ -312,6 +444,8 @@ module.exports = function registerPostsRoutes(app, deps) {
         shortDescription,
         thumbnail,
         tags,
+        likes: [],
+        comments: [],
         userId: userId || null,
         author: userId
           ? user
@@ -384,6 +518,12 @@ module.exports = function registerPostsRoutes(app, deps) {
         shortDescription: shortDescription || null,
         thumbnail: thumbnail || null,
         tags: tags || [],
+        likes: parseLikesForList(existing.likes),
+        comments: parseCommentsForList(
+          existing.comments,
+          getUserById,
+          userPublic,
+        ),
         userId: existing.userId || null,
         author: resolvePostAuthor(existing.userId, authorUser, existing.author),
         authorAvatar: resolveAuthorAvatar(existing.userId, authorUser),
