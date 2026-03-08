@@ -1,12 +1,12 @@
 const { generateSitemap } = require("../lib/sitemap");
 
-const MAX_TAGS = 5;
+const MAX_TAGS = 10;
 
 function sanitizeTag(value) {
   return String(value)
     .trim()
     .replace(/[^A-Za-z0-9_-]/g, "")
-    .slice(0, 10);
+    .slice(0, 20);
 }
 
 function normalizeTags(rawTags) {
