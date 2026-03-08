@@ -1,4 +1,8 @@
 const { generateSitemap } = require("../lib/sitemap");
+const {
+  getWebsiteBase,
+  queueIndexNowSubmission,
+} = require("../lib/indexnow");
 
 const MAX_TAGS = 10;
 
@@ -168,6 +172,26 @@ function parseBlogId(rawId) {
   return rawId.split("-").pop() || rawId;
 }
 
+function buildBlogPath(title, id) {
+  const slug = slugify(title);
+  return `/blog/${slug ? `${slug}-${id}` : id}`;
+}
+
+function buildSiteUrl(pathname) {
+  const normalizedPath = String(pathname || "").startsWith("/")
+    ? pathname
+    : `/${pathname}`;
+  return `${getWebsiteBase()}${normalizedPath}`;
+}
+
+function buildBlogUrl(title, id) {
+  return buildSiteUrl(buildBlogPath(title, id));
+}
+
+function buildIndexNowUrlsForPost(title, id) {
+  return [buildBlogUrl(title, id), buildSiteUrl("/blog")];
+}
+
 function buildImageUrl(thumbnail, protocol, host) {
   if (!thumbnail) return "";
   if (/^https?:\/\//i.test(thumbnail)) return thumbnail;
@@ -331,8 +355,11 @@ function resolveAuthorAvatar(existingUserId, user) {
   return user ? user.avatar : null;
 }
 
-function refreshSitemap(db) {
+function refreshSearchDiscovery(db, urls = []) {
   generateSitemap(db);
+  if (urls.length) {
+    void queueIndexNowSubmission(urls);
+  }
 }
 
 module.exports = function registerPostsRoutes(app, deps) {
@@ -472,8 +499,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         : "";
       const redirectToSpa = !isLikelyCrawler(req.get("user-agent"));
 
-      const slug = slugify(title);
-      const spaPath = `/blog/${slug ? `${slug}-${id}` : id}`;
+      const spaPath = buildBlogPath(title, id);
       const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
 
       const html = buildBlogRedirectPage({
@@ -581,7 +607,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         updatedAt,
       };
 
-      refreshSitemap(db);
+      refreshSearchDiscovery(db, buildIndexNowUrlsForPost(title, id));
       res.status(201).json(response);
     } catch {
       res.status(500).json({ error: "failed to save post" });
@@ -658,7 +684,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         updatedAt,
       };
 
-      refreshSitemap(db);
+      refreshSearchDiscovery(db, buildIndexNowUrlsForPost(title, id));
       res.json(response);
     } catch {
       res.status(500).json({ error: "failed to update post" });
@@ -679,7 +705,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       }
 
       db.prepare("DELETE FROM posts WHERE id = ?").run(id);
-      refreshSitemap(db);
+      refreshSearchDiscovery(db, buildIndexNowUrlsForPost(existing.title, id));
       res.json({ ok: true });
     } catch {
       res.status(500).json({ error: "failed to delete post" });
