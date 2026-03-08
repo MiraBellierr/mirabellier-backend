@@ -129,6 +129,7 @@ function mapPostRow(row, getUserById, userPublic) {
       ? row.authorAvatar || null
       : row.authorAvatar || null,
     createdAt: row.createdAt,
+    updatedAt: row.updatedAt || row.createdAt,
   };
 }
 
@@ -174,16 +175,84 @@ function buildImageUrl(thumbnail, protocol, host) {
   return `${protocol}://${host}/images/${thumbnail}`;
 }
 
+function buildProfileUrl(authorName, protocol, host) {
+  if (!authorName) return "";
+  return `${protocol}://${host}/profile/${encodeURIComponent(authorName)}`;
+}
+
+function escapeJsonForHtml(value) {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026");
+}
+
+function buildPostDescription(post) {
+  if (post.shortDescription) {
+    return String(post.shortDescription).trim();
+  }
+
+  if (post.content) {
+    try {
+      const parsed = JSON.parse(post.content);
+      if (parsed && typeof parsed === "object") {
+        const extracted = extractPlainText(parsed).trim();
+        if (extracted) {
+          return extracted.slice(0, 160);
+        }
+      }
+    } catch {
+      // Ignore malformed rich text and fall back to title.
+    }
+  }
+
+  return post.title || "Untitled";
+}
+
 function buildBlogRedirectPage({
   title,
   description,
   imageUrl,
+  authorName,
+  authorUrl,
+  publishedTime,
+  modifiedTime,
+  tags,
   protocol,
   host,
-  requestPath,
   spaPath,
   redirectUrl,
 }) {
+  const canonicalUrl = `${protocol}://${host}${spaPath}`;
+  const articleJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: title,
+    description,
+    url: canonicalUrl,
+    mainEntityOfPage: canonicalUrl,
+    datePublished: publishedTime,
+    dateModified: modifiedTime || publishedTime,
+    author: {
+      "@type": "Person",
+      name: authorName,
+      ...(authorUrl ? { url: authorUrl } : {}),
+    },
+    publisher: {
+      "@type": "Person",
+      name: "Mirabellier",
+      url: "https://mirabellier.com/",
+    },
+    ...(imageUrl ? { image: [imageUrl] } : {}),
+    ...(tags && tags.length ? { keywords: tags.join(", ") } : {}),
+  };
+  const articleTagMeta = (tags || [])
+    .map(
+      (tag) =>
+        `<meta property="article:tag" content="${escapeHtml(tag)}" />`,
+    )
+    .join("\n    ");
+
   return `<!doctype html>
 <html>
   <head>
@@ -191,19 +260,33 @@ function buildBlogRedirectPage({
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
+    <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
     <meta property="og:type" content="article" />
     <meta property="og:title" content="${escapeHtml(title)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:site_name" content="Mirabellier" />
     ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}" />` : ""}
-    <meta property="og:url" content="${protocol}://${host}${requestPath}" />
+    ${imageUrl ? `<meta property="og:image:alt" content="${escapeHtml(title)}" />` : ""}
+    <meta property="og:url" content="${canonicalUrl}" />
+    ${publishedTime ? `<meta property="article:published_time" content="${escapeHtml(publishedTime)}" />` : ""}
+    ${modifiedTime ? `<meta property="article:modified_time" content="${escapeHtml(modifiedTime)}" />` : ""}
+    ${authorName ? `<meta property="article:author" content="${escapeHtml(authorName)}" />` : ""}
+    ${articleTagMeta}
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${escapeHtml(title)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}" />` : ""}
-    <link rel="canonical" href="${protocol}://${host}${spaPath}" />
+    ${imageUrl ? `<meta name="twitter:image:alt" content="${escapeHtml(title)}" />` : ""}
+    <link rel="canonical" href="${canonicalUrl}" />
+    <script type="application/ld+json">${escapeJsonForHtml(articleJsonLd)}</script>
     <script>window.location.replace('${redirectUrl}')</script>
   </head>
   <body>
+    <main>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(description)}</p>
+      <p><a href="${escapeHtml(canonicalUrl)}">Read full post</a></p>
+    </main>
   </body>
 </html>`;
 }
@@ -216,6 +299,10 @@ function resolvePostAuthor(existingUserId, user, fallbackAuthor) {
 function resolveAuthorAvatar(existingUserId, user) {
   if (!existingUserId) return null;
   return user ? user.avatar : null;
+}
+
+function refreshSitemap(db) {
+  generateSitemap(db);
 }
 
 module.exports = function registerPostsRoutes(app, deps) {
@@ -337,36 +424,37 @@ module.exports = function registerPostsRoutes(app, deps) {
       if (!post) return res.status(404).send("Not found");
 
       const title = post.title || "Untitled";
-      let description = post.shortDescription || "";
-
-      if (!description && post.content) {
-        try {
-          const parsed = JSON.parse(post.content);
-          if (parsed && typeof parsed === "object") {
-            description = extractPlainText(parsed).slice(0, 160);
-          }
-        } catch {
-          // Keep existing behavior: ignore invalid rich text payloads.
-        }
-      }
+      const description = buildPostDescription(post);
+      const tags = parseStoredTags(post.tags);
+      const publishedTime = post.createdAt || new Date().toISOString();
+      const modifiedTime = post.updatedAt || post.createdAt || publishedTime;
+      const authorName = post.userId
+        ? post.authorName || post.author || "Unknown"
+        : post.author || "Unknown";
 
       const host = req.get("host");
       const protocol =
         req.headers["x-forwarded-proto"] || req.protocol || "http";
       const imageUrl = buildImageUrl(post.thumbnail || null, protocol, host);
+      const authorUrl = post.userId
+        ? buildProfileUrl(authorName, protocol, host)
+        : "";
 
       const slug = slugify(title);
       const spaPath = `/blog/${slug ? `${slug}-${id}` : id}`;
-      const requestPath = req.originalUrl || req.path || `/blog/${rawId}`;
       const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
 
       const html = buildBlogRedirectPage({
         title,
         description,
         imageUrl,
+        authorName,
+        authorUrl,
+        publishedTime,
+        modifiedTime,
+        tags,
         protocol,
         host,
-        requestPath,
         spaPath,
         redirectUrl,
       });
@@ -419,9 +507,10 @@ module.exports = function registerPostsRoutes(app, deps) {
       const thumbnail = req.body.thumbnail || null;
       const tags = normalizeTags(parseTagsInput(req.body.tags));
       const createdAt = new Date().toISOString();
+      const updatedAt = createdAt;
 
       db.prepare(
-        "INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, tags, likes, comments, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, tags, likes, comments, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         id,
         title,
@@ -434,6 +523,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         JSON.stringify([]),
         JSON.stringify([]),
         createdAt,
+        updatedAt,
       );
 
       const user = userId ? getUserById(userId) : null;
@@ -454,9 +544,10 @@ module.exports = function registerPostsRoutes(app, deps) {
           : req.body.author || "Unknown",
         authorAvatar: userId ? (user ? user.avatar : null) : null,
         createdAt,
+        updatedAt,
       };
 
-      generateSitemap(db);
+      refreshSitemap(db);
       res.status(201).json(response);
     } catch {
       res.status(500).json({ error: "failed to save post" });
@@ -498,15 +589,17 @@ module.exports = function registerPostsRoutes(app, deps) {
             ? JSON.parse(existing.tags)
             : [];
       const tags = normalizeTags(rawTags);
+      const updatedAt = new Date().toISOString();
 
       db.prepare(
-        "UPDATE posts SET title = ?, content = ?, shortDescription = ?, thumbnail = ?, tags = ? WHERE id = ?",
+        "UPDATE posts SET title = ?, content = ?, shortDescription = ?, thumbnail = ?, tags = ?, updatedAt = ? WHERE id = ?",
       ).run(
         title,
         JSON.stringify(contentObj),
         shortDescription,
         thumbnail,
         JSON.stringify(tags),
+        updatedAt,
         id,
       );
 
@@ -528,9 +621,10 @@ module.exports = function registerPostsRoutes(app, deps) {
         author: resolvePostAuthor(existing.userId, authorUser, existing.author),
         authorAvatar: resolveAuthorAvatar(existing.userId, authorUser),
         createdAt: existing.createdAt,
+        updatedAt,
       };
 
-      generateSitemap(db);
+      refreshSitemap(db);
       res.json(response);
     } catch {
       res.status(500).json({ error: "failed to update post" });
@@ -551,6 +645,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       }
 
       db.prepare("DELETE FROM posts WHERE id = ?").run(id);
+      refreshSitemap(db);
       res.json({ ok: true });
     } catch {
       res.status(500).json({ error: "failed to delete post" });
