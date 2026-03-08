@@ -54,6 +54,7 @@ function registerMiddlewares(app) {
 const { db } = require("./lib/db");
 const users = require("./lib/users");
 const uploads = require("./lib/uploads");
+const { generateSitemap } = require("./lib/sitemap");
 
 function authFromReq(req) {
   const auth = req.headers.authorization;
@@ -139,6 +140,7 @@ function createStaticMiddleware(directory) {
 
 registerMiddlewares(app);
 registerRoutes(app);
+generateSitemap(db);
 
 // Image upload endpoint for blog posts with optimization
 app.post("/posts-img", uploads.imageUpload.single("image"), imageUploadHandler);
