@@ -55,6 +55,7 @@ const { db } = require("./lib/db");
 const users = require("./lib/users");
 const uploads = require("./lib/uploads");
 const { generateSitemap } = require("./lib/sitemap");
+const { ensureIndexNowKeyFile } = require("./lib/indexnow");
 
 function authFromReq(req) {
   const auth = req.headers.authorization;
@@ -141,6 +142,10 @@ function createStaticMiddleware(directory) {
 registerMiddlewares(app);
 registerRoutes(app);
 generateSitemap(db);
+const indexNowKeyResult = ensureIndexNowKeyFile();
+if (indexNowKeyResult.ok === false) {
+  console.warn(`[indexnow] ${indexNowKeyResult.error}`);
+}
 
 // Image upload endpoint for blog posts with optimization
 app.post("/posts-img", uploads.imageUpload.single("image"), imageUploadHandler);
