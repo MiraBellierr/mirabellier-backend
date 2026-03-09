@@ -48,19 +48,38 @@ function resolveAssetUrl(asset, protocol, host) {
   return `${protocol}://${host}/images/${asset}`;
 }
 
-function countLikesForUser(videoRows, userId) {
+function parseJsonArray(value) {
+  if (!value) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function countLikesForUser(postRows, userId) {
   let count = 0;
 
-  videoRows.forEach((video) => {
-    if (!video.likes) return;
-    try {
-      const likes = JSON.parse(video.likes);
-      if (Array.isArray(likes) && likes.includes(userId)) {
+  postRows.forEach((post) => {
+    if (parseJsonArray(post.likes).includes(userId)) {
+      count++;
+    }
+  });
+
+  return count;
+}
+
+function countCommentsForUser(postRows, userId) {
+  let count = 0;
+
+  postRows.forEach((post) => {
+    parseJsonArray(post.comments).forEach((comment) => {
+      if (comment && comment.userId === userId) {
         count++;
       }
-    } catch {
-      // Preserve resilience: ignore malformed records.
-    }
+    });
   });
 
   return count;
@@ -413,9 +432,11 @@ module.exports = function registerAuthRoutes(app, deps) {
           .prepare("SELECT COUNT(*) as count FROM posts WHERE userId = ?")
           .get(id)?.count || 0;
 
-      const videos = db.prepare("SELECT likes FROM videos").all();
-      const likesCount = countLikesForUser(videos, id);
-      const commentsCount = 0; // Comments not implemented yet in schema
+      const postInteractions = db
+        .prepare("SELECT likes, comments FROM posts")
+        .all();
+      const likesCount = countLikesForUser(postInteractions, id);
+      const commentsCount = countCommentsForUser(postInteractions, id);
 
       const recentPosts = db
         .prepare(

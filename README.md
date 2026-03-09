@@ -5,7 +5,7 @@
 ## 🚀 Features
 
 - **Blog API** - CRUD operations for blog posts
-- **Media Uploads** - Image and video upload with automatic optimization
+- **Media Uploads** - Image upload with automatic optimization
 - **User Authentication** - Discord OAuth 2.0 integration
 - **Database** - SQLite database with better-sqlite3
 - **Image Processing** - Automatic WebP conversion and optimization with Sharp
@@ -26,13 +26,10 @@ mirabellier-backend/
 │   └── users.js       # User management and authentication
 ├── routes/            # API route handlers
 │   ├── posts.js       # Blog post endpoints
-│   ├── videos.js      # Video upload and management
-│   ├── pics.js        # Picture gallery endpoints
 │   ├── images.js      # Image serving endpoints
 │   ├── auth.js        # Authentication endpoints
 │   └── anime.js       # Anime database endpoints
 ├── images/            # Uploaded images storage
-├── videos/            # Uploaded videos storage
 └── package.json       # Dependencies and scripts
 ```
 
@@ -131,32 +128,19 @@ Server will be available at `http://localhost:3000`
 | `DELETE` | `/posts/:id` | Delete post       | Yes           |
 | `POST`   | `/posts-img` | Upload post image | Yes           |
 
-### Videos
-
-| Method   | Endpoint      | Description      | Auth Required |
-| -------- | ------------- | ---------------- | ------------- |
-| `GET`    | `/videos`     | Get all videos   | No            |
-| `GET`    | `/videos/:id` | Get single video | No            |
-| `POST`   | `/videos`     | Upload video     | Yes           |
-| `PUT`    | `/videos/:id` | Update video     | Yes           |
-| `DELETE` | `/videos/:id` | Delete video     | Yes           |
-
-### Pictures
-
-| Method   | Endpoint    | Description        | Auth Required |
-| -------- | ----------- | ------------------ | ------------- |
-| `GET`    | `/pics`     | Get all pictures   | No            |
-| `GET`    | `/pics/:id` | Get single picture | No            |
-| `POST`   | `/pics`     | Upload picture     | Yes           |
-| `PUT`    | `/pics/:id` | Update picture     | Yes           |
-| `DELETE` | `/pics/:id` | Delete picture     | Yes           |
-
 ### Static Files
 
 | Method | Endpoint            | Description       |
 | ------ | ------------------- | ----------------- |
 | `GET`  | `/images/:filename` | Serve image files |
-| `GET`  | `/videos/:filename` | Serve video files |
+
+### Quotes
+
+| Method | Endpoint            | Description                                             |
+| ------ | ------------------- | ------------------------------------------------------- |
+| `GET`  | `/quote-of-the-day` | Return the saved daily quote snapshot, fetching and storing today's set if missing |
+
+`/quote-of-the-day` also accepts an optional `?date=YYYY-MM-DD` query to read a saved snapshot for a specific recorded date.
 
 ### Anime
 
@@ -215,36 +199,6 @@ CREATE TABLE posts (
 )
 ```
 
-### Videos Table
-
-```sql
-CREATE TABLE videos (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  description TEXT,
-  filename TEXT NOT NULL,
-  path TEXT NOT NULL,
-  thumbnail TEXT,
-  author_id TEXT,
-  created_at INTEGER DEFAULT (strftime('%s', 'now')),
-  FOREIGN KEY (author_id) REFERENCES users(id)
-)
-```
-
-### Pics Table
-
-```sql
-CREATE TABLE pics (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT,
-  description TEXT,
-  filename TEXT NOT NULL,
-  path TEXT NOT NULL,
-  author_id TEXT,
-  created_at INTEGER DEFAULT (strftime('%s', 'now')),
-  FOREIGN KEY (author_id) REFERENCES users(id)
-)
-```
 
 ## 🖼️ File Upload & Processing
 
@@ -257,13 +211,6 @@ CREATE TABLE pics (
   - Optimization with Sharp (quality: 80%)
   - Preserved original format alongside WebP
 - **Storage:** `/images/` directory
-
-### Video Uploads
-
-- **Max Size:** 50MB
-- **Accepted Formats:** MP4, WebM, AVI, MOV
-- **Storage:** `/videos/` directory
-- **No automatic processing** (videos served as-is)
 
 ### Upload Example
 
@@ -303,7 +250,7 @@ HTTP Keep-Alive enabled for faster subsequent requests:
 
 ### Caching Headers
 
-Static files (images/videos) served with aggressive caching:
+Static files are served with aggressive caching:
 
 - Cache-Control: `public, max-age=31536000, immutable`
 - Cached for 1 year (365 days)
@@ -360,7 +307,7 @@ SQLite may lock if multiple processes access it. Ensure only one server instance
 
 ### File Upload Fails
 
-- Check `images/` and `videos/` directories exist and are writable
+- Check `images/` directory exists and is writable
 - Verify file size is under 50MB limit
 - Check disk space
 

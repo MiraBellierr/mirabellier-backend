@@ -56,6 +56,7 @@ const users = require("./lib/users");
 const uploads = require("./lib/uploads");
 const { generateSitemap } = require("./lib/sitemap");
 const { ensureIndexNowKeyFile } = require("./lib/indexnow");
+const { startQuoteOfTheDayScheduler } = require("./lib/quote-of-the-day");
 
 function authFromReq(req) {
   const auth = req.headers.authorization;
@@ -74,24 +75,8 @@ function registerRoutes(app) {
     authFromReq,
   });
 
-  require("./routes/videos")(app, {
-    db,
-    getUserById: users.getUserById,
-    userPublic: users.userPublic,
-    authFromReq,
-    videoUpload: uploads.videoUpload,
-  });
-
-  require("./routes/pics")(app, {
-    db,
-    getUserById: users.getUserById,
-    userPublic: users.userPublic,
-    authFromReq,
-    imageUpload: uploads.imageUpload,
-    optimizeImage: uploads.optimizeImage,
-  });
-
   require("./routes/images")(app, { IMAGES_DIR: uploads.IMAGES_DIR });
+  require("./routes/quotes")(app);
 
   require("./routes/auth")(app, {
     db,
@@ -142,6 +127,7 @@ function createStaticMiddleware(directory) {
 registerMiddlewares(app);
 registerRoutes(app);
 generateSitemap(db);
+startQuoteOfTheDayScheduler();
 const indexNowKeyResult = ensureIndexNowKeyFile();
 if (indexNowKeyResult.ok === false) {
   console.warn(`[indexnow] ${indexNowKeyResult.error}`);
@@ -151,7 +137,6 @@ if (indexNowKeyResult.ok === false) {
 app.post("/posts-img", uploads.imageUpload.single("image"), imageUploadHandler);
 
 // Serve static files with long cache headers
-app.use("/videos", createStaticMiddleware(uploads.VIDEOS_DIR));
 app.use("/images", createStaticMiddleware(uploads.IMAGES_DIR));
 
 app.listen(PORT);
