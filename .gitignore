@@ -1,5 +1,4 @@
 node_modules
 images
-videos
 .env
 database.sqlite3*
