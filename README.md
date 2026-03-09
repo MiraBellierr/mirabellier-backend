@@ -1,390 +1,132 @@
 # Mirabellier.com Backend
 
-![mirabellier-backend](https://socialify.git.ci/MiraBellierr/mirabellier-backend/image?custom_language=Express&description=1&font=Inter&forks=1&issues=1&language=1&logo=https%3A%2F%2Fmirabellier.com%2Fbackground.jpg&name=1&owner=1&pattern=Solid&pulls=1&stargazers=1&theme=Auto)
+This is the backend for my little corner of the web.
 
-## 🚀 Features
+It is a small Express app that handles the practical side of the site: blog posts, comments, likes, Discord login, profile updates, anime data, image uploads, quote snapshots, sitemap generation, and a few SEO-friendly routes for sharing pages nicely.
 
-- **Blog API** - CRUD operations for blog posts
-- **Media Uploads** - Image upload with automatic optimization
-- **User Authentication** - Discord OAuth 2.0 integration
-- **Database** - SQLite database with better-sqlite3
-- **Image Processing** - Automatic WebP conversion and optimization with Sharp
-- **Session Management** - Express sessions with Passport.js
-- **CORS Enabled** - Cross-origin resource sharing for frontend integration
-- **Compression** - Gzip compression for API responses
-- **Performance Monitoring** - Server-Timing headers for request tracking
+## Hiya!!
 
-## 📁 Project Structure
+The frontend gets most of the cute attention, but this is the part quietly doing the real work in the background. It stores the data, serves the images, handles auth, keeps the blog editable, and makes sure the site still works like an actual app instead of just being a pretty page.
 
-```
+## What lives here
+
+- Blog post CRUD routes
+- Comment and like handling
+- Discord OAuth login and session tokens
+- Profile update routes
+- Anime list routes
+- Daily quote snapshot storage and fetching
+- Image upload and optimization
+- Sitemap and IndexNow helpers
+
+## Tiny project tour
+
+```text
 mirabellier-backend/
-├── app.js              # Main application entry point
-├── database.sqlite3    # SQLite database file
-├── lib/                # Core utilities and helpers
-│   ├── db.js          # Database initialization and helpers
-│   ├── uploads.js     # File upload handling and optimization
-│   └── users.js       # User management and authentication
-├── routes/            # API route handlers
-│   ├── posts.js       # Blog post endpoints
-│   ├── images.js      # Image serving endpoints
-│   ├── auth.js        # Authentication endpoints
-│   └── anime.js       # Anime database endpoints
-├── images/            # Uploaded images storage
-└── package.json       # Dependencies and scripts
+|- app.js            Main server entry
+|- routes/           Route handlers for posts, auth, anime, images, quotes
+|- lib/              Database, uploads, users, sitemap, quote helpers
+|- images/           Uploaded images
+|- scripts/          Utility scripts
+|- database.sqlite3  Local SQLite database
+`- package.json      Backend scripts
 ```
 
-## 🛠️ Tech Stack
+## The stack
 
-- **Runtime:** Node.js
-- **Framework:** Express 5
-- **Database:** SQLite (better-sqlite3)
-- **Authentication:** Passport.js + Discord Strategy
-- **File Uploads:** Multer
-- **Image Processing:** Sharp
-- **Session Store:** Express Session
-- **Compression:** Compression middleware
+- Node.js
+- Express 5
+- SQLite with `better-sqlite3`
+- Passport Discord
+- Multer
+- Sharp
 
-## 📦 Installation
+## Running it locally
+
+### 1. Install dependencies
 
 ```bash
 cd mirabellier-backend
 npm install
 ```
 
-## 🔧 Environment Variables
+### 2. Create `mirabellier-backend/.env`
 
-Create a `.env` file in the `mirabellier-backend/` directory:
+Use `.env.example` as your starting point.
 
 ```env
-# Server Configuration
 PORT=3000
-NODE_ENV=development
-
-# Discord OAuth Configuration
+DB_FILE=./database.sqlite3
+SESSION_SECRET=your-very-secret-value
+IMAGES_DIR=images
 DISCORD_CLIENT_ID=your_discord_client_id
 DISCORD_CLIENT_SECRET=your_discord_client_secret
 DISCORD_CALLBACK_URL=http://localhost:3000/auth/discord/callback
-
-# Session Configuration
-SESSION_SECRET=your_random_session_secret_here
-
-# Frontend URL (for CORS)
 FRONTEND_URL=http://localhost:5173
+WEBSITE_BASE=https://mirabellier.com
+INDEXNOW_KEY=your-indexnow-key
 ```
 
-### Getting Discord OAuth Credentials
+### 3. Start the server
 
-1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a new application
-3. Navigate to OAuth2 section
-4. Copy Client ID and Client Secret
-5. Add redirect URL: `http://localhost:3000/auth/discord/callback`
-
-## 🚦 Running the Server
-
-### Development Mode
+For development:
 
 ```bash
 npm run dev
 ```
 
-Server runs with nodemon for auto-restart on file changes.
-
-### Production Mode
+For a regular run:
 
 ```bash
 npm start
 ```
 
-Server will be available at `http://localhost:3000`
-
-## 📝 Available Scripts
-
-| Command       | Description                           |
-| ------------- | ------------------------------------- |
-| `npm start`   | Start production server               |
-| `npm run dev` | Start development server with nodemon |
-
-## 🔌 API Endpoints
-
-### Authentication
-
-| Method | Endpoint                 | Description                    |
-| ------ | ------------------------ | ------------------------------ |
-| `GET`  | `/auth/discord`          | Initiate Discord OAuth flow    |
-| `GET`  | `/auth/discord/callback` | Discord OAuth callback         |
-| `GET`  | `/auth/user`             | Get current authenticated user |
-| `POST` | `/auth/logout`           | Logout user                    |
-| `PUT`  | `/auth/user`             | Update user profile            |
-
-### Blog Posts
-
-| Method   | Endpoint     | Description       | Auth Required |
-| -------- | ------------ | ----------------- | ------------- |
-| `GET`    | `/posts`     | Get all posts     | No            |
-| `GET`    | `/posts/:id` | Get single post   | No            |
-| `POST`   | `/posts`     | Create new post   | Yes           |
-| `PUT`    | `/posts/:id` | Update post       | Yes           |
-| `DELETE` | `/posts/:id` | Delete post       | Yes           |
-| `POST`   | `/posts-img` | Upload post image | Yes           |
-
-### Static Files
-
-| Method | Endpoint            | Description       |
-| ------ | ------------------- | ----------------- |
-| `GET`  | `/images/:filename` | Serve image files |
-
-### Quotes
-
-| Method | Endpoint            | Description                                             |
-| ------ | ------------------- | ------------------------------------------------------- |
-| `GET`  | `/quote-of-the-day` | Return the saved daily quote snapshot, fetching and storing today's set if missing |
-
-`/quote-of-the-day` also accepts an optional `?date=YYYY-MM-DD` query to read a saved snapshot for a specific recorded date.
-
-### Anime
-
-| Method   | Endpoint     | Description     | Auth Required |
-| -------- | ------------ | --------------- | ------------- |
-| `GET`    | `/anime`     | Get anime list  | No            |
-| `POST`   | `/anime`     | Add anime entry | Yes (Admin)   |
-| `PUT`    | `/anime/:id` | Update anime    | Yes (Admin)   |
-| `DELETE` | `/anime/:id` | Delete anime    | Yes (Admin)   |
-
-## 🔐 Authentication
-
-The API uses token-based authentication:
-
-1. User authenticates via Discord OAuth
-2. Server creates session and generates token
-3. Token stored in frontend (localStorage)
-4. Subsequent requests include token in `Authorization` header:
-   ```
-   Authorization: Bearer <token>
-   ```
-
-### Protected Routes
-
-Protected endpoints require valid authentication token. If token is invalid or missing, the API returns `401 Unauthorized`.
-
-## 📦 Database Schema
-
-### Users Table
-
-```sql
-CREATE TABLE users (
-  id TEXT PRIMARY KEY,
-  username TEXT UNIQUE NOT NULL,
-  email TEXT,
-  avatar TEXT,
-  discord_id TEXT UNIQUE,
-  created_at INTEGER DEFAULT (strftime('%s', 'now'))
-)
-```
-
-### Posts Table
-
-```sql
-CREATE TABLE posts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  slug TEXT UNIQUE NOT NULL,
-  content TEXT NOT NULL,
-  excerpt TEXT,
-  author_id TEXT,
-  created_at INTEGER DEFAULT (strftime('%s', 'now')),
-  updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-  published BOOLEAN DEFAULT 0,
-  FOREIGN KEY (author_id) REFERENCES users(id)
-)
-```
-
-
-## 🖼️ File Upload & Processing
-
-### Image Uploads
-
-- **Max Size:** 50MB
-- **Accepted Formats:** JPEG, PNG, GIF, WebP
-- **Processing:**
-  - Automatic WebP conversion for JPEG/PNG
-  - Optimization with Sharp (quality: 80%)
-  - Preserved original format alongside WebP
-- **Storage:** `/images/` directory
-
-### Upload Example
-
-```javascript
-// Upload image
-const formData = new FormData();
-formData.append("image", file);
-
-const response = await fetch("http://localhost:3000/posts-img", {
-  method: "POST",
-  headers: {
-    Authorization: "Bearer YOUR_TOKEN",
-  },
-  body: formData,
-});
-
-const data = await response.json();
-// { path: '/images/filename.jpg', webp: '/images/filename.webp' }
-```
-
-## ⚡ Performance Features
-
-### Compression
-
-All API responses are gzipped (except when explicitly disabled):
-
-- Level 6 compression (balanced)
-- Only compresses responses > 1KB
-- Can be disabled with `x-no-compression` header
-
-### Keep-Alive
-
-HTTP Keep-Alive enabled for faster subsequent requests:
-
-- Timeout: 5 seconds
-- Max requests per connection: 100
-
-### Caching Headers
-
-Static files are served with aggressive caching:
-
-- Cache-Control: `public, max-age=31536000, immutable`
-- Cached for 1 year (365 days)
-
-### Server-Timing Headers
-
-Every response includes timing information for performance monitoring:
-
-```
-Server-Timing: total;dur=123
-```
-
-## 🔧 Configuration
-
-### Upload Limits
-
-Edit in `lib/uploads.js`:
-
-```javascript
-const imageUpload = multer({
-  storage: multer.diskStorage({
-    destination: IMAGES_DIR,
-    filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-      cb(null, uniqueSuffix + path.extname(file.originalname));
-    },
-  }),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
-});
-```
-
-### Database Initialization
-
-Database is automatically created on first run. To manually initialize:
-
-```javascript
-const { db } = require("./lib/db");
-// Database is ready to use
-```
-
-## 🐛 Troubleshooting
-
-### Port Already in Use
-
-Change the port in `.env`:
-
-```env
-PORT=5000
-```
-
-### Database Locked
-
-SQLite may lock if multiple processes access it. Ensure only one server instance runs.
-
-### File Upload Fails
-
-- Check `images/` directory exists and is writable
-- Verify file size is under 50MB limit
-- Check disk space
-
-### Discord OAuth Not Working
-
-- Verify `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` are correct
-- Ensure callback URL matches Discord app settings
-- Check `DISCORD_CALLBACK_URL` in `.env`
-
-### CORS Issues
-
-Add your frontend URL to CORS configuration in `app.js`:
-
-```javascript
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
-    credentials: true,
-  }),
-);
-```
-
-## 📊 Monitoring & Logging
-
-The server logs:
-
-- All incoming requests (method, path, duration)
-- Database queries (in development)
-- Upload operations
-- Authentication events
-- Errors and stack traces
-
-Check terminal output for real-time logs.
-
-## 🔒 Security Considerations
-
-- Use strong `SESSION_SECRET` in production
-- Keep Discord credentials secure (never commit `.env`)
-- Validate and sanitize all user inputs
-- Use HTTPS in production
-- Implement rate limiting for production use
-- Regularly update dependencies
-
-## 🚀 Production Deployment
-
-1. Set `NODE_ENV=production`
-2. Use a process manager (PM2, systemd)
-3. Set up reverse proxy (nginx, Apache)
-4. Enable HTTPS
-5. Configure firewall rules
-6. Set up automated backups for database
-7. Monitor disk space for uploads
-
-### PM2 Example
-
-```bash
-pm2 start app.js --name mirabellier-api
-pm2 save
-pm2 startup
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch: `git checkout -b feature/my-feature`
-3. Commit changes: `git commit -m 'Add feature'`
-4. Push to branch: `git push origin feature/my-feature`
-5. Open Pull Request
-
-## 📄 License
-
-This project is private and proprietary.
-
-## 📚 Additional Resources
-
-- [Express.js Documentation](https://expressjs.com/)
-- [Passport.js Documentation](http://www.passportjs.org/)
-- [Better-SQLite3 Documentation](https://github.com/WiseLibs/better-sqlite3)
-- [Sharp Documentation](https://sharp.pixelplumbing.com/)
-- [Discord OAuth2 Documentation](https://discord.com/developers/docs/topics/oauth2)
+The backend will run at `http://localhost:3000`.
+
+## Useful scripts
+
+- `npm run dev` - start the backend with nodemon
+- `npm start` - start the backend normally
+- `npm run generate:sitemap` - regenerate sitemap data
+
+## A few nice details
+
+- The SQLite database is initialized automatically on startup
+- Uploaded images get optimized with Sharp
+- Quote data is stored as snapshots instead of being scraped every time
+- The API supports anonymous likes as well as logged-in likes
+- The server generates SEO-friendly responses for shared blog and profile links
+- Sitemap and IndexNow helpers are built in so new posts can be surfaced faster
+
+## Main routes
+
+- `GET /posts` - list blog posts
+- `GET /posts/:id` - fetch one post
+- `POST /posts` - create a post
+- `PUT /posts/:id` - update a post
+- `DELETE /posts/:id` - delete a post
+- `POST /posts/:id/comments` - add a comment
+- `POST /posts/:id/like` - like or unlike a post
+- `POST /posts-img` - upload an image
+- `GET /anime` - fetch anime entries
+- `POST /anime` - create anime entry
+- `PUT /anime/:id` - update anime entry
+- `DELETE /anime/:id` - delete anime entry
+- `GET /quote-of-the-day` - fetch a daily quote snapshot
+- `GET /auth/discord` - start Discord OAuth
+- `GET /me` - fetch the current user
+- `POST /me` - update the current user profile
+
+## If something feels broken
+
+- Check your `.env` first
+- If Discord login fails, the callback URL is usually the first thing to verify
+- If uploads fail, make sure `IMAGES_DIR` is writable and Sharp installed correctly
+- If data seems stale or locked, make sure only one local server is using the SQLite file
+- If frontend auth redirects look wrong, check `FRONTEND_URL`
+
+## Why this repo exists
+
+I wanted the backend to stay small enough to understand, but capable enough to support the whole site properly. It is not trying to be fancy for the sake of it. It just needs to be dependable, readable, and easy to extend whenever I add another little feature to the site.
+
+That is the whole mood of this backend: quiet, useful, and doing a lot more than it shows.
