@@ -91,7 +91,43 @@ function parseLikesForList(likesValue) {
 }
 
 function parseLikesForMutation(likesValue) {
-  return parseLikesForList(likesValue);
+  return Array.from(new Set(parseLikesForList(likesValue).map(String)));
+}
+
+function readSingleHeader(value) {
+  if (Array.isArray(value)) {
+    return typeof value[0] === "string" ? value[0] : "";
+  }
+
+  return typeof value === "string" ? value : "";
+}
+
+function normalizeAnonymousLikeId(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed || trimmed.length > 128) return "";
+  if (!/^anon:[a-z0-9-]{12,}$/i.test(trimmed)) return "";
+  return trimmed;
+}
+
+function resolveLikeActors(req, authFromReq) {
+  const user = authFromReq(req);
+  const anonymousId = normalizeAnonymousLikeId(
+    readSingleHeader(req.headers["x-like-anonymous-id"]),
+  );
+
+  if (user && user.id) {
+    return {
+      actorId: String(user.id),
+      anonymousId,
+    };
+  }
+
+  return {
+    actorId: normalizeAnonymousLikeId(
+      readSingleHeader(req.headers["x-like-client-id"]),
+    ),
+    anonymousId: "",
+  };
 }
 
 function parseCommentsForMutation(commentsValue) {
@@ -438,8 +474,10 @@ module.exports = function registerPostsRoutes(app, deps) {
 
   app.post("/posts/:id/like", (req, res) => {
     try {
-      const user = authFromReq(req);
-      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      const { actorId, anonymousId } = resolveLikeActors(req, authFromReq);
+      if (!actorId) {
+        return res.status(400).json({ error: "missing like identity" });
+      }
 
       const postId = req.params.id;
       const action = req.body && req.body.action ? req.body.action : "like";
@@ -449,9 +487,14 @@ module.exports = function registerPostsRoutes(app, deps) {
       let likes = parseLikesForMutation(row.likes);
 
       if (action === "like") {
-        if (!likes.includes(user.id)) likes.push(user.id);
+        if (anonymousId && anonymousId !== actorId) {
+          likes = likes.filter((id) => id !== anonymousId);
+        }
+        if (!likes.includes(actorId)) likes.push(actorId);
       } else if (action === "unlike") {
-        likes = likes.filter((id) => id !== user.id);
+        likes = likes.filter(
+          (id) => id !== actorId && (!anonymousId || id !== anonymousId),
+        );
       } else {
         return res.status(400).json({ error: "invalid action" });
       }
@@ -461,7 +504,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         postId,
       );
 
-      res.json({ likes, liked: likes.includes(user.id) });
+      res.json({ likes, liked: likes.includes(actorId) });
     } catch {
       res.status(500).json({ error: "failed to update likes" });
     }
