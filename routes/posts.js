@@ -6,6 +6,16 @@ const {
 
 const MAX_TAGS = 10;
 
+function setNoStoreHeaders(res) {
+  res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate",
+  );
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+}
+
 function sanitizeTag(value) {
   return String(value)
     .trim()
@@ -410,7 +420,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         .all();
 
       const posts = rows.map((row) => mapPostRow(row, getUserById, userPublic));
-      res.setHeader("Cache-Control", "no-store");
+      setNoStoreHeaders(res);
       res.json(posts);
     } catch {
       res.status(500).json({ error: "failed to fetch posts" });
@@ -428,7 +438,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       if (!row) return res.status(404).json({ error: "Not found" });
 
       const post = mapPostRow(row, getUserById, userPublic);
-      res.setHeader("Cache-Control", "no-store");
+      setNoStoreHeaders(res);
       res.json(post);
     } catch {
       res.status(500).json({ error: "failed to fetch post" });
@@ -563,6 +573,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       });
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
+      setNoStoreHeaders(res);
       res.send(html);
     } catch {
       res.status(500).send("Server error");
