@@ -95,6 +95,12 @@ function registerRoutes(app) {
   });
 
   require("./routes/anime")(app, { db, authFromReq });
+  require("./routes/guestbook")(app, {
+    db,
+    authFromReq,
+    getUserById: users.getUserById,
+    userPublic: users.userPublic,
+  });
 }
 
 function imageUploadHandler(req, res) {

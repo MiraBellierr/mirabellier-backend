@@ -14,6 +14,7 @@ The frontend gets most of the cute attention, but this is the part quietly doing
 
 - Blog post CRUD routes
 - Comment and like handling
+- Guestbook entry, position, and moderation routes
 - Discord OAuth login and session tokens
 - Profile update routes
 - Anime list routes
@@ -26,7 +27,7 @@ The frontend gets most of the cute attention, but this is the part quietly doing
 ```text
 mirabellier-backend/
 |- app.js            Main server entry
-|- routes/           Route handlers for posts, auth, anime, images, quotes
+|- routes/           Route handlers for posts, auth, anime, guestbook, images, quotes
 |- lib/              Database, uploads, users, sitemap, quote helpers
 |- images/           Uploaded images
 |- scripts/          Utility scripts
@@ -83,7 +84,7 @@ For a regular run:
 npm start
 ```
 
-The backend will run at `http://localhost:3000`.
+With the example `.env` above, the backend will run at `http://localhost:3000`. If `PORT` is unset, `app.js` falls back to `5000`.
 
 ## Useful scripts
 
@@ -97,6 +98,8 @@ The backend will run at `http://localhost:3000`.
 - Uploaded images get optimized with Sharp
 - Quote data is stored as snapshots instead of being scraped every time
 - The API supports anonymous likes as well as logged-in likes
+- Guestbook note positions are stored in SQLite, so moving a note syncs for other visitors
+- The owner account can moderate guestbook notes and anime entries
 - The server generates SEO-friendly responses for shared blog and profile links
 - Sitemap and IndexNow helpers are built in so new posts can be surfaced faster
 
@@ -109,15 +112,24 @@ The backend will run at `http://localhost:3000`.
 - `DELETE /posts/:id` - delete a post
 - `POST /posts/:id/comments` - add a comment
 - `POST /posts/:id/like` - like or unlike a post
+- `GET /guestbook` - list guestbook notes
+- `POST /guestbook` - create a guestbook note
+- `PATCH /guestbook/:id/position` - save a note position on the board
+- `DELETE /guestbook/:id` - delete a guestbook note as the owner account
 - `POST /posts-img` - upload an image
 - `GET /anime` - fetch anime entries
-- `POST /anime` - create anime entry
-- `PUT /anime/:id` - update anime entry
+- `POST /anime` - replace the anime list
+- `PATCH /anime/:id` - update one anime entry
 - `DELETE /anime/:id` - delete anime entry
 - `GET /quote-of-the-day` - fetch a daily quote snapshot
 - `GET /auth/discord` - start Discord OAuth
+- `GET /auth/discord/callback` - finish Discord OAuth
 - `GET /me` - fetch the current user
 - `POST /me` - update the current user profile
+- `POST /logout` - destroy the current session
+- `GET /user/:id` - fetch a public user profile by id
+- `GET /user/by-username/:username` - fetch a public user profile by username
+- `GET /user/:id/stats` - fetch public stats for a user
 
 ## If something feels broken
 
@@ -126,6 +138,7 @@ The backend will run at `http://localhost:3000`.
 - If uploads fail, make sure `IMAGES_DIR` is writable and Sharp installed correctly
 - If data seems stale or locked, make sure only one local server is using the SQLite file
 - If frontend auth redirects look wrong, check `FRONTEND_URL`
+- If guestbook note positions look clipped, make sure the backend is running the current board-size constants
 
 ## Why this repo exists
 
