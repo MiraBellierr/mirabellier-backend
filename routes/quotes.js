@@ -1,8 +1,14 @@
-const {
-  HTTP_CACHE_TTL_MS,
-  getQuotesOfTheDay,
-  isValidRecordedDate,
-} = require("../lib/quote-of-the-day");
+const { getQuotesOfTheDay, isValidRecordedDate } = require("../lib/quote-of-the-day");
+
+function setNoStoreHeaders(res) {
+  res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate",
+  );
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+}
 
 module.exports = function registerQuoteRoutes(app) {
   app.get("/quote-of-the-day", async (req, res) => {
@@ -19,17 +25,16 @@ module.exports = function registerQuoteRoutes(app) {
       const quotes = await getQuotesOfTheDay({ recordedDate });
 
       if (!quotes) {
+        setNoStoreHeaders(res);
         return res.status(404).json({
           error: "Quotes not found for the requested date",
         });
       }
 
-      res.setHeader(
-        "Cache-Control",
-        `public, max-age=${Math.floor(HTTP_CACHE_TTL_MS / 1000)}`,
-      );
+      setNoStoreHeaders(res);
       res.json(quotes);
     } catch (error) {
+      setNoStoreHeaders(res);
       res.status(502).json({
         error: "Failed to load quotes of the day",
         details:
