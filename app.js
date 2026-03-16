@@ -77,6 +77,7 @@ function registerRoutes(app) {
 
   require("./routes/images")(app, { IMAGES_DIR: uploads.IMAGES_DIR });
   require("./routes/quotes")(app);
+  require("./routes/shrines")(app);
 
   require("./routes/auth")(app, {
     db,
