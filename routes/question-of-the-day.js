@@ -4,6 +4,8 @@ const OWNER_DISCORD_ID = "548050617889980426";
 const MAX_PROMPT_LENGTH = 240;
 const MAX_ANSWER_LENGTH = 500;
 const MAX_GUEST_NAME_LENGTH = 40;
+const DEFAULT_ADMIN_QUEUE_PAGE_SIZE = 5;
+const MAX_ADMIN_QUEUE_PAGE_SIZE = 50;
 const GUEST_TOKEN_PATTERN = /^qotd:guest:[a-z0-9-]{12,}$/i;
 
 class HttpError extends Error {
@@ -71,6 +73,16 @@ function sanitizeGuestName(value) {
 function sanitizeGuestToken(value) {
   const trimmed = collapseWhitespace(value);
   return GUEST_TOKEN_PATTERN.test(trimmed) ? trimmed : null;
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function parsePositiveInteger(value, fallback) {
+  const normalized = Array.isArray(value) ? value[0] : value;
+  const parsed = Number.parseInt(String(normalized ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function mapUser(user) {
@@ -220,6 +232,11 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
      WHERE recordedDate >= ?
      ORDER BY recordedDate ASC`,
   );
+  const selectAdminQuestionCountFromRecordedDate = db.prepare(
+    `SELECT COUNT(*) AS totalCount
+     FROM daily_questions
+     WHERE recordedDate >= ? AND archivedAt IS NULL`,
+  );
   const selectAdminQuestionsFromRecordedDate = db.prepare(
     `SELECT
        q.recordedDate,
@@ -234,6 +251,22 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
      WHERE q.recordedDate >= ? AND q.archivedAt IS NULL
      GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt
      ORDER BY q.recordedDate ASC`,
+  );
+  const selectAdminQuestionsPageFromRecordedDate = db.prepare(
+    `SELECT
+       q.recordedDate,
+       q.prompt,
+       q.lockedAt,
+       q.archivedAt,
+       q.createdAt,
+       q.updatedAt,
+       COUNT(a.id) AS answerCount
+     FROM daily_questions q
+     LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
+     WHERE q.recordedDate >= ? AND q.archivedAt IS NULL
+     GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt
+     ORDER BY q.recordedDate ASC
+     LIMIT ? OFFSET ?`,
   );
   const selectEarliestUnansweredQuestionThroughRecordedDate = db.prepare(
     `SELECT
@@ -344,7 +377,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     );
   }
 
-  function loadAdminQuestions(currentRecordedDate) {
+  function loadAllAdminQuestions(currentRecordedDate) {
     const activeRecordedDate =
       getActiveQuestionRow(currentRecordedDate)?.recordedDate || null;
     const startRecordedDate = activeRecordedDate || currentRecordedDate;
@@ -352,6 +385,49 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     return selectAdminQuestionsFromRecordedDate
       .all(startRecordedDate)
       .map((row) => mapAdminQuestionRow(row, activeRecordedDate));
+  }
+
+  function loadAdminQuestionsPage(currentRecordedDate, options = {}) {
+    const activeRecordedDate =
+      getActiveQuestionRow(currentRecordedDate)?.recordedDate || null;
+    const startRecordedDate = activeRecordedDate || currentRecordedDate;
+    const pageSize = clamp(
+      parsePositiveInteger(
+        options.pageSize,
+        DEFAULT_ADMIN_QUEUE_PAGE_SIZE,
+      ),
+      1,
+      MAX_ADMIN_QUEUE_PAGE_SIZE,
+    );
+    const totalQuestions =
+      Number(
+        selectAdminQuestionCountFromRecordedDate.get(startRecordedDate)
+          ?.totalCount,
+      ) || 0;
+    const totalPages =
+      totalQuestions > 0 ? Math.ceil(totalQuestions / pageSize) : 0;
+    const page =
+      totalPages > 0
+        ? clamp(parsePositiveInteger(options.page, 1), 1, totalPages)
+        : 1;
+    const offset = totalQuestions > 0 ? (page - 1) * pageSize : 0;
+    const questions =
+      totalQuestions > 0
+        ? selectAdminQuestionsPageFromRecordedDate
+            .all(startRecordedDate, pageSize, offset)
+            .map((row) => mapAdminQuestionRow(row, activeRecordedDate))
+        : [];
+
+    return {
+      currentRecordedDate,
+      page,
+      pageSize,
+      totalQuestions,
+      totalPages,
+      hasPreviousPage: page > 1,
+      hasNextPage: totalPages > 0 && page < totalPages,
+      questions,
+    };
   }
 
   function buildCurrentPayload(req) {
@@ -525,10 +601,12 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       const currentRecordedDate = getCurrentRecordedDate();
 
       setNoStoreHeaders(res);
-      res.json({
-        currentRecordedDate,
-        questions: loadAdminQuestions(currentRecordedDate),
-      });
+      res.json(
+        loadAdminQuestionsPage(currentRecordedDate, {
+          page: req.query?.page,
+          pageSize: req.query?.pageSize,
+        }),
+      );
     } catch (error) {
       setNoStoreHeaders(res);
       res.status(500).json({
@@ -572,7 +650,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
         addedQuestions: addedRecordedDates.map((recordedDate) =>
           mapQuestionRow(selectQuestionByRecordedDate.get(recordedDate)),
         ),
-        questions: loadAdminQuestions(currentRecordedDate),
+        questions: loadAllAdminQuestions(currentRecordedDate),
       });
     } catch (error) {
       setNoStoreHeaders(res);
@@ -608,7 +686,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
         ),
         currentRecordedDate,
         question: mapQuestionRow(getActiveQuestionRow(currentRecordedDate)),
-        questions: loadAdminQuestions(currentRecordedDate),
+        questions: loadAllAdminQuestions(currentRecordedDate),
       });
     } catch (error) {
       setNoStoreHeaders(res);
