@@ -102,6 +102,13 @@ function registerRoutes(app) {
     getUserById: users.getUserById,
     userPublic: users.userPublic,
   });
+  require("./routes/question-of-the-day")(app, {
+    db,
+    authFromReq,
+    getUserById: users.getUserById,
+    userPublic: users.userPublic,
+    generateSitemap,
+  });
 }
 
 function imageUploadHandler(req, res) {
