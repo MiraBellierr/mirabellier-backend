@@ -137,7 +137,14 @@ function mapAnswerRow(row, getUserById, userPublic) {
 }
 
 module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
-  const { db, authFromReq, getUserById, userPublic, generateSitemap } = deps;
+  const {
+    db,
+    authFromReq,
+    getUserById,
+    userPublic,
+    generateSitemap,
+    notifyQuestionOfTheDayDrop = () => Promise.resolve({ skipped: true }),
+  } = deps;
   const router = express.Router();
 
   const selectQuestionByRecordedDate = db.prepare(
@@ -509,6 +516,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       }
 
       generateSitemap(db);
+      void notifyQuestionOfTheDayDrop();
       setNoStoreHeaders(res);
       res.json({
         question: mapQuestionRow(selectQuestionByRecordedDate.get(recordedDate)),
@@ -565,6 +573,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
 
       const row = createAnswerTransaction(payload);
 
+      void notifyQuestionOfTheDayDrop();
       setNoStoreHeaders(res);
       res.status(201).json(mapAnswerRow(row, getUserById, userPublic));
     } catch (error) {
@@ -643,6 +652,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       });
 
       generateSitemap(db);
+      void notifyQuestionOfTheDayDrop();
       setNoStoreHeaders(res);
       res.status(201).json({
         currentRecordedDate,
@@ -679,6 +689,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       archiveQuestion.run(now, now, activeQuestion.recordedDate);
 
       generateSitemap(db);
+      void notifyQuestionOfTheDayDrop();
       setNoStoreHeaders(res);
       res.json({
         archivedQuestion: mapQuestionRow(
