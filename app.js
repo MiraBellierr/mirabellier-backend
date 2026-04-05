@@ -57,6 +57,10 @@ const uploads = require("./lib/uploads");
 const { generateSitemap } = require("./lib/sitemap");
 const { ensureIndexNowKeyFile } = require("./lib/indexnow");
 const { startQuoteOfTheDayScheduler } = require("./lib/quote-of-the-day");
+const {
+  maybeNotifyNewQuestionOfTheDayDrop,
+  startQuestionOfTheDayDiscordScheduler,
+} = require("./lib/question-of-the-day-discord");
 
 function authFromReq(req) {
   const auth = req.headers.authorization;
@@ -108,6 +112,7 @@ function registerRoutes(app) {
     getUserById: users.getUserById,
     userPublic: users.userPublic,
     generateSitemap,
+    notifyQuestionOfTheDayDrop: () => maybeNotifyNewQuestionOfTheDayDrop(db),
   });
 }
 
@@ -142,6 +147,7 @@ registerMiddlewares(app);
 registerRoutes(app);
 generateSitemap(db);
 startQuoteOfTheDayScheduler();
+startQuestionOfTheDayDiscordScheduler(db);
 const indexNowKeyResult = ensureIndexNowKeyFile();
 if (indexNowKeyResult.ok === false) {
   console.warn(`[indexnow] ${indexNowKeyResult.error}`);

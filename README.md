@@ -68,6 +68,7 @@ DISCORD_CALLBACK_URL=http://localhost:3000/auth/discord/callback
 FRONTEND_URL=http://localhost:5173
 WEBSITE_BASE=https://mirabellier.com
 INDEXNOW_KEY=your-indexnow-key
+QOTD_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 ### 3. Start the server
@@ -102,6 +103,23 @@ With the example `.env` above, the backend will run at `http://localhost:3000`. 
 - The owner account can moderate guestbook notes and anime entries
 - The server generates SEO-friendly responses for shared blog and profile links
 - Sitemap and IndexNow helpers are built in so new posts can be surfaced faster
+- Question of the Day can post one Discord webhook notification per live drop
+
+## Question of the Day Discord webhook
+
+If you want a Discord channel ping whenever a new Question of the Day goes live:
+
+1. Open your Discord server channel settings.
+2. Go to `Integrations > Webhooks`.
+3. Create a webhook for the channel you want.
+4. Copy the webhook URL into `mirabellier-backend/.env` as `QOTD_DISCORD_WEBHOOK_URL`.
+
+Optional env vars:
+
+- `QOTD_DISCORD_WEBHOOK_USERNAME` to change the webhook display name
+- `QOTD_DISCORD_WEBHOOK_AVATAR_URL` to change the webhook avatar
+
+The backend only posts once per question, stores that state in SQLite, checks again on startup, and keeps a lightweight background check running so UTC-day rollovers still notify even without an admin action.
 
 ## Main routes
 
