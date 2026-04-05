@@ -17,7 +17,8 @@ The frontend gets most of the cute attention, but this is the part quietly doing
 - Guestbook entry, position, and moderation routes
 - Discord OAuth login and session tokens
 - Profile update routes
-- Anime list routes
+- Anime feed routes
+- MyAnimeList currently-watching snapshot sync
 - Daily quote snapshot storage and fetching
 - Image upload and optimization
 - Sitemap and IndexNow helpers
@@ -66,6 +67,9 @@ DISCORD_CLIENT_ID=your_discord_client_id
 DISCORD_CLIENT_SECRET=your_discord_client_secret
 DISCORD_CALLBACK_URL=http://localhost:3000/auth/discord/callback
 FRONTEND_URL=http://localhost:5173
+MAL_CLIENT_ID=your_myanimelist_client_id
+MAL_USERNAME=your_myanimelist_username
+MAL_ANIME_REFRESH_MINUTES=5
 WEBSITE_BASE=https://mirabellier.com
 INDEXNOW_KEY=your-indexnow-key
 QOTD_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
@@ -100,10 +104,25 @@ With the example `.env` above, the backend will run at `http://localhost:3000`. 
 - Quote data is stored as snapshots instead of being scraped every time
 - The API supports anonymous likes as well as logged-in likes
 - Guestbook note positions are stored in SQLite, so moving a note syncs for other visitors
-- The owner account can moderate guestbook notes and anime entries
+- The owner account can moderate guestbook notes
+- MyAnimeList currently-watching data is cached in SQLite so the public page can survive MAL outages
 - The server generates SEO-friendly responses for shared blog and profile links
 - Sitemap and IndexNow helpers are built in so new posts can be surfaced faster
 - Question of the Day can post one Discord webhook notification per live drop
+
+## MyAnimeList currently-watching feed
+
+The public `/anime` page can sync directly from a public MyAnimeList profile.
+
+Set these env vars in `mirabellier-backend/.env`:
+
+- `MAL_CLIENT_ID` from your MyAnimeList API app
+- `MAL_USERNAME` for the public profile you want to mirror
+- optional `MAL_ANIME_REFRESH_MINUTES` to change the backend refresh window from the default 5 minutes
+
+This v1 uses the public username endpoint with the `X-MAL-CLIENT-ID` header. It does not use MAL OAuth.
+
+The backend stores the last successful normalized snapshot in SQLite, serves that snapshot while it is fresh, refreshes it when stale, and falls back to the last successful result with `stale: true` if MAL is temporarily unavailable.
 
 ## Question of the Day Discord webhook
 
@@ -135,10 +154,7 @@ The backend only posts once per question, stores that state in SQLite, checks ag
 - `PATCH /guestbook/:id/position` - save a note position on the board
 - `DELETE /guestbook/:id` - delete a guestbook note as the owner account
 - `POST /posts-img` - upload an image
-- `GET /anime` - fetch anime entries
-- `POST /anime` - replace the anime list
-- `PATCH /anime/:id` - update one anime entry
-- `DELETE /anime/:id` - delete anime entry
+- `GET /anime/currently-watching` - fetch the live MyAnimeList-backed currently watching feed
 - `GET /quote-of-the-day` - fetch a daily quote snapshot
 - `GET /auth/discord` - start Discord OAuth
 - `GET /auth/discord/callback` - finish Discord OAuth
