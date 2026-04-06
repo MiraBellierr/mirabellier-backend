@@ -29,9 +29,9 @@ function setEmbedImageCacheHeaders(res, hasVersionQuery) {
 }
 
 module.exports = function registerAnimeRoutes(app, { db }) {
-  const router = express.Router();
+  const apiRouter = express.Router();
 
-  router.get("/", async (req, res) => {
+  app.get("/anime", async (req, res) => {
     try {
       const host = req.get("host") || "mirabellier.com";
       const protocol = resolveProtocol(req);
@@ -53,24 +53,7 @@ module.exports = function registerAnimeRoutes(app, { db }) {
     }
   });
 
-  router.get("/currently-watching", async (req, res) => {
-    try {
-      const payload = await getCurrentlyWatchingAnimeFeed(db);
-      setNoStoreHeaders(res);
-      res.json(payload);
-    } catch (error) {
-      const isConfigError = error?.code === MAL_CONFIG_ERROR_CODE;
-      setNoStoreHeaders(res);
-      res.status(isConfigError ? 503 : 502).json({
-        code: isConfigError ? MAL_CONFIG_ERROR_CODE : "MAL_UNAVAILABLE",
-        error: isConfigError
-          ? error.message
-          : "Failed to refresh the MyAnimeList currently watching feed.",
-      });
-    }
-  });
-
-  router.get("/currently-watching/embed-image.png", async (req, res) => {
+  app.get("/anime/currently-watching/embed-image.png", async (req, res) => {
     try {
       const state = await loadAnimePreviewState(db);
       const dimensions = getPreviewDimensions(state);
@@ -91,5 +74,22 @@ module.exports = function registerAnimeRoutes(app, { db }) {
     }
   });
 
-  app.use("/anime", router);
+  apiRouter.get("/currently-watching", async (req, res) => {
+    try {
+      const payload = await getCurrentlyWatchingAnimeFeed(db);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      const isConfigError = error?.code === MAL_CONFIG_ERROR_CODE;
+      setNoStoreHeaders(res);
+      res.status(isConfigError ? 503 : 502).json({
+        code: isConfigError ? MAL_CONFIG_ERROR_CODE : "MAL_UNAVAILABLE",
+        error: isConfigError
+          ? error.message
+          : "Failed to refresh the MyAnimeList currently watching feed.",
+      });
+    }
+  });
+
+  app.use("/anime", apiRouter);
 };

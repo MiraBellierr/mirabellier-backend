@@ -154,7 +154,9 @@ The backend only posts once per question, stores that state in SQLite, checks ag
 - `PATCH /guestbook/:id/position` - save a note position on the board
 - `DELETE /guestbook/:id` - delete a guestbook note as the owner account
 - `POST /posts-img` - upload an image
+- `GET /anime` - SEO/share page for the public anime route
 - `GET /anime/currently-watching` - fetch the live MyAnimeList-backed currently watching feed
+- `GET /anime/currently-watching/embed-image.png` - render the public anime share preview image
 - `GET /quote-of-the-day` - fetch a daily quote snapshot
 - `GET /auth/discord` - start Discord OAuth
 - `GET /auth/discord/callback` - finish Discord OAuth
