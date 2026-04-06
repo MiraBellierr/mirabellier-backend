@@ -28,6 +28,13 @@ function setEmbedImageCacheHeaders(res, hasVersionQuery) {
   res.setHeader("Cache-Control", "public, max-age=300");
 }
 
+function shouldRedirectToSpa(req) {
+  return (
+    !isLikelyCrawler(req.get("user-agent")) &&
+    String(req.query?._spa || "") !== "1"
+  );
+}
+
 module.exports = function registerAnimeRoutes(app, { db }) {
   const apiRouter = express.Router();
 
@@ -36,7 +43,7 @@ module.exports = function registerAnimeRoutes(app, { db }) {
       const host = req.get("host") || "mirabellier.com";
       const protocol = resolveProtocol(req);
       const state = await loadAnimePreviewState(db);
-      const redirectToSpa = !isLikelyCrawler(req.get("user-agent"));
+      const redirectToSpa = shouldRedirectToSpa(req);
       const html = buildAnimeShareHtml({
         state,
         protocol,

@@ -92,6 +92,7 @@ function buildProfileSeoPage({
   requestPath,
   spaPath,
   redirectUrl,
+  redirectToSpa,
 }) {
   const title = `${escapeHtml(user.username)}'s Profile`;
   const description =
@@ -122,7 +123,7 @@ function buildProfileSeoPage({
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
     <link rel="canonical" href="${protocol}://${host}${spaPath}" />
-    <script>window.location.replace('${redirectUrl}')</script>
+    ${redirectToSpa ? `<script>window.location.replace('${redirectUrl}')</script>` : ""}
   </head>
   <body>
   </body>
@@ -255,6 +256,20 @@ function getRequestedFrontendOrigin(req) {
   }
 
   return "";
+}
+
+function isLikelyCrawler(userAgent) {
+  const value = String(userAgent || "").toLowerCase();
+  return /bot|crawler|spider|google-inspectiontool|googlebot|bingbot|slurp|duckduckbot|baiduspider|yandex|facebookexternalhit|twitterbot|linkedinbot|slackbot|discordbot/.test(
+    value,
+  );
+}
+
+function shouldRedirectToSpa(req) {
+  return (
+    !isLikelyCrawler(req.get("user-agent")) &&
+    String(req.query?._spa || "") !== "1"
+  );
 }
 
 module.exports = function registerAuthRoutes(app, deps) {
@@ -476,6 +491,7 @@ module.exports = function registerAuthRoutes(app, deps) {
         requestPath,
         spaPath,
         redirectUrl,
+        redirectToSpa: shouldRedirectToSpa(req),
       });
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");

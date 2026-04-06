@@ -306,6 +306,13 @@ function isLikelyCrawler(userAgent) {
   );
 }
 
+function shouldRedirectToSpa(req) {
+  return (
+    !isLikelyCrawler(req.get("user-agent")) &&
+    String(req.query?._spa || "") !== "1"
+  );
+}
+
 function buildBlogRedirectPage({
   title,
   description,
@@ -550,7 +557,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       const authorUrl = post.userId
         ? buildProfileUrl(authorName, protocol, host)
         : "";
-      const redirectToSpa = !isLikelyCrawler(req.get("user-agent"));
+      const redirectToSpa = shouldRedirectToSpa(req);
 
       const spaPath = buildBlogPath(title, id);
       const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
