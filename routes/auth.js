@@ -1,6 +1,13 @@
 const path = require("path");
 const passport = require("passport");
 const DiscordStrategy = require("passport-discord").Strategy;
+const {
+  PREVIEW_HEIGHT,
+  PREVIEW_WIDTH,
+  buildProfileEmbedPath,
+  buildProfileImageVersion,
+  renderProfileEmbedBuffer,
+} = require("../lib/profile-embed");
 
 function configureDiscordStrategy(findOrCreateDiscordUser) {
   passport.use(
@@ -39,13 +46,6 @@ function escapeHtml(value) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-function resolveAssetUrl(asset, protocol, host) {
-  if (!asset) return "";
-  if (/^https?:\/\//i.test(asset)) return asset;
-  if (asset.startsWith("/")) return `${protocol}://${host}${asset}`;
-  return `${protocol}://${host}/images/${asset}`;
 }
 
 function parseJsonArray(value) {
@@ -98,10 +98,11 @@ function buildProfileSeoPage({
   const description =
     user.bio || `Check out ${escapeHtml(user.username)}'s profile`;
 
-  const avatarUrl = resolveAssetUrl(user.avatar, protocol, host);
-  const bannerUrl = resolveAssetUrl(user.banner, protocol, host);
-  const imageUrl =
-    bannerUrl || avatarUrl || `${protocol}://${host}/background.jpg`;
+  const imageVersion = buildProfileImageVersion(user);
+  const imageUrl = `${protocol}://${host}${buildProfileEmbedPath(
+    user.username,
+    imageVersion,
+  )}`;
 
   return `<!doctype html>
 <html>
@@ -114,8 +115,9 @@ function buildProfileSeoPage({
     <meta property="og:title" content="${title}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
     <meta property="og:image" content="${escapeHtml(imageUrl)}" />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
+    <meta property="og:image:width" content="${PREVIEW_WIDTH}" />
+    <meta property="og:image:height" content="${PREVIEW_HEIGHT}" />
+    <meta property="og:image:type" content="image/png" />
     <meta property="og:url" content="${protocol}://${host}${requestPath}" />
     <meta property="profile:username" content="${escapeHtml(user.username)}" />
     <meta name="twitter:card" content="summary_large_image" />
@@ -272,6 +274,32 @@ function shouldRedirectToSpa(req) {
   );
 }
 
+async function handleProfileEmbedImage(req, res, getUserByUsername, imagesDir) {
+  try {
+    const user = getUserByUsername(req.params.username);
+    if (!user) {
+      return res.status(404).send("User not found");
+    }
+
+    const imageBuffer = await renderProfileEmbedBuffer({
+      user,
+      imagesDir,
+    });
+
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Content-Length", String(imageBuffer.length));
+    res.setHeader(
+      "Cache-Control",
+      typeof req.query.v === "string" && req.query.v.trim().length > 0
+        ? "public, max-age=31536000, immutable"
+        : "public, max-age=300",
+    );
+    return res.send(imageBuffer);
+  } catch {
+    return res.status(500).send("Failed to render profile preview image");
+  }
+}
+
 module.exports = function registerAuthRoutes(app, deps) {
   const {
     db,
@@ -374,6 +402,13 @@ module.exports = function registerAuthRoutes(app, deps) {
       res.status(500).json({ error: "failed" });
     }
   });
+
+  app.get("/profile-embed/:username.png", (req, res) =>
+    handleProfileEmbedImage(req, res, getUserByUsername, IMAGES_DIR),
+  );
+  app.get("/api/profile-embed/:username.png", (req, res) =>
+    handleProfileEmbedImage(req, res, getUserByUsername, IMAGES_DIR),
+  );
 
   app.post("/logout", (req, res) => {
     try {
