@@ -35,6 +35,13 @@ function isLikelyCrawler(userAgent) {
   );
 }
 
+function shouldRedirectToSpa(req) {
+  return (
+    !isLikelyCrawler(req.get("user-agent")) &&
+    String(req.query?._spa || "") !== "1"
+  );
+}
+
 function resolveAssetUrl(asset, protocol, host) {
   if (!asset) return `${protocol}://${host}/background.jpg`;
   if (/^https?:\/\//i.test(asset)) return asset;
@@ -137,7 +144,7 @@ function renderShrinePage(req, res, shrinePage) {
   try {
     const host = req.get("host") || "mirabellier.com";
     const protocol = resolveProtocol(req);
-    const redirectToSpa = !isLikelyCrawler(req.get("user-agent"));
+    const redirectToSpa = shouldRedirectToSpa(req);
     const imageUrl = resolveAssetUrl(shrinePage.image, protocol, host);
     const redirectUrl = `${protocol}://${host}${shrinePage.path}?_spa=1`;
 
