@@ -95,8 +95,6 @@ function buildProfileSeoPage({
   redirectToSpa,
 }) {
   const title = `${escapeHtml(user.username)}'s Profile`;
-  const description =
-    user.bio || `Check out ${escapeHtml(user.username)}'s profile`;
 
   const imageVersion = buildProfileImageVersion(user);
   const imageUrl = `${protocol}://${host}${buildProfileEmbedPath(
@@ -110,10 +108,8 @@ function buildProfileSeoPage({
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>${title}</title>
-    <meta name="description" content="${escapeHtml(description)}" />
     <meta property="og:type" content="profile" />
     <meta property="og:title" content="${title}" />
-    <meta property="og:description" content="${escapeHtml(description)}" />
     <meta property="og:image" content="${escapeHtml(imageUrl)}" />
     <meta property="og:image:width" content="${PREVIEW_WIDTH}" />
     <meta property="og:image:height" content="${PREVIEW_HEIGHT}" />
@@ -122,7 +118,6 @@ function buildProfileSeoPage({
     <meta property="profile:username" content="${escapeHtml(user.username)}" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${title}" />
-    <meta name="twitter:description" content="${escapeHtml(description)}" />
     <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
     <link rel="canonical" href="${protocol}://${host}${spaPath}" />
     ${redirectToSpa ? `<script>window.location.replace('${redirectUrl}')</script>` : ""}
