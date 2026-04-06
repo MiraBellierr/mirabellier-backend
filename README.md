@@ -106,7 +106,7 @@ With the example `.env` above, the backend will run at `http://localhost:3000`. 
 - Guestbook note positions are stored in SQLite, so moving a note syncs for other visitors
 - The owner account can moderate guestbook notes
 - MyAnimeList currently-watching data is cached in SQLite so the public page can survive MAL outages
-- The server generates SEO-friendly responses for shared blog and profile links
+- The server generates SEO-friendly responses for shared blog, profile, anime, question-of-the-day, and quote links
 - Sitemap and IndexNow helpers are built in so new posts can be surfaced faster
 - Question of the Day can post one Discord webhook notification per live drop
 
@@ -157,6 +157,10 @@ The backend only posts once per question, stores that state in SQLite, checks ag
 - `GET /anime` - SEO/share page for the public anime route
 - `GET /anime/currently-watching` - fetch the live MyAnimeList-backed currently watching feed
 - `GET /anime/currently-watching/embed-image.png` - render the public anime share preview image
+- `GET /question-of-the-day` - SEO/share page for the public question-of-the-day route
+- `GET /question-of-the-day/embed-image.png` - render the public question-of-the-day share preview image
+- `GET /quotes` - SEO/share page for the public quotes route
+- `GET /quotes/embed-image.png` - render the public quotes share preview image
 - `GET /quote-of-the-day` - fetch a daily quote snapshot
 - `GET /auth/discord` - start Discord OAuth
 - `GET /auth/discord/callback` - finish Discord OAuth
