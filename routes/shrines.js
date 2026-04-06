@@ -80,7 +80,6 @@ function buildShrineSeoPage({
     "@context": "https://schema.org",
     "@type": schemaType || "WebPage",
     name: title,
-    description,
     url: canonicalUrl,
     mainEntityOfPage: canonicalUrl,
     isPartOf: {
@@ -106,19 +105,16 @@ function buildShrineSeoPage({
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>${escapeHtml(title)}</title>
-    <meta name="description" content="${escapeHtml(description)}" />
     <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
     ${keywords && keywords.length ? `<meta name="keywords" content="${escapeHtml(keywords.join(", "))}" />` : ""}
     <meta property="og:type" content="website" />
     <meta property="og:title" content="${escapeHtml(title)}" />
-    <meta property="og:description" content="${escapeHtml(description)}" />
     <meta property="og:site_name" content="Mirabellier" />
     <meta property="og:url" content="${canonicalUrl}" />
     ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}" />` : ""}
     ${imageAlt ? `<meta property="og:image:alt" content="${escapeHtml(imageAlt)}" />` : ""}
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${escapeHtml(title)}" />
-    <meta name="twitter:description" content="${escapeHtml(description)}" />
     ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}" />` : ""}
     ${imageAlt ? `<meta name="twitter:image:alt" content="${escapeHtml(imageAlt)}" />` : ""}
     <link rel="canonical" href="${canonicalUrl}" />
@@ -128,7 +124,6 @@ function buildShrineSeoPage({
   <body>
     <main>
       <h1>${escapeHtml(title)}</h1>
-      <p>${escapeHtml(description)}</p>
       ${excerpt ? `<p>${escapeHtml(excerpt)}</p>` : ""}
       <p><a href="${escapeHtml(canonicalUrl)}">${escapeHtml(ctaLabel || "Open shrine page")}</a></p>
     </main>
