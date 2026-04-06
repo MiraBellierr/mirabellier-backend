@@ -1,4 +1,14 @@
 const express = require("express");
+const {
+  buildQuestionPreviewState,
+  buildQuestionShareHtml,
+  getQuestionPreviewDimensions,
+  renderQuestionPreviewBuffer,
+} = require("../lib/question-of-the-day-embed");
+const {
+  isLikelyCrawler,
+  resolveProtocol,
+} = require("../lib/share-preview-utils");
 
 const OWNER_DISCORD_ID = "548050617889980426";
 const MAX_PROMPT_LENGTH = 240;
@@ -48,6 +58,15 @@ function setNoStoreHeaders(res) {
   res.setHeader("Surrogate-Control", "no-store");
 }
 
+function setEmbedImageCacheHeaders(res, hasVersionQuery) {
+  if (hasVersionQuery) {
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    return;
+  }
+
+  res.setHeader("Cache-Control", "public, max-age=300");
+}
+
 function collapseWhitespace(value) {
   return String(value || "")
     .replace(/\r\n/g, "\n")
@@ -77,6 +96,13 @@ function sanitizeGuestToken(value) {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function shouldRedirectToSpa(req) {
+  return (
+    !isLikelyCrawler(req.get("user-agent")) &&
+    String(req.query?._spa || "") !== "1"
+  );
 }
 
 function parsePositiveInteger(value, fallback) {
@@ -466,6 +492,56 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       viewerMode,
     };
   }
+
+  function buildPreviewState() {
+    const currentRecordedDate = getCurrentRecordedDate();
+    return buildQuestionPreviewState({
+      currentRecordedDate,
+      question: mapQuestionRow(getActiveQuestionRow(currentRecordedDate)),
+    });
+  }
+
+  app.get("/question-of-the-day", async (req, res) => {
+    try {
+      const host = req.get("host") || "mirabellier.com";
+      const protocol = resolveProtocol(req);
+      const state = buildPreviewState();
+      const html = buildQuestionShareHtml({
+        state,
+        protocol,
+        host,
+        spaPath: "/question-of-the-day",
+        redirectToSpa: shouldRedirectToSpa(req),
+      });
+
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      setNoStoreHeaders(res);
+      res.send(html);
+    } catch {
+      res.status(500).send("Server error");
+    }
+  });
+
+  app.get("/question-of-the-day/embed-image.png", async (req, res) => {
+    try {
+      const state = buildPreviewState();
+      const dimensions = getQuestionPreviewDimensions(state);
+      const imageBuffer = await renderQuestionPreviewBuffer(state);
+
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("Content-Length", String(imageBuffer.length));
+      res.setHeader("X-Preview-Version", String(state.version || "fallback"));
+      res.setHeader("X-Preview-Width", String(dimensions.width));
+      res.setHeader("X-Preview-Height", String(dimensions.height));
+      setEmbedImageCacheHeaders(
+        res,
+        typeof req.query.v === "string" && req.query.v.trim().length > 0,
+      );
+      res.send(imageBuffer);
+    } catch {
+      res.status(500).send("Failed to render question preview image");
+    }
+  });
 
   router.get("/current", (req, res) => {
     try {
