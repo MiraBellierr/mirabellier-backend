@@ -276,6 +276,36 @@ test("favorites-based rarity mapping uses MAL min/max range", () => {
   assert.equal(rarityFromFavorites(175000), "UR");
 });
 
+test("stored cards with zero favorites are normalized to C rarity", () => {
+  const db = createTestDb();
+  const card = makeCard(99, "SR");
+  card.favorites = 0;
+
+  insertProfile(db, {
+    userId: "u1",
+    selectedCard: card,
+  });
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_card_collection (id, userId, cardInstanceId, cardJson, createdAt, updatedAt)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "collection-1",
+    "u1",
+    card.cardInstanceId,
+    JSON.stringify(card),
+    now,
+    now,
+  );
+
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.equal(profile.selectedCard?.rarity, "C");
+
+  const collection = getArenaCollectionPayload(db, "u1");
+  assert.equal(collection.cards[0]?.rarity, "C");
+});
+
 test("tie break uses speed before coinflip", () => {
   assert.equal(
     resolveRoundWinner({
