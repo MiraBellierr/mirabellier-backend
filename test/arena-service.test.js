@@ -268,6 +268,7 @@ test("round power includes metadata and rarity modifiers", () => {
 });
 
 test("favorites-based rarity mapping uses MAL min/max range", () => {
+  assert.equal(rarityFromFavorites(0), "C");
   assert.equal(rarityFromFavorites(53), "C");
   assert.equal(rarityFromFavorites(7000), "R");
   assert.equal(rarityFromFavorites(60000), "SR");
