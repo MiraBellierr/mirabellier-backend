@@ -48,6 +48,7 @@ function createTestDb() {
       lifetimeCoinsEarned INTEGER NOT NULL DEFAULT 0,
       selectedCardJson TEXT,
       lastCardDrawDate TEXT,
+      dailyCardDrawCount INTEGER NOT NULL DEFAULT 0,
       effectsJson TEXT,
       lastFightAt TEXT,
       createdAt TEXT NOT NULL,
@@ -177,8 +178,8 @@ function insertProfile(db, input) {
     `INSERT INTO arena_profiles (
       userId, level, xp, coins, wins, losses, winStreak,
       hp, power, guard, speed, luck, lifetimeCoinsEarned,
-      selectedCardJson, lastCardDrawDate, effectsJson, lastFightAt, createdAt, updatedAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      selectedCardJson, lastCardDrawDate, dailyCardDrawCount, effectsJson, lastFightAt, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.userId,
     input.level ?? 1,
@@ -195,6 +196,7 @@ function insertProfile(db, input) {
     input.lifetimeCoinsEarned ?? 0,
     input.selectedCard ? JSON.stringify(input.selectedCard) : null,
     input.lastCardDrawDate ?? null,
+    input.dailyCardDrawCount ?? 0,
     JSON.stringify(
       input.effects ?? {
         expBoostPct: 0,
@@ -440,17 +442,23 @@ test("rich leaderboard sorts by coins then lifetime earned", () => {
   assert.equal(board.entries[1].user.id, "u2");
 });
 
-test("daily draw is limited to once per day", async () => {
+test("daily draw is limited to five cards per day", async () => {
   const db = createTestDb();
   insertProfile(db, {
     userId: "u1",
   });
 
-  const first = await drawDailyCard(db, "u1");
-  assert.ok(first.card);
-  assert.ok(first.profile.selectedCard);
+  for (let index = 0; index < 5; index += 1) {
+    const draw = await drawDailyCard(db, "u1");
+    assert.ok(draw.card);
+    assert.ok(draw.profile.selectedCard);
+    assert.equal(draw.profile.dailyDrawLimit, 5);
+    assert.equal(draw.profile.dailyDrawsUsed, index + 1);
+    assert.equal(draw.profile.dailyDrawsRemaining, Math.max(5 - (index + 1), 0));
+  }
+
   const collection = getArenaCollectionPayload(db, "u1");
-  assert.ok(collection.cards.length >= 1);
+  assert.ok(collection.cards.length >= 5);
 
   await assert.rejects(
     async () => {
