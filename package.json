@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "generate:sitemap": "node scripts/generate-sitemap.cjs"
+    "generate:sitemap": "node scripts/generate-sitemap.cjs",
+    "test": "node --test"
   },
   "dependencies": {
     "axios": "^1.13.2",
