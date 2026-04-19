@@ -100,6 +100,7 @@ function registerRoutes(app) {
   });
 
   require("./routes/anime")(app, { db, authFromReq });
+  require("./routes/arena")(app, { db, authFromReq });
   require("./routes/guestbook")(app, {
     db,
     authFromReq,
