@@ -2,6 +2,7 @@ const express = require("express");
 const {
   ArenaHttpError,
   buyShopItem,
+  craftShopRecipe,
   drawDailyCard,
   getArenaCollectionPayload,
   getArenaProfilePayload,
@@ -183,6 +184,23 @@ module.exports = function registerArenaRoutes(app, deps) {
       }
 
       const payload = useConsumable(db, user.id, itemId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/craft", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const recipeId = String(req.body?.recipeId || "").trim();
+      const quantity = req.body?.quantity;
+      if (!recipeId) {
+        throw new ArenaHttpError(400, "recipeId is required.", "ARENA_RECIPE_REQUIRED");
+      }
+
+      const payload = craftShopRecipe(db, user.id, recipeId, quantity);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {

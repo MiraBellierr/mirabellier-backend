@@ -5,6 +5,7 @@ const Database = require("better-sqlite3");
 const {
   ArenaHttpError,
   buyShopItem,
+  craftShopRecipe,
   calculateRoundPower,
   calculateWinCoins,
   calculateWinXp,
@@ -49,6 +50,7 @@ function createTestDb() {
       selectedCardJson TEXT,
       lastCardDrawDate TEXT,
       dailyCardDrawCount INTEGER NOT NULL DEFAULT 0,
+      catalogVersion TEXT NOT NULL DEFAULT 'v2',
       effectsJson TEXT,
       lastFightAt TEXT,
       createdAt TEXT NOT NULL,
@@ -178,8 +180,8 @@ function insertProfile(db, input) {
     `INSERT INTO arena_profiles (
       userId, level, xp, coins, wins, losses, winStreak,
       hp, power, guard, speed, luck, lifetimeCoinsEarned,
-      selectedCardJson, lastCardDrawDate, dailyCardDrawCount, effectsJson, lastFightAt, createdAt, updatedAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      selectedCardJson, lastCardDrawDate, dailyCardDrawCount, catalogVersion, effectsJson, lastFightAt, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.userId,
     input.level ?? 1,
@@ -197,17 +199,28 @@ function insertProfile(db, input) {
     input.selectedCard ? JSON.stringify(input.selectedCard) : null,
     input.lastCardDrawDate ?? null,
     input.dailyCardDrawCount ?? 0,
+    input.catalogVersion ?? "v2",
     JSON.stringify(
       input.effects ?? {
         expBoostPct: 0,
         expBoostWinsRemaining: 0,
         coinBoostPct: 0,
         coinBoostWinsRemaining: 0,
-        refocusCharges: 0,
+        rerollKeepHigherCharges: 0,
         streakShieldCharges: 0,
         upgradeLowestRarityCharges: 0,
         guaranteeSsrPlusCharges: 0,
         ascensionLastPurchasedAt: null,
+        fightStartShieldCharges: 0,
+        fightStartShieldAmount: 0,
+        evadeBoostPct: 0,
+        evadeBoostFightsRemaining: 0,
+        firstHitTrueDamageCharges: 0,
+        firstHitTrueDamageValue: 0,
+        higherRarityDamageBonusPctCharges: 0,
+        higherRarityDamageBonusPct: 0,
+        gateKeyCharges: 0,
+        doublePassiveTriggerFightsRemaining: 0,
       },
     ),
     input.lastFightAt ?? null,
@@ -409,7 +422,7 @@ test("fight cooldown blocks rapid repeat fights", async () => {
   );
 });
 
-test("buying gear consumes coins and equips item", () => {
+test("buying material consumes coins", () => {
   const db = createTestDb();
   insertProfile(db, {
     userId: "u1",
@@ -418,10 +431,33 @@ test("buying gear consumes coins and equips item", () => {
     selectedCard: makeCard(1, "C"),
   });
 
-  const buyResult = buyShopItem(db, "u1", "tin_sword");
-  assert.equal(buyResult.purchasedItemId, "tin_sword");
-  assert.equal(buyResult.shop.profile.coins, 700);
-  assert.equal(buyResult.shop.equipped.weapon?.itemId, "tin_sword");
+  const buyResult = buyShopItem(db, "u1", "azure_ore");
+  assert.equal(buyResult.purchasedItemId, "azure_ore");
+  assert.equal(buyResult.shop.profile.coins, 640);
+});
+
+test("crafting gear consumes materials and equips output", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 10,
+    coins: 3000,
+    selectedCard: makeCard(1, "C"),
+  });
+
+  for (let index = 0; index < 4; index += 1) {
+    buyShopItem(db, "u1", "driftwood_shard");
+  }
+  for (let index = 0; index < 2; index += 1) {
+    buyShopItem(db, "u1", "satchel_cloth");
+  }
+  buyShopItem(db, "u1", "timber_plank");
+
+  const crafted = craftShopRecipe(db, "u1", "rookie_gear_1");
+  assert.equal(crafted.craftedRecipeId, "rookie_gear_1");
+  assert.equal(crafted.outputItemId, "rustblade_weapon");
+  assert.equal(crafted.craftedQuantity, 1);
+  assert.equal(crafted.shop.equipped.weapon?.itemId, "rustblade_weapon");
 });
 
 test("using consumable applies effect and consumes quantity", () => {
@@ -429,19 +465,23 @@ test("using consumable applies effect and consumes quantity", () => {
   insertProfile(db, {
     userId: "u1",
     level: 20,
-    coins: 1000,
+    coins: 10000,
     selectedCard: makeCard(1, "C"),
   });
 
-  buyShopItem(db, "u1", "cracked_xp_tome");
-  const useResult = useConsumable(db, "u1", "cracked_xp_tome");
-  assert.equal(useResult.activatedItemId, "cracked_xp_tome");
-  assert.equal(useResult.effects.expBoostPct, 35);
-  assert.equal(useResult.effects.expBoostWinsRemaining, 1);
+  buyShopItem(db, "u1", "driftwood_shard");
+  buyShopItem(db, "u1", "driftwood_shard");
+  buyShopItem(db, "u1", "timber_plank");
+  craftShopRecipe(db, "u1", "rookie_cons_1");
+
+  const useResult = useConsumable(db, "u1", "red_tonic");
+  assert.equal(useResult.activatedItemId, "red_tonic");
+  assert.equal(useResult.effects.fightStartShieldCharges, 1);
+  assert.equal(useResult.effects.fightStartShieldAmount, 20);
 
   const profile = getArenaProfilePayload(db, "u1");
-  assert.equal(profile.effects.expBoostPct, 35);
-  assert.equal(profile.effects.expBoostWinsRemaining, 1);
+  assert.equal(profile.effects.fightStartShieldCharges, 1);
+  assert.equal(profile.effects.fightStartShieldAmount, 20);
 });
 
 test("rich leaderboard sorts by coins then lifetime earned", () => {
