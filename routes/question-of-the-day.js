@@ -301,7 +301,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
      ORDER BY q.recordedDate ASC
      LIMIT ? OFFSET ?`,
   );
-  const selectEarliestUnansweredQuestionThroughRecordedDate = db.prepare(
+  const selectActiveCarriedQuestionThroughRecordedDate = db.prepare(
     `SELECT
        q.recordedDate,
        q.prompt,
@@ -313,7 +313,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
      LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
      WHERE q.recordedDate <= ? AND q.archivedAt IS NULL
      GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt
-     HAVING COUNT(a.id) = 0
+     HAVING COUNT(a.id) = 0 OR substr(q.lockedAt, 1, 10) = ?
      ORDER BY q.recordedDate ASC
      LIMIT 1`,
   );
@@ -397,7 +397,8 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     const todaysQuestion = selectQuestionByRecordedDate.get(currentRecordedDate);
 
     return (
-      selectEarliestUnansweredQuestionThroughRecordedDate.get(
+      selectActiveCarriedQuestionThroughRecordedDate.get(
+        currentRecordedDate,
         currentRecordedDate,
       ) || (todaysQuestion && !todaysQuestion.archivedAt ? todaysQuestion : null)
     );
