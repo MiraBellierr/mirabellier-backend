@@ -8,6 +8,7 @@ const compression = require("compression");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const API_PREFIX = "/v1";
 
 function createCompressionMiddleware() {
   return compression({
@@ -24,6 +25,42 @@ function keepAliveMiddleware(req, res, next) {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("Keep-Alive", "timeout=5, max=100");
   next();
+}
+
+function normalizeApiPrefixMiddleware(req, _res, next) {
+  if (req.url === API_PREFIX || req.url.startsWith(`${API_PREFIX}/`)) {
+    const normalizedPath = req.url.slice(API_PREFIX.length);
+    req.url = normalizedPath || "/";
+  }
+  next();
+}
+
+function createCorsMiddleware() {
+  const configuredFrontendUrl = String(process.env.FRONTEND_URL || "").trim();
+  const allowedOrigins = new Set(
+    [
+      configuredFrontendUrl,
+      "https://mirabellier.com",
+      "https://www.mirabellier.com",
+    ].filter(Boolean),
+  );
+
+  return cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.has(origin)) return callback(null, true);
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Authorization",
+      "Content-Type",
+      "Origin",
+      "Accept",
+      "X-Requested-With",
+    ],
+  });
 }
 
 function serverTimingMiddleware(req, res, next) {
@@ -44,7 +81,8 @@ function serverTimingMiddleware(req, res, next) {
 function registerMiddlewares(app) {
   app.use(createCompressionMiddleware());
   app.use(keepAliveMiddleware);
-  app.use(cors());
+  app.use(normalizeApiPrefixMiddleware);
+  app.use(createCorsMiddleware());
   app.use(bodyParser.json({ limit: "1gb" }));
   app.use(bodyParser.urlencoded({ limit: "1gb", extended: true }));
   app.use(passport.initialize());
