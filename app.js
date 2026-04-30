@@ -36,20 +36,26 @@ function normalizeApiPrefixMiddleware(req, _res, next) {
 }
 
 function createCorsMiddleware() {
-  const configuredFrontendUrl = String(process.env.FRONTEND_URL || "").trim();
-  const allowedOrigins = new Set(
-    [
-      configuredFrontendUrl,
-      "https://mirabellier.com",
-      "https://www.mirabellier.com",
-    ].filter(Boolean),
-  );
+  const normalizeOrigin = (origin) => String(origin || "").trim().replace(/\/$/, "");
+  const configuredFrontendUrl = normalizeOrigin(process.env.FRONTEND_URL || "");
+  const configuredFrontendUrls = String(process.env.FRONTEND_URLS || "")
+    .split(",")
+    .map((entry) => normalizeOrigin(entry))
+    .filter(Boolean);
+  const allowedOrigins = new Set([
+    configuredFrontendUrl,
+    ...configuredFrontendUrls,
+    "https://mirabellier.com",
+    "https://www.mirabellier.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+  ].filter(Boolean));
 
   return cors({
     origin(origin, callback) {
       if (!origin) return callback(null, true);
-      if (allowedOrigins.has(origin)) return callback(null, true);
-      return callback(new Error("Not allowed by CORS"));
+      if (allowedOrigins.has(normalizeOrigin(origin))) return callback(null, true);
+      return callback(null, false);
     },
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
