@@ -8,7 +8,10 @@ const {
   buildProfileImageVersion,
   renderProfileEmbedBuffer,
 } = require("../lib/profile-embed");
-const { handleHumanSpaRequest } = require("../lib/spa-entry");
+const {
+  handleHumanSpaRequest,
+  sendFrontendRedirectConfigError,
+} = require("../lib/spa-entry");
 const { getUserPermissions, getUserRoles } = require("../lib/authz");
 
 function configureDiscordStrategy(findOrCreateDiscordUser) {
@@ -575,8 +578,9 @@ module.exports = function registerAuthRoutes(app, deps) {
       const user = getUserByUsername(username);
       if (!user) return res.status(404).send("User not found");
       const spaPath = `/profile/${username}`;
-      if (shouldRedirectToSpa(req) && handleHumanSpaRequest(req, res, spaPath)) {
-        return;
+      if (shouldRedirectToSpa(req)) {
+        if (handleHumanSpaRequest(req, res, spaPath)) return;
+        return sendFrontendRedirectConfigError(res);
       }
 
       const host = req.get("host");

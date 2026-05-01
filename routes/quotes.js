@@ -9,7 +9,10 @@ const {
   isLikelyCrawler,
   resolveProtocol,
 } = require("../lib/share-preview-utils");
-const { handleHumanSpaRequest } = require("../lib/spa-entry");
+const {
+  handleHumanSpaRequest,
+  sendFrontendRedirectConfigError,
+} = require("../lib/spa-entry");
 
 function setNoStoreHeaders(res) {
   res.setHeader(
@@ -51,7 +54,10 @@ async function loadQuotePreviewState() {
 module.exports = function registerQuoteRoutes(app) {
   app.get("/quotes", async (req, res) => {
     try {
-      if (shouldRedirectToSpa(req) && handleHumanSpaRequest(req, res, "/quotes")) return;
+      if (shouldRedirectToSpa(req)) {
+        if (handleHumanSpaRequest(req, res, "/quotes")) return;
+        return sendFrontendRedirectConfigError(res);
+      }
 
       const host = req.get("host") || "mirabellier.com";
       const protocol = resolveProtocol(req);
