@@ -322,10 +322,7 @@ function isLikelyCrawler(userAgent) {
 }
 
 function shouldRedirectToSpa(req) {
-  return (
-    !isLikelyCrawler(req.get("user-agent")) &&
-    String(req.query?._spa || "") !== "1"
-  );
+  return !isLikelyCrawler(req.get("user-agent"));
 }
 
 async function handleProfileEmbedImage(req, res, getUserByUsername, imagesDir) {
@@ -585,7 +582,7 @@ module.exports = function registerAuthRoutes(app, deps) {
         req.headers["x-forwarded-proto"] || req.protocol || "http";
       const spaPath = `/profile/${username}`;
       const requestPath = req.originalUrl || req.path || `/profile/${username}`;
-      const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
+      const redirectUrl = `${protocol}://${host}${spaPath}`;
 
       const html = buildProfileSeoPage({
         user,

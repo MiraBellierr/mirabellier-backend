@@ -329,10 +329,7 @@ function isLikelyCrawler(userAgent) {
 }
 
 function shouldRedirectToSpa(req) {
-  return (
-    !isLikelyCrawler(req.get("user-agent")) &&
-    String(req.query?._spa || "") !== "1"
-  );
+  return !isLikelyCrawler(req.get("user-agent"));
 }
 
 function buildBlogRedirectPage({
@@ -581,7 +578,7 @@ module.exports = function registerPostsRoutes(app, deps) {
 
       const spaPath = buildBlogPath(title, id);
       const canonicalUrl = `${frontendOrigin}${spaPath}`;
-      const redirectUrl = `${canonicalUrl}?_spa=1`;
+      const redirectUrl = canonicalUrl;
 
       const html = buildBlogRedirectPage({
         title,

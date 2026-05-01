@@ -30,10 +30,7 @@ function setEmbedImageCacheHeaders(res, hasVersionQuery) {
 }
 
 function shouldRedirectToSpa(req) {
-  return (
-    !isLikelyCrawler(req.get("user-agent")) &&
-    String(req.query?._spa || "") !== "1"
-  );
+  return !isLikelyCrawler(req.get("user-agent"));
 }
 
 async function loadQuotePreviewState() {

@@ -95,10 +95,7 @@ function clamp(value, min, max) {
 }
 
 function shouldRedirectToSpa(req) {
-  return (
-    !isLikelyCrawler(req.get("user-agent")) &&
-    String(req.query?._spa || "") !== "1"
-  );
+  return !isLikelyCrawler(req.get("user-agent"));
 }
 
 function parsePositiveInteger(value, fallback) {
