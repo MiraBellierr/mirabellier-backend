@@ -194,7 +194,7 @@ function renderShrinePage(req, res, shrinePage) {
   try {
     if (shouldRedirectToSpa(req)) {
       if (handleHumanSpaRequest(req, res, shrinePage.path)) return;
-      return sendFrontendRedirectConfigError(res);
+      return sendFrontendRedirectConfigError(req, res, shrinePage.path);
     }
 
     const host = req.get("host") || "mirabellier.com";

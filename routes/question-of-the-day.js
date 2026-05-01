@@ -503,7 +503,11 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     try {
       if (shouldRedirectToSpa(req)) {
         if (handleHumanSpaRequest(req, res, "/question-of-the-day")) return;
-        return sendFrontendRedirectConfigError(res);
+        return sendFrontendRedirectConfigError(
+          req,
+          res,
+          "/question-of-the-day",
+        );
       }
 
       const host = req.get("host") || "mirabellier.com";

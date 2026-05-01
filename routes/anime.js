@@ -43,7 +43,7 @@ module.exports = function registerAnimeRoutes(app, { db }) {
     try {
       if (shouldRedirectToSpa(req)) {
         if (handleHumanSpaRequest(req, res, "/anime")) return;
-        return sendFrontendRedirectConfigError(res);
+        return sendFrontendRedirectConfigError(req, res, "/anime");
       }
 
       const host = req.get("host") || "mirabellier.com";
