@@ -7,7 +7,10 @@ const {
   renderAnimePreviewBuffer,
   resolveProtocol,
 } = require("../lib/anime-embed");
-const { handleHumanSpaRequest } = require("../lib/spa-entry");
+const {
+  handleHumanSpaRequest,
+  sendFrontendRedirectConfigError,
+} = require("../lib/spa-entry");
 const { CONFIG_ERROR_CODE: MAL_CONFIG_ERROR_CODE, getCurrentlyWatchingAnimeFeed } = require("../lib/mal-anime");
 
 function setNoStoreHeaders(res) {
@@ -38,7 +41,10 @@ module.exports = function registerAnimeRoutes(app, { db }) {
 
   app.get("/anime", async (req, res) => {
     try {
-      if (shouldRedirectToSpa(req) && handleHumanSpaRequest(req, res, "/anime")) return;
+      if (shouldRedirectToSpa(req)) {
+        if (handleHumanSpaRequest(req, res, "/anime")) return;
+        return sendFrontendRedirectConfigError(res);
+      }
 
       const host = req.get("host") || "mirabellier.com";
       const protocol = resolveProtocol(req);

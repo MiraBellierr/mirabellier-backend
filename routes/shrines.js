@@ -3,7 +3,10 @@ const {
   getShrinePageByPath,
   getShrinePageBySlug,
 } = require("../lib/shrines");
-const { handleHumanSpaRequest } = require("../lib/spa-entry");
+const {
+  handleHumanSpaRequest,
+  sendFrontendRedirectConfigError,
+} = require("../lib/spa-entry");
 const { isOwner } = require("../lib/authz");
 
 function setNoStoreHeaders(res) {
@@ -189,8 +192,9 @@ function renderShrinePage(req, res, shrinePage) {
   }
 
   try {
-    if (shouldRedirectToSpa(req) && handleHumanSpaRequest(req, res, shrinePage.path)) {
-      return;
+    if (shouldRedirectToSpa(req)) {
+      if (handleHumanSpaRequest(req, res, shrinePage.path)) return;
+      return sendFrontendRedirectConfigError(res);
     }
 
     const host = req.get("host") || "mirabellier.com";

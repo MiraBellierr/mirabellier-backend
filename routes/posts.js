@@ -3,7 +3,10 @@ const {
   getWebsiteBase,
   queueIndexNowSubmission,
 } = require("../lib/indexnow");
-const { handleHumanSpaRequest } = require("../lib/spa-entry");
+const {
+  handleHumanSpaRequest,
+  sendFrontendRedirectConfigError,
+} = require("../lib/spa-entry");
 
 const MAX_TAGS = 10;
 
@@ -574,8 +577,9 @@ module.exports = function registerPostsRoutes(app, deps) {
         : "";
 
       const spaPath = buildBlogPath(title, id);
-      if (shouldRedirectToSpa(req) && handleHumanSpaRequest(req, res, spaPath)) {
-        return;
+      if (shouldRedirectToSpa(req)) {
+        if (handleHumanSpaRequest(req, res, spaPath)) return;
+        return sendFrontendRedirectConfigError(res);
       }
 
       const canonicalUrl = `${frontendOrigin}${spaPath}`;
