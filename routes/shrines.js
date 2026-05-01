@@ -94,10 +94,7 @@ function isLikelyCrawler(userAgent) {
 }
 
 function shouldRedirectToSpa(req) {
-  return (
-    !isLikelyCrawler(req.get("user-agent")) &&
-    String(req.query?._spa || "") !== "1"
-  );
+  return !isLikelyCrawler(req.get("user-agent"));
 }
 
 function resolveAssetUrl(asset, protocol, host) {
@@ -198,7 +195,7 @@ function renderShrinePage(req, res, shrinePage) {
     const protocol = resolveProtocol(req);
     const redirectToSpa = shouldRedirectToSpa(req);
     const imageUrl = resolveAssetUrl(shrinePage.image, protocol, host);
-    const redirectUrl = `${protocol}://${host}${shrinePage.path}?_spa=1`;
+    const redirectUrl = `${protocol}://${host}${shrinePage.path}`;
 
     const html = buildShrineSeoPage({
       title: shrinePage.title,
