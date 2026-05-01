@@ -32,14 +32,6 @@ function configureDiscordStrategy(findOrCreateDiscordUser) {
   );
 }
 
-function getBearerToken(req) {
-  const auth = req.headers.authorization;
-  if (!auth) return null;
-  const parts = auth.split(" ");
-  if (parts.length !== 2) return null;
-  return parts[1];
-}
-
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -183,6 +175,42 @@ function resolveFrontendOrigin(rawOrigin, fallbackFrontendUrl) {
 }
 
 const OAUTH_ORIGIN_COOKIE = "oauth_frontend_origin";
+const SESSION_COOKIE_NAME =
+  process.env.SESSION_COOKIE_NAME || "mirabellier_session";
+const SESSION_COOKIE_MAX_AGE_SECONDS = Number.parseInt(
+  process.env.SESSION_COOKIE_MAX_AGE_SECONDS || "",
+  10,
+);
+
+function isSecureRequest(req) {
+  if (req.secure) return true;
+  const forwardedProto = req.get("x-forwarded-proto");
+  if (!forwardedProto) return false;
+  return forwardedProto.split(",")[0].trim().toLowerCase() === "https";
+}
+
+function shouldUseSecureCookies(req) {
+  const configured = String(process.env.SESSION_COOKIE_SECURE || "").trim();
+  if (configured.toLowerCase() === "true") return true;
+  if (configured.toLowerCase() === "false") return false;
+  return isSecureRequest(req);
+}
+
+function buildCookieString(req, name, value, maxAgeSeconds) {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.max(0, maxAgeSeconds)}`,
+  ];
+
+  if (shouldUseSecureCookies(req)) {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
+}
 
 function appendSetCookieHeader(res, cookieValue) {
   const existing = res.getHeader("Set-Cookie");
@@ -200,18 +228,40 @@ function appendSetCookieHeader(res, cookieValue) {
   res.setHeader("Set-Cookie", [existing, cookieValue]);
 }
 
-function setOauthOriginCookie(res, origin) {
+function setOauthOriginCookie(req, res, origin) {
   appendSetCookieHeader(
     res,
-    `${OAUTH_ORIGIN_COOKIE}=${encodeURIComponent(origin)}; Path=/; HttpOnly; Max-Age=600; SameSite=Lax`,
+    buildCookieString(req, OAUTH_ORIGIN_COOKIE, origin, 600),
   );
 }
 
-function clearOauthOriginCookie(res) {
+function clearOauthOriginCookie(req, res) {
   appendSetCookieHeader(
     res,
-    `${OAUTH_ORIGIN_COOKIE}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax`,
+    buildCookieString(req, OAUTH_ORIGIN_COOKIE, "", 0),
   );
+}
+
+function setSessionCookie(req, res, token) {
+  const maxAge = Number.isFinite(SESSION_COOKIE_MAX_AGE_SECONDS)
+    ? SESSION_COOKIE_MAX_AGE_SECONDS
+    : 60 * 60 * 24 * 30;
+  appendSetCookieHeader(
+    res,
+    buildCookieString(req, SESSION_COOKIE_NAME, token, maxAge),
+  );
+}
+
+function clearSessionCookie(req, res) {
+  appendSetCookieHeader(res, buildCookieString(req, SESSION_COOKIE_NAME, "", 0));
+}
+
+function getBearerToken(req) {
+  const auth = req.headers.authorization;
+  if (!auth) return "";
+  const parts = auth.split(" ");
+  if (parts.length !== 2) return "";
+  return parts[1];
 }
 
 function readCookieValue(req, key) {
@@ -322,7 +372,7 @@ module.exports = function registerAuthRoutes(app, deps) {
       rawRequestedOrigin,
       configuredFrontendUrl,
     );
-    setOauthOriginCookie(res, frontendOrigin);
+    setOauthOriginCookie(req, res, frontendOrigin);
 
     return passport.authenticate("discord", { state: frontendOrigin })(
       req,
@@ -343,6 +393,7 @@ module.exports = function registerAuthRoutes(app, deps) {
         const user = req.user;
         const token = makeToken();
         createSession(token, user.id);
+        setSessionCookie(req, res, token);
 
         const configuredFrontendUrl =
           process.env.FRONTEND_URL || "http://localhost:5173";
@@ -353,9 +404,9 @@ module.exports = function registerAuthRoutes(app, deps) {
           stateOrigin || cookieOrigin,
           configuredFrontendUrl,
         );
-        clearOauthOriginCookie(res);
+        clearOauthOriginCookie(req, res);
 
-        res.redirect(`${frontendOrigin}/auth/callback?token=${token}`);
+        res.redirect(`${frontendOrigin}/auth/callback`);
       } catch {
         res.redirect("/login?error=auth_failed");
       }
@@ -407,10 +458,23 @@ module.exports = function registerAuthRoutes(app, deps) {
 
   app.post("/logout", (req, res) => {
     try {
-      const token = getBearerToken(req);
-      if (!token) return res.status(401).json({ error: "unauthenticated" });
+      const bearerToken = getBearerToken(req);
+      const cookieToken = readCookieValue(req, SESSION_COOKIE_NAME);
+      const tokens = Array.from(
+        new Set([bearerToken, cookieToken].filter((value) => value)),
+      );
 
-      db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+      if (tokens.length === 0) {
+        clearSessionCookie(req, res);
+        return res.status(401).json({ error: "unauthenticated" });
+      }
+
+      const removeSession = db.prepare("DELETE FROM sessions WHERE token = ?");
+      for (const token of tokens) {
+        removeSession.run(token);
+      }
+
+      clearSessionCookie(req, res);
       res.json({ ok: true });
     } catch {
       res.status(500).json({ error: "logout failed" });

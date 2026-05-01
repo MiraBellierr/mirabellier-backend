@@ -15,7 +15,7 @@ The frontend gets most of the cute attention, but this is the part quietly doing
 - Blog post CRUD routes
 - Comment and like handling
 - Guestbook entry, position, and moderation routes
-- Discord OAuth login and session tokens
+- Discord OAuth login with server-side httpOnly session cookies
 - Profile update routes
 - Anime feed routes
 - MyAnimeList currently-watching snapshot sync
