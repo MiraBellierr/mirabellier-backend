@@ -86,6 +86,40 @@ function serverTimingMiddleware(req, res, next) {
   next();
 }
 
+const USER_AGENT_VARY_PREFIXES = [
+  "/anime",
+  "/blog",
+  "/profile",
+  "/question-of-the-day",
+  "/quotes",
+  "/shrine",
+];
+
+function varyUserAgentForSpaPreviewRoutes(req, res, next) {
+  if (req.method !== "GET") {
+    next();
+    return;
+  }
+
+  const path = String(req.path || "");
+  const shouldVary = USER_AGENT_VARY_PREFIXES.some(
+    (prefix) => path === prefix || path.startsWith(`${prefix}/`),
+  );
+
+  if (!shouldVary) {
+    next();
+    return;
+  }
+
+  const existingVary = String(res.getHeader("Vary") || "");
+  if (!/\bUser-Agent\b/i.test(existingVary)) {
+    const nextVary = existingVary ? `${existingVary}, User-Agent` : "User-Agent";
+    res.setHeader("Vary", nextVary);
+  }
+
+  next();
+}
+
 function readCookieValue(req, key) {
   const cookieHeader = req.headers.cookie;
   if (!cookieHeader) return "";
@@ -125,6 +159,7 @@ function registerMiddlewares(app) {
   app.use(keepAliveMiddleware);
   app.use(normalizeApiPrefixMiddleware);
   app.use(createCorsMiddleware());
+  app.use(varyUserAgentForSpaPreviewRoutes);
   app.use(bodyParser.json({ limit: "1gb" }));
   app.use(bodyParser.urlencoded({ limit: "1gb", extended: true }));
   app.use(passport.initialize());
