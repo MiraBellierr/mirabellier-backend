@@ -3,7 +3,7 @@ const {
   getShrinePageByPath,
   getShrinePageBySlug,
 } = require("../lib/shrines");
-const { sendSpaEntry } = require("../lib/spa-entry");
+const { handleHumanSpaRequest } = require("../lib/spa-entry");
 const { isOwner } = require("../lib/authz");
 
 function setNoStoreHeaders(res) {
@@ -189,7 +189,7 @@ function renderShrinePage(req, res, shrinePage) {
   }
 
   try {
-    if (shouldRedirectToSpa(req) && sendSpaEntry(res)) {
+    if (shouldRedirectToSpa(req) && handleHumanSpaRequest(req, res, shrinePage.path)) {
       return;
     }
 

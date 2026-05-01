@@ -9,7 +9,7 @@ const {
   isLikelyCrawler,
   resolveProtocol,
 } = require("../lib/share-preview-utils");
-const { sendSpaEntry } = require("../lib/spa-entry");
+const { handleHumanSpaRequest } = require("../lib/spa-entry");
 const { isOwner } = require("../lib/authz");
 
 const MAX_PROMPT_LENGTH = 240;
@@ -498,7 +498,12 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
 
   app.get("/question-of-the-day", async (req, res) => {
     try {
-      if (shouldRedirectToSpa(req) && sendSpaEntry(res)) return;
+      if (
+        shouldRedirectToSpa(req) &&
+        handleHumanSpaRequest(req, res, "/question-of-the-day")
+      ) {
+        return;
+      }
 
       const host = req.get("host") || "mirabellier.com";
       const protocol = resolveProtocol(req);
