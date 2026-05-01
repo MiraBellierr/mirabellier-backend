@@ -3,6 +3,7 @@ const {
   getWebsiteBase,
   queueIndexNowSubmission,
 } = require("../lib/indexnow");
+const { sendSpaEntry } = require("../lib/spa-entry");
 
 const MAX_TAGS = 10;
 
@@ -343,8 +344,6 @@ function buildBlogRedirectPage({
   modifiedTime,
   tags,
   canonicalUrl,
-  redirectUrl,
-  redirectToSpa,
 }) {
   const articleJsonLd = {
     "@context": "https://schema.org",
@@ -401,7 +400,6 @@ function buildBlogRedirectPage({
     ${imageUrl ? `<meta name="twitter:image:alt" content="${escapeHtml(title)}" />` : ""}
     <link rel="canonical" href="${canonicalUrl}" />
     <script type="application/ld+json">${escapeJsonForHtml(articleJsonLd)}</script>
-    ${redirectToSpa ? `<script>window.location.replace('${redirectUrl}')</script>` : ""}
   </head>
   <body>
     <main>
@@ -555,6 +553,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         .get(id);
 
       if (!post) return res.status(404).send("Not found");
+      if (shouldRedirectToSpa(req) && sendSpaEntry(res)) return;
 
       const title = post.title || "Untitled";
       const description = buildPostDescription(post);
@@ -574,11 +573,9 @@ module.exports = function registerPostsRoutes(app, deps) {
       const authorUrl = post.userId
         ? buildProfileUrl(authorName, frontendOrigin)
         : "";
-      const redirectToSpa = shouldRedirectToSpa(req);
 
       const spaPath = buildBlogPath(title, id);
       const canonicalUrl = `${frontendOrigin}${spaPath}`;
-      const redirectUrl = canonicalUrl;
 
       const html = buildBlogRedirectPage({
         title,
@@ -591,8 +588,6 @@ module.exports = function registerPostsRoutes(app, deps) {
         modifiedTime,
         tags,
         canonicalUrl,
-        redirectUrl,
-        redirectToSpa,
       });
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");

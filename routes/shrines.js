@@ -3,6 +3,7 @@ const {
   getShrinePageByPath,
   getShrinePageBySlug,
 } = require("../lib/shrines");
+const { sendSpaEntry } = require("../lib/spa-entry");
 const { isOwner } = require("../lib/authz");
 
 function setNoStoreHeaders(res) {
@@ -125,8 +126,6 @@ function buildShrineSeoPage({
   protocol,
   host,
   spaPath,
-  redirectUrl,
-  redirectToSpa,
   ctaLabel,
 }) {
   const canonicalUrl = `${protocol}://${host}${spaPath}`;
@@ -173,7 +172,6 @@ function buildShrineSeoPage({
     ${imageAlt ? `<meta name="twitter:image:alt" content="${escapeHtml(imageAlt)}" />` : ""}
     <link rel="canonical" href="${canonicalUrl}" />
     <script type="application/ld+json">${escapeJsonForHtml(jsonLd)}</script>
-    ${redirectToSpa ? `<script>window.location.replace('${redirectUrl}')</script>` : ""}
   </head>
   <body>
     <main>
@@ -191,11 +189,13 @@ function renderShrinePage(req, res, shrinePage) {
   }
 
   try {
+    if (shouldRedirectToSpa(req) && sendSpaEntry(res)) {
+      return;
+    }
+
     const host = req.get("host") || "mirabellier.com";
     const protocol = resolveProtocol(req);
-    const redirectToSpa = shouldRedirectToSpa(req);
     const imageUrl = resolveAssetUrl(shrinePage.image, protocol, host);
-    const redirectUrl = `${protocol}://${host}${shrinePage.path}`;
 
     const html = buildShrineSeoPage({
       title: shrinePage.title,
@@ -209,8 +209,6 @@ function renderShrinePage(req, res, shrinePage) {
       protocol,
       host,
       spaPath: shrinePage.path,
-      redirectUrl,
-      redirectToSpa,
       ctaLabel: shrinePage.ctaLabel,
     });
 
