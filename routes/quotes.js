@@ -9,6 +9,7 @@ const {
   isLikelyCrawler,
   resolveProtocol,
 } = require("../lib/share-preview-utils");
+const { sendSpaEntry } = require("../lib/spa-entry");
 
 function setNoStoreHeaders(res) {
   res.setHeader(
@@ -50,6 +51,8 @@ async function loadQuotePreviewState() {
 module.exports = function registerQuoteRoutes(app) {
   app.get("/quotes", async (req, res) => {
     try {
+      if (shouldRedirectToSpa(req) && sendSpaEntry(res)) return;
+
       const host = req.get("host") || "mirabellier.com";
       const protocol = resolveProtocol(req);
       const state = await loadQuotePreviewState();
@@ -58,7 +61,6 @@ module.exports = function registerQuoteRoutes(app) {
         protocol,
         host,
         spaPath: "/quotes",
-        redirectToSpa: shouldRedirectToSpa(req),
       });
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
