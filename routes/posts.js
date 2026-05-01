@@ -234,6 +234,28 @@ function buildBlogUrl(title, id) {
   return buildSiteUrl(buildBlogPath(title, id));
 }
 
+function normalizeOrigin(value) {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    return parsed.origin;
+  } catch {
+    return "";
+  }
+}
+
+function resolveFrontendOrigin(protocol, host) {
+  const frontendOrigin = normalizeOrigin(process.env.FRONTEND_URL);
+  if (frontendOrigin) return frontendOrigin;
+
+  const websiteOrigin = normalizeOrigin(getWebsiteBase());
+  if (websiteOrigin) return websiteOrigin;
+
+  return `${protocol}://${host}`;
+}
+
 function buildIndexNowUrlsForPost(title, id) {
   return [buildBlogUrl(title, id), buildSiteUrl("/blog")];
 }
@@ -245,9 +267,9 @@ function buildImageUrl(thumbnail, protocol, host) {
   return `${protocol}://${host}/images/${thumbnail}`;
 }
 
-function buildProfileUrl(authorName, protocol, host) {
+function buildProfileUrl(authorName, origin) {
   if (!authorName) return "";
-  return `${protocol}://${host}/profile/${encodeURIComponent(authorName)}`;
+  return `${origin}/profile/${encodeURIComponent(authorName)}`;
 }
 
 function escapeJsonForHtml(value) {
@@ -323,13 +345,10 @@ function buildBlogRedirectPage({
   publishedTime,
   modifiedTime,
   tags,
-  protocol,
-  host,
-  spaPath,
+  canonicalUrl,
   redirectUrl,
   redirectToSpa,
 }) {
-  const canonicalUrl = `${protocol}://${host}${spaPath}`;
   const articleJsonLd = {
     "@context": "https://schema.org",
     "@type": "BlogPosting",
@@ -550,17 +569,19 @@ module.exports = function registerPostsRoutes(app, deps) {
         ? post.authorName || post.author || "Unknown"
         : post.author || "Unknown";
 
-      const host = req.get("host");
+      const host = req.get("host") || "mirabellier.com";
       const protocol =
         req.headers["x-forwarded-proto"] || req.protocol || "http";
+      const frontendOrigin = resolveFrontendOrigin(protocol, host);
       const imageUrl = buildImageUrl(post.thumbnail || null, protocol, host);
       const authorUrl = post.userId
-        ? buildProfileUrl(authorName, protocol, host)
+        ? buildProfileUrl(authorName, frontendOrigin)
         : "";
       const redirectToSpa = shouldRedirectToSpa(req);
 
       const spaPath = buildBlogPath(title, id);
-      const redirectUrl = `${protocol}://${host}${spaPath}?_spa=1`;
+      const canonicalUrl = `${frontendOrigin}${spaPath}`;
+      const redirectUrl = `${canonicalUrl}?_spa=1`;
 
       const html = buildBlogRedirectPage({
         title,
@@ -572,9 +593,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         publishedTime,
         modifiedTime,
         tags,
-        protocol,
-        host,
-        spaPath,
+        canonicalUrl,
         redirectUrl,
         redirectToSpa,
       });
