@@ -3,7 +3,7 @@ const {
   getWebsiteBase,
   queueIndexNowSubmission,
 } = require("../lib/indexnow");
-const { sendSpaEntry } = require("../lib/spa-entry");
+const { handleHumanSpaRequest } = require("../lib/spa-entry");
 
 const MAX_TAGS = 10;
 
@@ -553,7 +553,6 @@ module.exports = function registerPostsRoutes(app, deps) {
         .get(id);
 
       if (!post) return res.status(404).send("Not found");
-      if (shouldRedirectToSpa(req) && sendSpaEntry(res)) return;
 
       const title = post.title || "Untitled";
       const description = buildPostDescription(post);
@@ -575,6 +574,10 @@ module.exports = function registerPostsRoutes(app, deps) {
         : "";
 
       const spaPath = buildBlogPath(title, id);
+      if (shouldRedirectToSpa(req) && handleHumanSpaRequest(req, res, spaPath)) {
+        return;
+      }
+
       const canonicalUrl = `${frontendOrigin}${spaPath}`;
 
       const html = buildBlogRedirectPage({
