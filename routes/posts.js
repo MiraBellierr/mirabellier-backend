@@ -579,7 +579,7 @@ module.exports = function registerPostsRoutes(app, deps) {
       const spaPath = buildBlogPath(title, id);
       if (shouldRedirectToSpa(req)) {
         if (handleHumanSpaRequest(req, res, spaPath)) return;
-        return sendFrontendRedirectConfigError(res);
+        return sendFrontendRedirectConfigError(req, res, spaPath);
       }
 
       const canonicalUrl = `${frontendOrigin}${spaPath}`;

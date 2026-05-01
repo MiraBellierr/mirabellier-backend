@@ -56,7 +56,7 @@ module.exports = function registerQuoteRoutes(app) {
     try {
       if (shouldRedirectToSpa(req)) {
         if (handleHumanSpaRequest(req, res, "/quotes")) return;
-        return sendFrontendRedirectConfigError(res);
+        return sendFrontendRedirectConfigError(req, res, "/quotes");
       }
 
       const host = req.get("host") || "mirabellier.com";

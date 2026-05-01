@@ -580,7 +580,7 @@ module.exports = function registerAuthRoutes(app, deps) {
       const spaPath = `/profile/${username}`;
       if (shouldRedirectToSpa(req)) {
         if (handleHumanSpaRequest(req, res, spaPath)) return;
-        return sendFrontendRedirectConfigError(res);
+        return sendFrontendRedirectConfigError(req, res, spaPath);
       }
 
       const host = req.get("host");
