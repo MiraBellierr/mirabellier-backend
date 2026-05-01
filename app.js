@@ -9,6 +9,8 @@ const compression = require("compression");
 const app = express();
 const PORT = process.env.PORT || 5000;
 const API_PREFIX = "/v1";
+const SESSION_COOKIE_NAME =
+  process.env.SESSION_COOKIE_NAME || "mirabellier_session";
 
 function createCompressionMiddleware() {
   return compression({
@@ -84,6 +86,40 @@ function serverTimingMiddleware(req, res, next) {
   next();
 }
 
+function readCookieValue(req, key) {
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return "";
+
+  const parts = cookieHeader.split(";");
+  for (const part of parts) {
+    const trimmed = part.trim();
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex === -1) continue;
+    const cookieKey = trimmed.slice(0, separatorIndex);
+    if (cookieKey !== key) continue;
+    const rawValue = trimmed.slice(separatorIndex + 1);
+    try {
+      return decodeURIComponent(rawValue);
+    } catch {
+      return rawValue;
+    }
+  }
+
+  return "";
+}
+
+function getBearerTokenFromReq(req) {
+  const auth = req.headers.authorization;
+  if (!auth) return "";
+  const parts = auth.split(" ");
+  if (parts.length !== 2) return "";
+  return parts[1];
+}
+
+function getSessionCookieTokenFromReq(req) {
+  return readCookieValue(req, SESSION_COOKIE_NAME);
+}
+
 function registerMiddlewares(app) {
   app.use(createCompressionMiddleware());
   app.use(keepAliveMiddleware);
@@ -107,12 +143,17 @@ const {
 } = require("./lib/question-of-the-day-discord");
 
 function authFromReq(req) {
-  const auth = req.headers.authorization;
-  if (!auth) return null;
-  const parts = auth.split(" ");
-  if (parts.length !== 2) return null;
-  const token = parts[1];
-  return users.getUserByToken(token);
+  const bearerToken = getBearerTokenFromReq(req);
+  if (bearerToken) {
+    const userFromBearer = users.getUserByToken(bearerToken);
+    if (userFromBearer) {
+      return userFromBearer;
+    }
+  }
+
+  const cookieToken = getSessionCookieTokenFromReq(req);
+  if (!cookieToken) return null;
+  return users.getUserByToken(cookieToken);
 }
 
 function registerRoutes(app) {
