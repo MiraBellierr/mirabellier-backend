@@ -8,6 +8,7 @@ const {
   buildProfileImageVersion,
   renderProfileEmbedBuffer,
 } = require("../lib/profile-embed");
+const { getUserPermissions, getUserRoles } = require("../lib/authz");
 
 function configureDiscordStrategy(findOrCreateDiscordUser) {
   passport.use(
@@ -187,6 +188,14 @@ function isSecureRequest(req) {
   const forwardedProto = req.get("x-forwarded-proto");
   if (!forwardedProto) return false;
   return forwardedProto.split(",")[0].trim().toLowerCase() === "https";
+}
+
+function buildAuthenticatedUserPayload(user, userPublic) {
+  return {
+    ...userPublic(user),
+    roles: getUserRoles(user),
+    permissions: getUserPermissions(user),
+  };
 }
 
 function shouldUseSecureCookies(req) {
@@ -417,7 +426,7 @@ module.exports = function registerAuthRoutes(app, deps) {
     try {
       const user = authFromReq(req);
       if (!user) return res.status(401).json({ error: "unauthenticated" });
-      res.json(userPublic(user));
+      res.json(buildAuthenticatedUserPayload(user, userPublic));
     } catch {
       res.status(500).json({ error: "failed" });
     }
@@ -520,7 +529,7 @@ module.exports = function registerAuthRoutes(app, deps) {
           website: req.body.website,
         });
 
-        res.json(userPublic(updated));
+        res.json(buildAuthenticatedUserPayload(updated, userPublic));
       } catch (err) {
         if (err.message === "username taken") {
           return res.status(409).json({ error: "username taken" });

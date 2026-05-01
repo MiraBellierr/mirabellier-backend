@@ -9,8 +9,8 @@ const {
   isLikelyCrawler,
   resolveProtocol,
 } = require("../lib/share-preview-utils");
+const { isOwner } = require("../lib/authz");
 
-const OWNER_DISCORD_ID = "548050617889980426";
 const MAX_PROMPT_LENGTH = 240;
 const MAX_ANSWER_LENGTH = 500;
 const MAX_GUEST_NAME_LENGTH = 40;
@@ -24,10 +24,6 @@ class HttpError extends Error {
     this.name = "HttpError";
     this.status = status;
   }
-}
-
-function isOwner(user) {
-  return Boolean(user && user.discordId === OWNER_DISCORD_ID);
 }
 
 function getCurrentRecordedDate(date = new Date()) {

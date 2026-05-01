@@ -1,9 +1,9 @@
 const express = require("express");
+const { isOwner } = require("../lib/authz");
 
 const MAX_ENTRIES = 100;
 const MAX_NAME_LENGTH = 40;
 const MAX_MESSAGE_LENGTH = 400;
-const OWNER_DISCORD_ID = "548050617889980426";
 const NOTE_SIZE = 280;
 const BOARD_IMAGE_WIDTH = 1199;
 const BOARD_IMAGE_HEIGHT = 678;
@@ -19,10 +19,6 @@ const ALLOWED_MOODS = new Set([
   "sunny",
   "chaotic",
 ]);
-
-function isOwner(user) {
-  return Boolean(user && user.discordId === OWNER_DISCORD_ID);
-}
 
 function collapseWhitespace(value) {
   return String(value || "")

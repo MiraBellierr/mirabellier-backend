@@ -3,12 +3,7 @@ const {
   getShrinePageByPath,
   getShrinePageBySlug,
 } = require("../lib/shrines");
-
-const OWNER_DISCORD_ID = "548050617889980426";
-
-function isOwner(user) {
-  return Boolean(user && user.discordId === OWNER_DISCORD_ID);
-}
+const { isOwner } = require("../lib/authz");
 
 function setNoStoreHeaders(res) {
   res.setHeader(
