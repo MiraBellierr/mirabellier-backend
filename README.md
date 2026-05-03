@@ -4,36 +4,39 @@
 
 This is the backend for my little corner of the web.
 
-It is a small Express app that handles the practical side of the site: blog posts, comments, likes, Discord login, profile updates, anime data, image uploads, quote snapshots, sitemap generation, and a few SEO-friendly routes for sharing pages nicely.
+It is a cozy-but-serious Express app that handles auth, data, uploads, share previews, and all the behind-the-scenes logic that keeps the frontend feeling smooth.
 
 ## Hiya!!
 
-The frontend gets most of the cute attention, but this is the part quietly doing the real work in the background. It stores the data, serves the images, handles auth, keeps the blog editable, and makes sure the site still works like an actual app instead of just being a pretty page.
+The frontend gets the sparkles, but this is the quiet engine room. It stores the content, protects auth sessions, syncs live-ish data, and makes sure the cute pages are backed by real behavior.
 
-## What lives here
+## What this backend does
 
-- Blog post CRUD routes
-- Comment and like handling
-- Guestbook entry, position, and moderation routes
-- Discord OAuth login with server-side httpOnly session cookies
-- Profile update routes
-- Anime feed routes
-- MyAnimeList currently-watching snapshot sync
-- Daily quote snapshot storage and fetching
-- Image upload and optimization
-- Sitemap and IndexNow helpers
+- Serves blog posts, tags, comments, and likes
+- Handles Discord OAuth login and httpOnly session cookies
+- Stores and updates public profile data
+- Powers the guestbook board with synced note positions
+- Runs the Arena API (profile, collection, shop, fight, leaderboard)
+- Runs Question of the Day APIs (current, answers, archive, admin queue)
+- Serves shrine admin/content APIs and shrine SEO/share pages
+- Serves anime and quote SEO/share pages + embed images
+- Stores quote snapshots and MyAnimeList currently-watching snapshots
+- Handles image uploads and optimization
+- Generates sitemap data and supports IndexNow submission
 
 ## Tiny project tour
 
 ```text
 mirabellier-backend/
-|- app.js            Main server entry
-|- routes/           Route handlers for posts, auth, anime, guestbook, images, quotes
-|- lib/              Database, uploads, users, sitemap, quote helpers
-|- images/           Uploaded images
+|- app.js            Main server entry + middleware setup
+|- routes/           Feature route modules (posts, auth, arena, qotd, etc.)
+|- lib/              DB, auth/session, embeds, sitemap, integrations
 |- scripts/          Utility scripts
+|- test/             Node test files
+|- images/           Uploaded images
+|- data/             Runtime/generated backend data files
 |- database.sqlite3  Local SQLite database
-`- package.json      Backend scripts
+`- package.json      Backend scripts and deps
 ```
 
 ## The stack
@@ -44,6 +47,15 @@ mirabellier-backend/
 - Passport Discord
 - Multer
 - Sharp
+
+## API base notes
+
+Frontend usually calls this API at `/v1` (example: `http://localhost:3000/v1`).
+
+This backend also accepts unprefixed routes because it normalizes `/v1/*` internally. So these are equivalent:
+
+- `/v1/posts`
+- `/posts`
 
 ## Running it locally
 
@@ -56,24 +68,24 @@ npm install
 
 ### 2. Create `mirabellier-backend/.env`
 
-Use `.env.example` as your starting point.
+Copy `.env.example` and fill in your values.
 
 ```env
 PORT=3000
 DB_FILE=./database.sqlite3
 SESSION_SECRET=your-very-secret-value
-IMAGES_DIR=images
+OWNER_DISCORD_IDS=your_discord_user_id
 DISCORD_CLIENT_ID=your_discord_client_id
 DISCORD_CLIENT_SECRET=your_discord_client_secret
 DISCORD_CALLBACK_URL=http://localhost:3000/auth/discord/callback
 FRONTEND_URL=http://localhost:5173
 MAL_CLIENT_ID=your_myanimelist_client_id
 MAL_USERNAME=your_myanimelist_username
-MAL_ANIME_REFRESH_MINUTES=5
 WEBSITE_BASE=https://mirabellier.com
 INDEXNOW_KEY=your-indexnow-key
-QOTD_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
+
+Useful optional vars are documented in `.env.example` (session cookie options, QOTD webhook options, MAL refresh interval, quote schedule, and IndexNow toggles).
 
 ### 3. Start the server
 
@@ -89,99 +101,109 @@ For a regular run:
 npm start
 ```
 
-With the example `.env` above, the backend will run at `http://localhost:3000`. If `PORT` is unset, `app.js` falls back to `5000`.
+With `PORT=3000`, the backend runs at `http://localhost:3000`.  
+If `PORT` is missing, `app.js` falls back to `5000`.
 
 ## Useful scripts
 
-- `npm run dev` - start the backend with nodemon
-- `npm start` - start the backend normally
+- `npm run dev` - run backend with nodemon
+- `npm start` - run backend normally
 - `npm run generate:sitemap` - regenerate sitemap data
+- `npm run fetch:jikan:characters` - refresh local arena character source data
+- `npm test` - run Node tests
 
-## A few nice details
+## Main route map
 
-- The SQLite database is initialized automatically on startup
-- Uploaded images get optimized with Sharp
-- Quote data is stored as snapshots instead of being scraped every time
-- The API supports anonymous likes as well as logged-in likes
-- Guestbook note positions are stored in SQLite, so moving a note syncs for other visitors
-- The owner account can moderate guestbook notes
-- MyAnimeList currently-watching data is cached in SQLite so the public page can survive MAL outages
-- The server generates SEO-friendly responses for shared blog, profile, anime, question-of-the-day, and quote links
-- Sitemap and IndexNow helpers are built in so new posts can be surfaced faster
-- Question of the Day can post one Discord webhook notification per live drop
+### Posts and blog
 
-## MyAnimeList currently-watching feed
-
-The public `/anime` page can sync directly from a public MyAnimeList profile.
-
-Set these env vars in `mirabellier-backend/.env`:
-
-- `MAL_CLIENT_ID` from your MyAnimeList API app
-- `MAL_USERNAME` for the public profile you want to mirror
-- optional `MAL_ANIME_REFRESH_MINUTES` to change the backend refresh window from the default 5 minutes
-
-This v1 uses the public username endpoint with the `X-MAL-CLIENT-ID` header. It does not use MAL OAuth.
-
-The backend stores the last successful normalized snapshot in SQLite, serves that snapshot while it is fresh, refreshes it when stale, and falls back to the last successful result with `stale: true` if MAL is temporarily unavailable.
-
-## Question of the Day Discord webhook
-
-If you want a Discord channel ping whenever a new Question of the Day goes live:
-
-1. Open your Discord server channel settings.
-2. Go to `Integrations > Webhooks`.
-3. Create a webhook for the channel you want.
-4. Copy the webhook URL into `mirabellier-backend/.env` as `QOTD_DISCORD_WEBHOOK_URL`.
-
-Optional env vars:
-
-- `QOTD_DISCORD_WEBHOOK_USERNAME` to change the webhook display name
-- `QOTD_DISCORD_WEBHOOK_AVATAR_URL` to change the webhook avatar
-
-The backend only posts once per question, stores that state in SQLite, checks again on startup, and keeps a lightweight background check running so UTC-day rollovers still notify even without an admin action.
-
-## Main routes
-
-- `GET /posts` - list blog posts
+- `GET /posts` - list posts
 - `GET /posts/:id` - fetch one post
-- `POST /posts` - create a post
-- `PUT /posts/:id` - update a post
-- `DELETE /posts/:id` - delete a post
-- `POST /posts/:id/comments` - add a comment
-- `POST /posts/:id/like` - like or unlike a post
-- `GET /guestbook` - list guestbook notes
-- `POST /guestbook` - create a guestbook note
-- `PATCH /guestbook/:id/position` - save a note position on the board
-- `DELETE /guestbook/:id` - delete a guestbook note as the owner account
-- `POST /posts-img` - upload an image
-- `GET /anime` - SEO/share page for the public anime route
-- `GET /anime/currently-watching` - fetch the live MyAnimeList-backed currently watching feed
-- `GET /anime/currently-watching/embed-image.png` - render the public anime share preview image
-- `GET /question-of-the-day` - SEO/share page for the public question-of-the-day route
-- `GET /question-of-the-day/embed-image.png` - render the public question-of-the-day share preview image
-- `GET /quotes` - SEO/share page for the public quotes route
-- `GET /quotes/embed-image.png` - render the public quotes share preview image
-- `GET /quote-of-the-day` - fetch a daily quote snapshot
+- `POST /posts` - create post
+- `PUT /posts/:id` - update post
+- `DELETE /posts/:id` - delete post
+- `POST /posts/:id/comments` - add comment
+- `POST /posts/:id/like` - like/unlike post
+- `GET /tags` - list unique blog tags
+- `GET /blog/:id` - SEO/share page for single blog route
+
+### Auth and profile
+
 - `GET /auth/discord` - start Discord OAuth
 - `GET /auth/discord/callback` - finish Discord OAuth
-- `GET /me` - fetch the current user
-- `POST /me` - update the current user profile
-- `POST /logout` - destroy the current session
-- `GET /user/:id` - fetch a public user profile by id
-- `GET /user/by-username/:username` - fetch a public user profile by username
-- `GET /user/:id/stats` - fetch public stats for a user
+- `GET /me` - current authenticated user
+- `POST /me` - update profile (+ avatar/banner upload)
+- `POST /logout` - destroy session
+- `GET /user/:id` - public user profile by id
+- `GET /user/by-username/:username` - public user profile by username
+- `GET /user/:id/stats` - public user stats
+- `GET /profile/:username` - SEO/share page for public profile route
+- `GET /profile-embed/:username.png` - profile share image
+- `GET /api/profile-embed/:username.png` - alias profile share image route
+
+### Guestbook
+
+- `GET /guestbook` - list notes
+- `POST /guestbook` - create note
+- `PATCH /guestbook/:id/position` - save note position
+- `DELETE /guestbook/:id` - delete note (owner only)
+
+### Arena
+
+- `GET /arena/profile` - arena profile payload
+- `GET /arena/collection` - owned cards payload
+- `POST /arena/collection/select-card` - choose active card
+- `POST /arena/fight` - run fight
+- `POST /arena/draw-card` - daily draw
+- `GET /arena/shop` - shop payload
+- `POST /arena/shop/buy` - buy shop item
+- `POST /arena/shop/use-consumable` - use consumable
+- `POST /arena/shop/craft` - craft recipe
+- `GET /arena/leaderboard` - leaderboard data
+
+### Question of the Day
+
+- `GET /question-of-the-day` - SEO/share page
+- `GET /question-of-the-day/embed-image.png` - QOTD share image
+- `GET /question-of-the-day/current` - current question + answers
+- `POST /question-of-the-day/current` - set/update current question (owner)
+- `POST /question-of-the-day/current/answers` - submit answer
+- `GET /question-of-the-day/admin/questions` - admin queue page
+- `POST /question-of-the-day/admin/questions` - queue prompts (owner)
+- `POST /question-of-the-day/admin/current/force-archive` - force archive (owner)
+- `GET /question-of-the-day/archive` - archive list
+- `GET /question-of-the-day/archive/:recordedDate` - archive day detail
+- `DELETE /question-of-the-day/answers/:id` - delete answer (owner)
+
+### Anime, quotes, shrines, images
+
+- `GET /anime` - SEO/share page
+- `GET /anime/currently-watching` - MAL-backed currently watching feed
+- `GET /anime/currently-watching/embed-image.png` - anime share image
+- `GET /quotes` - SEO/share page
+- `GET /quotes/embed-image.png` - quotes share image
+- `GET /quote-of-the-day` - quote snapshot payload
+- `GET /shrines/pages` - list shrine page configs
+- `GET /shrines/pages/:slug` - get shrine page config
+- `POST /shrines/pages` - create shrine page config (owner)
+- `PUT /shrines/pages/:slug` - update shrine page config (owner)
+- `GET /shrine` - shrine hub SEO/share page
+- `GET /shrine/:slug` - shrine entry SEO/share page
+- `POST /posts-img` - upload image for posts
+- `GET /images/list` - list uploaded image files
+- `GET /images/meta/:filename` - read image metadata
+- `GET /images/:filename` - static image file serving
 
 ## If something feels broken
 
-- Check your `.env` first
-- If Discord login fails, the callback URL is usually the first thing to verify
-- If uploads fail, make sure `IMAGES_DIR` is writable and Sharp installed correctly
-- If data seems stale or locked, make sure only one local server is using the SQLite file
-- If frontend auth redirects look wrong, check `FRONTEND_URL`
-- If guestbook note positions look clipped, make sure the backend is running the current board-size constants
+- Check `mirabellier-backend/.env` first
+- If login fails, verify Discord app credentials + callback URL
+- If frontend auth redirects look wrong, verify `FRONTEND_URL`
+- If uploads fail, verify `IMAGES_DIR` path and file permissions
+- If MAL endpoints fail, verify `MAL_CLIENT_ID` and `MAL_USERNAME`
+- If data seems stale, make sure only one local process is writing the same SQLite DB
+- If owner-only routes return 403, verify `OWNER_DISCORD_IDS`
 
 ## Why this repo exists
 
-I wanted the backend to stay small enough to understand, but capable enough to support the whole site properly. It is not trying to be fancy for the sake of it. It just needs to be dependable, readable, and easy to extend whenever I add another little feature to the site.
-
-That is the whole mood of this backend: quiet, useful, and doing a lot more than it shows.
+I wanted the backend to stay understandable while still doing real app work.
+Soft attitude, practical behavior, and sturdy enough to keep adding new little features without turning into spaghetti.
