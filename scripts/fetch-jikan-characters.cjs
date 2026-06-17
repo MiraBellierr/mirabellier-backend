@@ -4,7 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
 
-const JIKAN_API_BASE = "https://api.jikan.moe/v4";
+const JIKAN_API_BASE = (process.env.JIKAN_API_BASE || "https://api.jikan.moe/v4").replace(
+  /\/$/,
+  "",
+);
 const DEFAULT_START_ID = 1;
 const DEFAULT_END_ID = 44000;
 const DEFAULT_DELAY_MS = 250;

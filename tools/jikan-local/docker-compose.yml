@@ -1,0 +1,32 @@
+services:
+  mongodb:
+    image: mongo:focal
+    container_name: mirabellier-jikan-mongo
+    command: ["--wiredTigerCacheSizeGB", "0.5"]
+    environment:
+      MONGO_INITDB_DATABASE: jikan
+    volumes:
+      - jikan-mongo-data:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongo mongodb://localhost:27017 --quiet --eval \"db.runCommand({ ping: 1 }).ok\" || mongosh mongodb://localhost:27017 --quiet --eval \"db.runCommand({ ping: 1 }).ok\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  jikan-rest:
+    image: jikanme/jikan-rest:latest
+    container_name: mirabellier-jikan-rest
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    env_file:
+      - ./jikan.env
+    ports:
+      - "8080:8080"
+
+volumes:
+  jikan-mongo-data:
