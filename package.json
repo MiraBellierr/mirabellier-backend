@@ -8,6 +8,9 @@
     "dev": "nodemon app.js",
     "generate:sitemap": "node scripts/generate-sitemap.cjs",
     "fetch:jikan:characters": "node scripts/fetch-jikan-characters.cjs",
+    "jikan:up": "docker compose -f tools/jikan-local/docker-compose.yml up -d",
+    "jikan:down": "docker compose -f tools/jikan-local/docker-compose.yml down",
+    "jikan:logs": "docker compose -f tools/jikan-local/docker-compose.yml logs -f jikan-rest",
     "test": "node --test"
   },
   "dependencies": {

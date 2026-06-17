@@ -12,6 +12,7 @@ const {
   selectCollectionCard,
   useConsumable,
 } = require("../lib/arena-service");
+const { checkJikanHealth } = require("../lib/arena-mal");
 
 function setNoStoreHeaders(res) {
   res.setHeader(
@@ -81,6 +82,29 @@ function handleArenaError(error, res) {
 module.exports = function registerArenaRoutes(app, deps) {
   const { db, authFromReq } = deps;
   const router = express.Router();
+
+  router.get("/jikan-health", async (_req, res) => {
+    try {
+      const response = await checkJikanHealth();
+      if (response.status >= 400 && response.status < 600) {
+        setNoStoreHeaders(res);
+        return res.status(503).json({
+          code: "JIKAN_MAINTENANCE",
+          error: "Arena is in maintenance. Please try again later.",
+          sourceStatus: response.status,
+        });
+      }
+
+      setNoStoreHeaders(res);
+      return res.json({ ok: true, sourceStatus: response.status });
+    } catch {
+      setNoStoreHeaders(res);
+      return res.status(503).json({
+        code: "JIKAN_MAINTENANCE",
+        error: "Arena is in maintenance. Please try again later.",
+      });
+    }
+  });
 
   router.get("/profile", async (req, res) => {
     try {
