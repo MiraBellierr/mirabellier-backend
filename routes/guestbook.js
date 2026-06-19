@@ -1,5 +1,9 @@
 const express = require("express");
 const { isOwner } = require("../lib/authz");
+const {
+  TurnstileError,
+  verifyTurnstileToken,
+} = require("../lib/turnstile");
 
 const MAX_ENTRIES = 100;
 const MAX_NAME_LENGTH = 40;
@@ -140,8 +144,9 @@ module.exports = function registerGuestbookRoutes(app, deps) {
     }
   });
 
-  router.post("/", (req, res) => {
+  router.post("/", async (req, res) => {
     try {
+      await verifyTurnstileToken(req, req.body?.turnstileToken, "guestbook");
       const user = authFromReq(req);
       const author = user ? user.username : sanitizeName(req.body?.name);
       const message = sanitizeMessage(req.body?.message);
@@ -190,7 +195,13 @@ module.exports = function registerGuestbookRoutes(app, deps) {
         .get(id);
 
       res.status(201).json(mapEntryRow(row, getUserById, userPublic, 0));
-    } catch {
+    } catch (error) {
+      if (error instanceof TurnstileError) {
+        return res.status(error.status).json({
+          error: error.message,
+          code: error.code,
+        });
+      }
       res.status(500).json({ error: "Failed to sign the guestbook" });
     }
   });

@@ -13,6 +13,11 @@ const {
   useConsumable,
 } = require("../lib/arena-service");
 const { checkJikanHealth } = require("../lib/arena-mal");
+const {
+  TurnstileError,
+  verifyTurnstileToken,
+} = require("../lib/turnstile");
+const { checkArenaFightRateLimit } = require("../lib/arena-fight-guard");
 
 function setNoStoreHeaders(res) {
   res.setHeader(
@@ -33,6 +38,14 @@ function requireAuthUser(req, authFromReq) {
 }
 
 function handleArenaError(error, res) {
+  if (error instanceof TurnstileError) {
+    setNoStoreHeaders(res);
+    return res.status(error.status).json({
+      code: error.code,
+      error: error.message,
+    });
+  }
+
   if (error instanceof ArenaHttpError) {
     setNoStoreHeaders(res);
     return res.status(error.status).json({
@@ -153,6 +166,20 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.post("/fight", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
+      const rateLimit = checkArenaFightRateLimit(req, user.id);
+      if (!rateLimit.allowed) {
+        throw new ArenaHttpError(
+          429,
+          "Too many fight attempts. Please wait before trying again.",
+          "ARENA_FIGHT_RATE_LIMIT",
+          { retryAfterMs: rateLimit.retryAfterMs },
+        );
+      }
+      await verifyTurnstileToken(
+        req,
+        req.body?.turnstileToken,
+        "arena_fight",
+      );
       const payload = await runFight(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);

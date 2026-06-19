@@ -1,5 +1,9 @@
 const express = require("express");
 const {
+  TurnstileError,
+  verifyTurnstileToken,
+} = require("../lib/turnstile");
+const {
   buildQuestionPreviewState,
   buildQuestionShareHtml,
   getQuestionPreviewDimensions,
@@ -612,8 +616,13 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     }
   });
 
-  router.post("/current/answers", (req, res) => {
+  router.post("/current/answers", async (req, res) => {
     try {
+      await verifyTurnstileToken(
+        req,
+        req.body?.turnstileToken,
+        "question_of_the_day",
+      );
       const user = authFromReq(req);
       const answer = sanitizeAnswer(req.body?.answer);
 
@@ -659,6 +668,14 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       setNoStoreHeaders(res);
       res.status(201).json(mapAnswerRow(row, getUserById, userPublic));
     } catch (error) {
+      if (error instanceof TurnstileError) {
+        setNoStoreHeaders(res);
+        return res.status(error.status).json({
+          error: error.message,
+          code: error.code,
+        });
+      }
+
       if (error instanceof HttpError) {
         setNoStoreHeaders(res);
         return res.status(error.status).json({ error: error.message });
