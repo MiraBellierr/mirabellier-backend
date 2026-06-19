@@ -175,7 +175,7 @@ module.exports = function registerArenaRoutes(app, deps) {
       if (hasActiveFight(db, user.id)) {
         throw new ArenaHttpError(
           409,
-          "A fight is already in progress. Finish or skip it first.",
+          "A fight is already in progress. Finish it first.",
           "ARENA_FIGHT_ACTIVE",
           { activeFight: getPlaybackFightState(db, user.id) },
         );
