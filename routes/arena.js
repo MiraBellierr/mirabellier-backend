@@ -189,11 +189,6 @@ module.exports = function registerArenaRoutes(app, deps) {
           { retryAfterMs: rateLimit.retryAfterMs },
         );
       }
-      await verifyTurnstileToken(
-        req,
-        req.body?.turnstileToken,
-        "arena_fight",
-      );
       const payload = await runFight(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
@@ -214,11 +209,6 @@ module.exports = function registerArenaRoutes(app, deps) {
           { retryAfterMs: rateLimit.retryAfterMs },
         );
       }
-      await verifyTurnstileToken(
-        req,
-        req.body?.turnstileToken,
-        "arena_fight",
-      );
       const payload = await startPlaybackFight(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
