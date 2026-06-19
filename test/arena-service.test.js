@@ -4,6 +4,7 @@ const Database = require("better-sqlite3");
 
 const {
   ArenaHttpError,
+  __test,
   buyShopItem,
   craftShopRecipe,
   calculateRoundPower,
@@ -20,6 +21,15 @@ const {
   useConsumable,
   xpToNext,
 } = require("../lib/arena-service");
+const { SHOP_ITEMS } = require("../lib/arena-constants");
+
+const {
+  buildPassiveRuntime,
+  calculateAttackOutcome,
+  consumeTempGuard,
+  runPassivesForTrigger,
+  simulateFight,
+} = __test;
 
 function createTestDb() {
   const db = new Database(":memory:");
@@ -252,6 +262,62 @@ function makeCard(id = 1, rarity = "C") {
   };
 }
 
+function findPassive(key) {
+  const item = SHOP_ITEMS.find((candidate) => candidate.passive?.key === key);
+  assert.ok(item, `Missing passive fixture: ${key}`);
+  return item.passive;
+}
+
+function makeCombatSnapshot({
+  id,
+  rarity = "C",
+  stats = {},
+  activePassives = [],
+}) {
+  const totalStats = {
+    hp: 120,
+    power: 20,
+    guard: 12,
+    speed: 10,
+    luck: 6,
+    ...stats,
+  };
+
+  return {
+    profile: { level: 1 },
+    selectedCard: makeCard(id, rarity),
+    rarity,
+    baseStats: { ...totalStats },
+    totalStats: { ...totalStats },
+    activePassives,
+  };
+}
+
+function makeEffects(overrides = {}) {
+  return {
+    expBoostPct: 0,
+    expBoostWinsRemaining: 0,
+    coinBoostPct: 0,
+    coinBoostWinsRemaining: 0,
+    rerollKeepHigherCharges: 0,
+    streakShieldCharges: 0,
+    upgradeLowestRarityCharges: 0,
+    guaranteeSsrPlusCharges: 0,
+    ascensionLastPurchasedAt: null,
+    fightStartShieldCharges: 0,
+    fightStartShieldAmount: 0,
+    evadeBoostPct: 0,
+    evadeBoostFightsRemaining: 0,
+    firstHitTrueDamageCharges: 0,
+    firstHitTrueDamageValue: 0,
+    higherRarityDamageBonusPctCharges: 0,
+    higherRarityDamageBonusPct: 0,
+    gateKeyCharges: 0,
+    doublePassiveTriggerFightsRemaining: 0,
+    ...overrides,
+  };
+}
+
 test("xp formula and reward formulas stay stable", () => {
   assert.equal(xpToNext(1), 120);
   assert.equal(xpToNext(10), 4080);
@@ -317,6 +383,186 @@ test("stored cards with zero favorites are normalized to C rarity", () => {
 
   const collection = getArenaCollectionPayload(db, "u1");
   assert.equal(collection.cards[0]?.rarity, "C");
+});
+
+test("profile totals expose and include selected card IV combat bonuses", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    hp: 120,
+    power: 12,
+    guard: 12,
+    speed: 10,
+    luck: 6,
+    selectedCard: makeCard(1, "R"),
+  });
+
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.deepEqual(profile.stats.card, {
+    hp: 20,
+    power: 6,
+    guard: 6,
+    speed: 6,
+    luck: 6,
+  });
+  assert.deepEqual(profile.stats.total, {
+    hp: 140,
+    power: 18,
+    guard: 18,
+    speed: 16,
+    luck: 12,
+  });
+});
+
+test("Riversteel applies its critical bonus before attack resolution", () => {
+  const selfRuntime = buildPassiveRuntime();
+  const mods = runPassivesForTrigger({
+    trigger: "onAttack",
+    passives: [findPassive("riversteel_edge")],
+    selfStats: { power: 10, guard: 10, speed: 10, luck: 10 },
+    opponentStats: { power: 10, guard: 10, speed: 10, luck: 10 },
+    selfRuntime,
+    opponentRuntime: buildPassiveRuntime(),
+    context: { self: {}, opponent: {}, attack: {} },
+    randomFn: () => 0.99,
+  });
+
+  assert.equal(mods.bonusCritChancePct, 10);
+});
+
+test("Guard Cap grants temporary guard without permanently mutating stats", () => {
+  const stats = { power: 10, guard: 12, speed: 10, luck: 10 };
+  const runtime = buildPassiveRuntime();
+  runPassivesForTrigger({
+    trigger: "onDamageTaken",
+    passives: [findPassive("guard_cap_focus")],
+    selfStats: stats,
+    opponentStats: { power: 10, guard: 10, speed: 10, luck: 10 },
+    selfRuntime: runtime,
+    opponentRuntime: buildPassiveRuntime(),
+    context: { self: {}, opponent: {}, attack: {} },
+    randomFn: () => 0,
+  });
+
+  assert.equal(stats.guard, 12);
+  assert.deepEqual(runtime.tempGuard, { amount: 4, remainingHits: 1 });
+  assert.equal(consumeTempGuard(runtime), 4);
+  assert.deepEqual(runtime.tempGuard, { amount: 0, remainingHits: 0 });
+  assert.equal(consumeTempGuard(runtime), 0);
+});
+
+test("Twinlight rolls its extra-strike chance exactly once", () => {
+  let randomCalls = 0;
+  const mods = runPassivesForTrigger({
+    trigger: "onDamageDealt",
+    passives: [findPassive("double_strike")],
+    selfStats: { power: 10, guard: 10, speed: 10, luck: 10 },
+    opponentStats: { power: 10, guard: 10, speed: 10, luck: 10 },
+    selfRuntime: buildPassiveRuntime(),
+    opponentRuntime: buildPassiveRuntime(),
+    context: { self: {}, defender: {}, attack: {} },
+    randomFn: () => {
+      randomCalls += 1;
+      return 0.1;
+    },
+  });
+
+  assert.equal(randomCalls, 1);
+  assert.equal(mods.extraStrikeChancePct, 100);
+  assert.equal(mods.extraStrikeDamagePct, 40);
+});
+
+test("Fuse Bomb true damage bypasses reductions and critical scaling", () => {
+  const sequence = () => {
+    const values = [0.99, 0.5, 0.5, 0];
+    return () => values.shift() ?? 0.5;
+  };
+  const input = {
+    attackerStats: { power: 30, guard: 10, speed: 10, luck: 10 },
+    defenderStats: { power: 10, guard: 30, speed: 10, luck: 10 },
+    attackerRarity: "C",
+    defenderDamageReductionPct: 80,
+    defenderDamageReductionFlat: 100,
+  };
+  const normal = calculateAttackOutcome({
+    ...input,
+    randomFn: sequence(),
+  });
+  const bomb = calculateAttackOutcome({
+    ...input,
+    attackerTrueDamage: 25,
+    randomFn: sequence(),
+  });
+
+  assert.equal(normal.critical, true);
+  assert.equal(bomb.critical, true);
+  assert.equal(bomb.damage, normal.damage);
+  assert.equal(bomb.trueDamage, 25);
+});
+
+test("Verdant Core restores actual battle HP after damage", async () => {
+  const result = await simulateFight(null, {
+    player: makeCombatSnapshot({
+      id: 1,
+      stats: { power: 25, speed: 20 },
+    }),
+    opponent: makeCombatSnapshot({
+      id: 2,
+      stats: { hp: 180, guard: 18 },
+      activePassives: [findPassive("verdant_regen")],
+    }),
+    playerEffects: makeEffects(),
+    randomFn: () => 0.99,
+  });
+
+  assert.ok(result.battle.console.some((entry) => entry.line.includes("recovered 4 HP")));
+});
+
+test("Fuse Bomb is consumed only after a non-evaded hit", async () => {
+  const player = makeCombatSnapshot({ id: 1 });
+  const opponent = makeCombatSnapshot({ id: 2 });
+  const effects = makeEffects({
+    firstHitTrueDamageCharges: 1,
+    firstHitTrueDamageValue: 25,
+  });
+
+  const evaded = await simulateFight(null, {
+    player,
+    opponent,
+    playerEffects: effects,
+    randomFn: () => 0,
+  });
+  const landed = await simulateFight(null, {
+    player,
+    opponent,
+    playerEffects: effects,
+    randomFn: () => 0.99,
+  });
+
+  assert.equal(evaded.effectUsage.usedFirstHitTrueDamage, false);
+  assert.equal(landed.effectUsage.usedFirstHitTrueDamage, true);
+});
+
+test("Lantern Oil is consumed only against a higher-rarity opponent", async () => {
+  const effects = makeEffects({
+    higherRarityDamageBonusPctCharges: 1,
+    higherRarityDamageBonusPct: 10,
+  });
+  const equalRarity = await simulateFight(null, {
+    player: makeCombatSnapshot({ id: 1, rarity: "R" }),
+    opponent: makeCombatSnapshot({ id: 2, rarity: "R" }),
+    playerEffects: effects,
+    randomFn: () => 0.99,
+  });
+  const higherRarity = await simulateFight(null, {
+    player: makeCombatSnapshot({ id: 1, rarity: "R" }),
+    opponent: makeCombatSnapshot({ id: 2, rarity: "SSR" }),
+    playerEffects: effects,
+    randomFn: () => 0.99,
+  });
+
+  assert.equal(equalRarity.effectUsage.usedHigherRarityBonus, false);
+  assert.equal(higherRarity.effectUsage.usedHigherRarityBonus, true);
 });
 
 test("tie break uses speed before coinflip", () => {
@@ -397,7 +643,7 @@ test("fight includes hp battle console events", async () => {
   assert.ok(result.battle.maxHp.player > 0);
   assert.ok(result.battle.maxHp.opponent > 0);
   assert.ok(result.battle.console.length > 0);
-  assert.ok(result.battle.console.some((entry) => entry.line.includes("attacked")));
+  assert.ok(result.battle.console.some((entry) => entry.line.includes("is attacking")));
 });
 
 test("fight cooldown blocks rapid repeat fights", async () => {
