@@ -1,17 +1,20 @@
 const express = require("express");
 const {
   advancePlaybackFightTurn,
+  activateArenaSkill,
   ArenaHttpError,
   buyShopItem,
   craftShopRecipe,
   drawDailyCard,
   getArenaCollectionPayload,
   getArenaProfilePayload,
+  getArenaSkillTreePayload,
   getArenaShopPayload,
   getLeaderboard,
   getPlaybackFightState,
   hasActiveFight,
   runFight,
+  resetArenaSkills,
   selectCollectionCard,
   skipPlaybackFightToEnd,
   startPlaybackFight,
@@ -152,6 +155,47 @@ module.exports = function registerArenaRoutes(app, deps) {
       const payload = getArenaCollectionPayload(db, user.id, {
         limit: req.query?.limit,
       });
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/skill-tree", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getArenaSkillTreePayload(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/skill-tree/activate", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const nodeId = String(req.body?.nodeId || "").trim();
+      if (!nodeId) {
+        throw new ArenaHttpError(
+          400,
+          "nodeId is required.",
+          "ARENA_SKILL_NODE_REQUIRED",
+        );
+      }
+      const payload = activateArenaSkill(db, user.id, nodeId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/skill-tree/reset", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = resetArenaSkills(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
