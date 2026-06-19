@@ -1,5 +1,6 @@
 const express = require("express");
 const {
+  advancePlaybackFightTurn,
   ArenaHttpError,
   buyShopItem,
   craftShopRecipe,
@@ -8,8 +9,12 @@ const {
   getArenaProfilePayload,
   getArenaShopPayload,
   getLeaderboard,
+  getPlaybackFightState,
+  hasActiveFight,
   runFight,
   selectCollectionCard,
+  skipPlaybackFightToEnd,
+  startPlaybackFight,
   useConsumable,
 } = require("../lib/arena-service");
 const { checkJikanHealth } = require("../lib/arena-mal");
@@ -122,9 +127,10 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.get("/profile", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
-      const payload = getArenaProfilePayload(db, user.id);
+      const profile = getArenaProfilePayload(db, user.id);
+      const activeFight = getPlaybackFightState(db, user.id);
       setNoStoreHeaders(res);
-      res.json(payload);
+      res.json({ ...profile, activeFight });
     } catch (error) {
       handleArenaError(error, res);
     }
@@ -166,6 +172,14 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.post("/fight", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
+      if (hasActiveFight(db, user.id)) {
+        throw new ArenaHttpError(
+          409,
+          "A fight is already in progress. Finish or skip it first.",
+          "ARENA_FIGHT_ACTIVE",
+          { activeFight: getPlaybackFightState(db, user.id) },
+        );
+      }
       const rateLimit = checkArenaFightRateLimit(req, user.id);
       if (!rateLimit.allowed) {
         throw new ArenaHttpError(
@@ -181,6 +195,64 @@ module.exports = function registerArenaRoutes(app, deps) {
         "arena_fight",
       );
       const payload = await runFight(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/fight/start", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const rateLimit = checkArenaFightRateLimit(req, user.id);
+      if (!rateLimit.allowed) {
+        throw new ArenaHttpError(
+          429,
+          "Too many fight attempts. Please wait before trying again.",
+          "ARENA_FIGHT_RATE_LIMIT",
+          { retryAfterMs: rateLimit.retryAfterMs },
+        );
+      }
+      await verifyTurnstileToken(
+        req,
+        req.body?.turnstileToken,
+        "arena_fight",
+      );
+      const payload = await startPlaybackFight(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/fight/state", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const state = getPlaybackFightState(db, user.id);
+      setNoStoreHeaders(res);
+      res.json({ activeFight: state });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/fight/advance", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = advancePlaybackFightTurn(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/fight/skip", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = skipPlaybackFightToEnd(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
