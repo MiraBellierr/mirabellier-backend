@@ -5,6 +5,7 @@ const Database = require("better-sqlite3");
 const {
   ArenaHttpError,
   __test,
+  activateArenaSkill,
   buyShopItem,
   craftShopRecipe,
   calculateRoundPower,
@@ -13,9 +14,11 @@ const {
   drawDailyCard,
   getArenaCollectionPayload,
   getArenaProfilePayload,
+  getArenaSkillTreePayload,
   getLeaderboard,
   rarityFromFavorites,
   resolveRoundWinner,
+  resetArenaSkills,
   runFight,
   selectCollectionCard,
   useConsumable,
@@ -124,6 +127,29 @@ function createTestDb() {
       favorites INTEGER,
       nsfw TEXT,
       fetchedAt TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    )`,
+  ).run();
+
+  db.prepare(
+    `CREATE TABLE arena_skill_allocations (
+      userId TEXT NOT NULL,
+      nodeId TEXT NOT NULL,
+      activatedAt TEXT NOT NULL,
+      PRIMARY KEY (userId, nodeId)
+    )`,
+  ).run();
+
+  db.prepare(
+    `CREATE TABLE arena_active_fights (
+      userId TEXT PRIMARY KEY,
+      fightId TEXT NOT NULL,
+      cursor INTEGER NOT NULL DEFAULT 0,
+      state TEXT NOT NULL DEFAULT 'active',
+      simulationJson TEXT NOT NULL,
+      opponentJson TEXT NOT NULL,
+      playerEffectsJson TEXT NOT NULL,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     )`,
@@ -585,6 +611,99 @@ test("tie break uses speed before coinflip", () => {
       randomFn: () => 0.9,
     }),
     "player",
+  );
+});
+
+test("skill points are retroactive and bank beyond the initial tree", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 1 });
+  assert.equal(getArenaSkillTreePayload(db, "u1").earnedPoints, 0);
+
+  db.prepare("UPDATE arena_profiles SET level = 2 WHERE userId = ?").run("u1");
+  assert.equal(getArenaSkillTreePayload(db, "u1").earnedPoints, 1);
+
+  db.prepare("UPDATE arena_profiles SET level = 20 WHERE userId = ?").run("u1");
+  assert.equal(getArenaSkillTreePayload(db, "u1").earnedPoints, 19);
+
+  db.prepare("UPDATE arena_profiles SET level = 50 WHERE userId = ?").run("u1");
+  const levelFifty = getArenaSkillTreePayload(db, "u1");
+  assert.equal(levelFifty.earnedPoints, 49);
+  assert.equal(levelFifty.availablePoints, 49);
+});
+
+test("skill activation enforces points, prerequisites, duplicates, and allows branch mixing", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 4 });
+
+  assert.throws(
+    () => activateArenaSkill(db, "u1", "offense_might_2"),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_SKILL_PREREQUISITE",
+  );
+
+  activateArenaSkill(db, "u1", "offense_might_1");
+  activateArenaSkill(db, "u1", "defense_vitality_1");
+  const mixed = activateArenaSkill(db, "u1", "utility_fortune_1");
+  assert.equal(mixed.spentPoints, 3);
+  assert.equal(mixed.availablePoints, 0);
+
+  assert.throws(
+    () => activateArenaSkill(db, "u1", "offense_might_1"),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_SKILL_ALREADY_ACTIVE",
+  );
+  assert.throws(
+    () => activateArenaSkill(db, "u1", "offense_swiftness_1"),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_SKILL_POINTS_REQUIRED",
+  );
+});
+
+test("skill stats and passives are derived into arena profiles", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 5 });
+
+  activateArenaSkill(db, "u1", "offense_might_1");
+  activateArenaSkill(db, "u1", "defense_vitality_1");
+  activateArenaSkill(db, "u1", "offense_fury_1");
+
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.equal(profile.stats.skill.power, 2);
+  assert.equal(profile.stats.skill.hp, 8);
+  assert.equal(profile.stats.total.power, profile.stats.base.power + 2);
+  assert.equal(profile.stats.total.hp, profile.stats.base.hp + 8);
+  assert.ok(
+    profile.activePassives.some(
+      (passive) => passive.key === "skill:offense_fury_1",
+    ),
+  );
+});
+
+test("skill reset charges 100 coins per level and refunds allocations", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 10, coins: 999 });
+  activateArenaSkill(db, "u1", "offense_might_1");
+
+  assert.throws(
+    () => resetArenaSkills(db, "u1"),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_SKILL_RESET_COINS",
+  );
+
+  db.prepare("UPDATE arena_profiles SET coins = 1500 WHERE userId = ?").run("u1");
+  const reset = resetArenaSkills(db, "u1");
+  assert.equal(reset.spentPoints, 0);
+  assert.equal(reset.availablePoints, 9);
+  assert.equal(reset.coins, 500);
+
+  assert.throws(
+    () => resetArenaSkills(db, "u1"),
+    (error) =>
+      error instanceof ArenaHttpError && error.code === "ARENA_SKILL_RESET_EMPTY",
   );
 });
 
