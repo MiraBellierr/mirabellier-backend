@@ -136,6 +136,16 @@ module.exports = function registerArenaRoutes(app, deps) {
     }
   });
 
+  router.post("/verify", async (req, res) => {
+    try {
+      await verifyTurnstileToken(req, req.body?.turnstileToken, "arena_fight");
+      setNoStoreHeaders(res);
+      res.json({ ok: true });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
   router.get("/collection", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
