@@ -424,13 +424,15 @@ test("round power includes metadata and rarity modifiers", () => {
   assert.ok(result.breakdown.popularityBonus >= 0);
 });
 
-test("favorites-based rarity mapping uses MAL min/max range", () => {
+test("favorites-based rarity mapping makes 30k and above UR", () => {
   assert.equal(rarityFromFavorites(0), "C");
   assert.equal(rarityFromFavorites(53), "C");
   assert.equal(rarityFromFavorites(7000), "R");
-  assert.equal(rarityFromFavorites(60000), "SR");
-  assert.equal(rarityFromFavorites(130000), "SSR");
-  assert.equal(rarityFromFavorites(175000), "UR");
+  assert.equal(rarityFromFavorites(15000), "SR");
+  assert.equal(rarityFromFavorites(25000), "SSR");
+  assert.equal(rarityFromFavorites(29999), "SSR");
+  assert.equal(rarityFromFavorites(30000), "UR");
+  assert.equal(rarityFromFavorites(60000), "UR");
 });
 
 test("stored cards with zero favorites are normalized to C rarity", () => {
