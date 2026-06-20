@@ -13,7 +13,8 @@
     "jikan:logs": "docker compose -f tools/jikan-local/docker-compose.yml logs -f jikan-rest",
     "test": "node --test",
     "export:arena": "node scripts/export-arena-csv.cjs",
-    "export:levels": "node scripts/export-arena-levels.cjs"
+    "export:levels": "node scripts/export-arena-levels.cjs",
+    "migrate:card-rarities": "node scripts/migrate-arena-card-rarities.cjs"
   },
   "dependencies": {
     "axios": "^1.13.2",
