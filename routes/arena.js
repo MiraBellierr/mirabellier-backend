@@ -3,9 +3,12 @@ const {
   advancePlaybackFightTurn,
   activateArenaSkill,
   ArenaHttpError,
+  buyArenaShopCard,
   buyShopItem,
   craftShopRecipe,
   drawDailyCard,
+  equipShopItem,
+  getArenaCardShopPayload,
   getArenaCollectionPayload,
   getArenaProfilePayload,
   getArenaSkillTreePayload,
@@ -326,6 +329,31 @@ module.exports = function registerArenaRoutes(app, deps) {
     }
   });
 
+  router.get("/shop/cards", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = await getArenaCardShopPayload(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/cards/buy", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = await buyArenaShopCard(db, user.id, {
+        kind: req.body?.kind,
+        offerId: req.body?.offerId,
+      });
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
   router.post("/shop/buy", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
@@ -351,6 +379,22 @@ module.exports = function registerArenaRoutes(app, deps) {
       }
 
       const payload = useConsumable(db, user.id, itemId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/equip", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const itemId = String(req.body?.itemId || "").trim();
+      if (!itemId) {
+        throw new ArenaHttpError(400, "itemId is required.", "ARENA_ITEM_REQUIRED");
+      }
+
+      const payload = equipShopItem(db, user.id, itemId);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
