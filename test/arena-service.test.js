@@ -1261,23 +1261,23 @@ test("rich leaderboard sorts by coins then lifetime earned", () => {
   assert.equal(board.entries[1].user.id, "u2");
 });
 
-test("daily draw is limited to five cards per day", async () => {
+test("daily draw is limited to ten cards per day", async () => {
   const db = createTestDb();
   insertProfile(db, {
     userId: "u1",
   });
 
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 10; index += 1) {
     const draw = await drawDailyCard(db, "u1");
     assert.ok(draw.card);
     assert.ok(draw.profile.selectedCard);
-    assert.equal(draw.profile.dailyDrawLimit, 5);
+    assert.equal(draw.profile.dailyDrawLimit, 10);
     assert.equal(draw.profile.dailyDrawsUsed, index + 1);
-    assert.equal(draw.profile.dailyDrawsRemaining, Math.max(5 - (index + 1), 0));
+    assert.equal(draw.profile.dailyDrawsRemaining, Math.max(10 - (index + 1), 0));
   }
 
   const collection = getArenaCollectionPayload(db, "u1");
-  assert.ok(collection.cards.length >= 5);
+  assert.ok(collection.cards.length >= 10);
 
   await assert.rejects(
     async () => {
