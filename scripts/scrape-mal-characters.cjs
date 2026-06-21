@@ -199,6 +199,37 @@ function findCharacterAnchor(rowHtml) {
   return fallback;
 }
 
+function findAnimeMangaEntries(rowHtml) {
+  const entries = [];
+  const anchorPattern = /(<a\b[^>]*>)([\s\S]*?)<\/a>/gi;
+  let match;
+  const seen = new Set();
+
+  while ((match = anchorPattern.exec(rowHtml)) !== null) {
+    const attributes = parseAttributes(match[1]);
+    const href = (attributes.href || "").trim();
+    if (!href) continue;
+
+    const idMatch = href.match(
+      /^https?:\/\/myanimelist\.net\/(anime|manga)\/(\d+)(?:\/[^?#"']*)?/i,
+    );
+    if (!idMatch) continue;
+
+    const type = idMatch[1].toLowerCase();
+    const id = Number.parseInt(idMatch[2], 10);
+    const name = stripTags(match[2]);
+    if (!name) continue;
+
+    const key = `${type}:${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    entries.push({ name, url: href, type });
+  }
+
+  return entries;
+}
+
 function findImageUrl(rowHtml) {
   const imageTags = rowHtml.match(/<img\b[^>]*>/gi) || [];
 
@@ -238,6 +269,7 @@ function parseCharacters(html) {
       imageUrl: findImageUrl(rowHtml),
       favorites: findFavorites(rowHtml),
       url: character.url,
+      appearances: findAnimeMangaEntries(rowHtml),
     });
   }
 
