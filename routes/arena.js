@@ -164,7 +164,9 @@ module.exports = function registerArenaRoutes(app, deps) {
     try {
       const user = requireAuthUser(req, authFromReq);
       const payload = getArenaCollectionPayload(db, user.id, {
-        limit: req.query?.limit,
+        page: req.query?.page,
+        perPage: req.query?.perPage,
+        sort: req.query?.sort,
       });
       setNoStoreHeaders(res);
       res.json(payload);
@@ -430,8 +432,10 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.get("/leaderboard", (req, res) => {
     try {
       const metric = String(req.query?.metric || "level");
-      const limit = req.query?.limit;
-      const payload = getLeaderboard(db, metric, limit);
+      const payload = getLeaderboard(db, metric, {
+        page: req.query?.page,
+        perPage: req.query?.perPage,
+      });
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
