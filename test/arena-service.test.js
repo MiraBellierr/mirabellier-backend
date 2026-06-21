@@ -1041,8 +1041,7 @@ test("card shop shares five unique daily offers and refreshes by UTC date", asyn
       (offer) => offer.price === first.prices[offer.card.rarity],
     ),
   );
-  assert.equal(first.randomOffer.minPrice, 50);
-  assert.equal(first.randomOffer.maxPrice, 10000);
+  assert.equal(first.randomOffer.price, 500);
   assert.equal(
     new Set(first.dailyOffers.map((offer) => offer.card.malId)).size,
     5,
@@ -1136,9 +1135,9 @@ test("daily card purchases are sold per account and preserve selected card", asy
 
 test("random card purchases remain available and failures never charge coins", async () => {
   const db = createTestDb();
-  insertProfile(db, { userId: "u1", coins: 125 });
+  insertProfile(db, { userId: "u1", coins: 1250 });
   insertProfile(db, { userId: "u2", coins: 2000 });
-  insertProfile(db, { userId: "u3", coins: 5000 });
+  insertProfile(db, { userId: "u3", coins: 500 });
 
   const drawCommonCard = async () => ({
     malId: 7,
@@ -1163,8 +1162,8 @@ test("random card purchases remain available and failures never charge coins", a
     { drawCard: drawCommonCard },
   );
   assert.equal(first.card.rarity, "C");
-  assert.equal(first.pricePaid, 50);
-  assert.equal(second.profile.coins, 25);
+  assert.equal(first.pricePaid, 500);
+  assert.equal(second.profile.coins, 250);
   assert.notEqual(first.card.cardInstanceId, second.card.cardInstanceId);
   assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 2);
 
@@ -1172,37 +1171,33 @@ test("random card purchases remain available and failures never charge coins", a
     () => buyArenaShopCard(db, "u1", { kind: "random" }),
     (error) =>
       error instanceof ArenaHttpError &&
-      error.code === "ARENA_NOT_ENOUGH_COINS",
+      error.code === "ARENA_NOT_ENOUGH_COINS" &&
+      error.details.requiredCoins === 500,
   );
-  assert.equal(getArenaProfilePayload(db, "u1").coins, 25);
+  assert.equal(getArenaProfilePayload(db, "u1").coins, 250);
   assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 2);
 
-  await assert.rejects(
-    () =>
-      buyArenaShopCard(
-        db,
-        "u3",
-        { kind: "random" },
-        {
-          drawCard: async () => ({
-            malId: 1,
-            title: "Ultra Rare Character",
-            url: "https://myanimelist.net/character/1",
-            imageUrl: "https://cdn.test/1.jpg",
-            meanScore: 9,
-            popularity: 1,
-            favorites: 100000,
-            nsfw: "white",
-          }),
-        },
-      ),
-    (error) =>
-      error instanceof ArenaHttpError &&
-      error.code === "ARENA_NOT_ENOUGH_COINS" &&
-      error.details.requiredCoins === 10000,
+  const ultraRare = await buyArenaShopCard(
+    db,
+    "u3",
+    { kind: "random" },
+    {
+      drawCard: async () => ({
+        malId: 1,
+        title: "Ultra Rare Character",
+        url: "https://myanimelist.net/character/1",
+        imageUrl: "https://cdn.test/1.jpg",
+        meanScore: 9,
+        popularity: 1,
+        favorites: 100000,
+        nsfw: "white",
+      }),
+    },
   );
-  assert.equal(getArenaProfilePayload(db, "u3").coins, 5000);
-  assert.equal(getArenaCollectionPayload(db, "u3").cards.length, 0);
+  assert.equal(ultraRare.card.rarity, "UR");
+  assert.equal(ultraRare.pricePaid, 500);
+  assert.equal(getArenaProfilePayload(db, "u3").coins, 0);
+  assert.equal(getArenaCollectionPayload(db, "u3").cards.length, 1);
 
   await assert.rejects(
     () =>
