@@ -6,6 +6,8 @@ const {
   buyArenaShopCard,
   buyShopItem,
   craftShopRecipe,
+  createArenaUpdate,
+  deleteArenaUpdate,
   drawDailyCard,
   equipShopItem,
   getArenaCardShopPayload,
@@ -13,6 +15,7 @@ const {
   getArenaProfilePayload,
   getArenaSkillTreePayload,
   getArenaShopPayload,
+  getArenaUpdates,
   getLeaderboard,
   getPlaybackFightState,
   hasActiveFight,
@@ -23,6 +26,7 @@ const {
   startPlaybackFight,
   useConsumable,
 } = require("../lib/arena-service");
+const { isOwner } = require("../lib/authz");
 const {
   TurnstileError,
   verifyTurnstileToken,
@@ -92,6 +96,55 @@ module.exports = function registerArenaRoutes(app, deps) {
       const activeFight = getPlaybackFightState(db, user.id);
       setNoStoreHeaders(res);
       res.json({ ...profile, activeFight });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/updates", (req, res) => {
+    try {
+      const updates = getArenaUpdates(db, { limit: req.query?.limit });
+      setNoStoreHeaders(res);
+      res.json({ updates });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/updates", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      if (!isOwner(user)) {
+        throw new ArenaHttpError(
+          403,
+          "Only the site owner can publish Arena updates.",
+          "ARENA_UPDATE_FORBIDDEN",
+        );
+      }
+      const update = createArenaUpdate(db, user.id, {
+        title: req.body?.title,
+        body: req.body?.body,
+      });
+      setNoStoreHeaders(res);
+      res.status(201).json({ update });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.delete("/updates/:updateId", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      if (!isOwner(user)) {
+        throw new ArenaHttpError(
+          403,
+          "Only the site owner can delete Arena updates.",
+          "ARENA_UPDATE_FORBIDDEN",
+        );
+      }
+      const payload = deleteArenaUpdate(db, req.params.updateId);
+      setNoStoreHeaders(res);
+      res.json(payload);
     } catch (error) {
       handleArenaError(error, res);
     }
