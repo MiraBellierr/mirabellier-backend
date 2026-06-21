@@ -306,6 +306,8 @@ function insertProfile(db, input) {
         expBoostWinsRemaining: 0,
         coinBoostPct: 0,
         coinBoostWinsRemaining: 0,
+        drawBonusChancePct: 0,
+        drawBonusChanceWinsRemaining: 0,
         rerollKeepHigherCharges: 0,
         streakShieldCharges: 0,
         upgradeLowestRarityCharges: 0,
@@ -389,6 +391,8 @@ function makeEffects(overrides = {}) {
     expBoostWinsRemaining: 0,
     coinBoostPct: 0,
     coinBoostWinsRemaining: 0,
+    drawBonusChancePct: 0,
+    drawBonusChanceWinsRemaining: 0,
     rerollKeepHigherCharges: 0,
     streakShieldCharges: 0,
     upgradeLowestRarityCharges: 0,
@@ -613,14 +617,14 @@ test("Verdant Core restores actual battle HP after damage", async () => {
 
 test("potion effects use short tactical durations", () => {
   const durationByItemId = {
-    red_tonic: ["charges", 5],
-    green_draft: ["fights", 10],
-    amber_draft: ["fights", 10],
-    frost_elixir: ["fights", 5],
-    viridian_elixir: ["charges", 1],
-    sun_elixir: ["fights", 10],
-    star_tonic: ["fights", 10],
-    prism_draught: ["charges", 1],
+    red_tonic: ["charges", 8],
+    green_draft: ["fights", 20],
+    amber_draft: ["fights", 20],
+    frost_elixir: ["fights", 8],
+    viridian_elixir: ["charges", 3],
+    sun_elixir: ["fights", 30],
+    star_tonic: ["fights", 20],
+    prism_draught: ["charges", 3],
   };
 
   Object.entries(durationByItemId).forEach(([itemId, [durationField, duration]]) => {
@@ -646,18 +650,18 @@ test("legacy active consumable durations are clamped to tactical maxima", () => 
     doublePassiveTriggerFightsRemaining: 8,
   });
 
-  assert.equal(effects.expBoostWinsRemaining, 10);
-  assert.equal(effects.coinBoostWinsRemaining, 10);
-  assert.equal(effects.rerollKeepHigherCharges, 1);
-  assert.equal(effects.streakShieldCharges, 2);
-  assert.equal(effects.upgradeLowestRarityCharges, 1);
-  assert.equal(effects.guaranteeSsrPlusCharges, 1);
-  assert.equal(effects.fightStartShieldCharges, 5);
-  assert.equal(effects.evadeBoostFightsRemaining, 5);
-  assert.equal(effects.firstHitTrueDamageCharges, 1);
-  assert.equal(effects.higherRarityDamageBonusPctCharges, 1);
-  assert.equal(effects.gateKeyCharges, 1);
-  assert.equal(effects.doublePassiveTriggerFightsRemaining, 3);
+  assert.equal(effects.expBoostWinsRemaining, 30);
+  assert.equal(effects.coinBoostWinsRemaining, 30);
+  assert.equal(effects.rerollKeepHigherCharges, 8);
+  assert.equal(effects.streakShieldCharges, 8);
+  assert.equal(effects.upgradeLowestRarityCharges, 10);
+  assert.equal(effects.guaranteeSsrPlusCharges, 10);
+  assert.equal(effects.fightStartShieldCharges, 20);
+  assert.equal(effects.evadeBoostFightsRemaining, 20);
+  assert.equal(effects.firstHitTrueDamageCharges, 8);
+  assert.equal(effects.higherRarityDamageBonusPctCharges, 8);
+  assert.equal(effects.gateKeyCharges, 8);
+  assert.equal(effects.doublePassiveTriggerFightsRemaining, 8);
 });
 
 test("fight-start passive shields absorb damage before HP is lost", async () => {
@@ -1014,8 +1018,8 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
   assert.equal(response.rewards.coins, 0);
   assert.deepEqual(response.rewards.materialDrops, []);
   assert.equal(response.profile.losses, 1);
-  assert.equal(response.profile.effects.expBoostWinsRemaining, 9);
-  assert.equal(response.profile.effects.coinBoostWinsRemaining, 9);
+  assert.equal(response.profile.effects.expBoostWinsRemaining, 30);
+  assert.equal(response.profile.effects.coinBoostWinsRemaining, 30);
 });
 
 test("fight includes hp battle console events", async () => {
