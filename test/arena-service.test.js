@@ -36,6 +36,7 @@ const {
   buildPassiveRuntime,
   calculateAttackOutcome,
   consumeTempGuard,
+  getCardShopPrice,
   rollFightMaterialRewards,
   runPassivesForTrigger,
   simulateFight,
@@ -1028,9 +1029,20 @@ test("card shop shares five unique daily offers and refreshes by UTC date", asyn
   });
 
   assert.equal(first.dailyOffers.length, 5);
-  assert.equal(first.price, 500);
-  assert.ok(first.dailyOffers.every((offer) => offer.price === 500));
-  assert.equal(first.randomOffer.price, 500);
+  assert.deepEqual(first.prices, {
+    C: 50,
+    R: 100,
+    SR: 1000,
+    SSR: 5000,
+    UR: 10000,
+  });
+  assert.ok(
+    first.dailyOffers.every(
+      (offer) => offer.price === first.prices[offer.card.rarity],
+    ),
+  );
+  assert.equal(first.randomOffer.minPrice, 50);
+  assert.equal(first.randomOffer.maxPrice, 10000);
   assert.equal(
     new Set(first.dailyOffers.map((offer) => offer.card.malId)).size,
     5,
@@ -1048,17 +1060,25 @@ test("card shop shares five unique daily offers and refreshes by UTC date", asyn
   );
 });
 
+test("card shop prices cards by rarity", () => {
+  assert.equal(getCardShopPrice("C"), 50);
+  assert.equal(getCardShopPrice("R"), 100);
+  assert.equal(getCardShopPrice("SR"), 1000);
+  assert.equal(getCardShopPrice("SSR"), 5000);
+  assert.equal(getCardShopPrice("UR"), 10000);
+});
+
 test("daily card purchases are sold per account and preserve selected card", async () => {
   const db = createTestDb();
   const selectedCard = makeCard(99, "SSR");
   insertProfile(db, {
     userId: "u1",
-    coins: 3000,
+    coins: 20000,
     selectedCard,
   });
   insertProfile(db, {
     userId: "u2",
-    coins: 3000,
+    coins: 20000,
     selectedCard: makeCard(98, "SR"),
   });
 
@@ -1069,7 +1089,8 @@ test("daily card purchases are sold per account and preserve selected card", asy
     offerId: offer.offerId,
   });
 
-  assert.equal(firstPurchase.profile.coins, 2500);
+  assert.equal(firstPurchase.pricePaid, offer.price);
+  assert.equal(firstPurchase.profile.coins, 20000 - offer.price);
   assert.equal(
     firstPurchase.profile.selectedCard.cardInstanceId,
     selectedCard.cardInstanceId,
@@ -1115,12 +1136,35 @@ test("daily card purchases are sold per account and preserve selected card", asy
 
 test("random card purchases remain available and failures never charge coins", async () => {
   const db = createTestDb();
-  insertProfile(db, { userId: "u1", coins: 1250 });
+  insertProfile(db, { userId: "u1", coins: 125 });
   insertProfile(db, { userId: "u2", coins: 2000 });
+  insertProfile(db, { userId: "u3", coins: 5000 });
 
-  const first = await buyArenaShopCard(db, "u1", { kind: "random" });
-  const second = await buyArenaShopCard(db, "u1", { kind: "random" });
-  assert.equal(second.profile.coins, 250);
+  const drawCommonCard = async () => ({
+    malId: 7,
+    title: "Common Character",
+    url: "https://myanimelist.net/character/7",
+    imageUrl: "https://cdn.test/7.jpg",
+    meanScore: 7,
+    popularity: Number.MAX_SAFE_INTEGER,
+    favorites: 0,
+    nsfw: "white",
+  });
+  const first = await buyArenaShopCard(
+    db,
+    "u1",
+    { kind: "random" },
+    { drawCard: drawCommonCard },
+  );
+  const second = await buyArenaShopCard(
+    db,
+    "u1",
+    { kind: "random" },
+    { drawCard: drawCommonCard },
+  );
+  assert.equal(first.card.rarity, "C");
+  assert.equal(first.pricePaid, 50);
+  assert.equal(second.profile.coins, 25);
   assert.notEqual(first.card.cardInstanceId, second.card.cardInstanceId);
   assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 2);
 
@@ -1130,8 +1174,35 @@ test("random card purchases remain available and failures never charge coins", a
       error instanceof ArenaHttpError &&
       error.code === "ARENA_NOT_ENOUGH_COINS",
   );
-  assert.equal(getArenaProfilePayload(db, "u1").coins, 250);
+  assert.equal(getArenaProfilePayload(db, "u1").coins, 25);
   assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 2);
+
+  await assert.rejects(
+    () =>
+      buyArenaShopCard(
+        db,
+        "u3",
+        { kind: "random" },
+        {
+          drawCard: async () => ({
+            malId: 1,
+            title: "Ultra Rare Character",
+            url: "https://myanimelist.net/character/1",
+            imageUrl: "https://cdn.test/1.jpg",
+            meanScore: 9,
+            popularity: 1,
+            favorites: 100000,
+            nsfw: "white",
+          }),
+        },
+      ),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_NOT_ENOUGH_COINS" &&
+      error.details.requiredCoins === 10000,
+  );
+  assert.equal(getArenaProfilePayload(db, "u3").coins, 5000);
+  assert.equal(getArenaCollectionPayload(db, "u3").cards.length, 0);
 
   await assert.rejects(
     () =>
