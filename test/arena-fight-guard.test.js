@@ -19,14 +19,14 @@ test("Arena fight guard limits rapid attempts per account", () => {
   const req = request("203.0.113.20");
   const now = Date.now();
 
-  for (let index = 0; index < 8; index += 1) {
+  for (let index = 0; index < 30; index += 1) {
     assert.equal(
       checkArenaFightRateLimit(req, "user-1", now + index).allowed,
       true,
     );
   }
 
-  const blocked = checkArenaFightRateLimit(req, "user-1", now + 9);
+  const blocked = checkArenaFightRateLimit(req, "user-1", now + 31);
   assert.equal(blocked.allowed, false);
   assert.ok(blocked.retryAfterMs > 0);
 });
@@ -36,7 +36,7 @@ test("Arena fight guard also limits shared source IP abuse", () => {
   const req = request("203.0.113.21");
   const now = Date.now();
 
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 30; index += 1) {
     assert.equal(
       checkArenaFightRateLimit(req, `user-${index}`, now + index).allowed,
       true,
@@ -44,7 +44,7 @@ test("Arena fight guard also limits shared source IP abuse", () => {
   }
 
   assert.equal(
-    checkArenaFightRateLimit(req, "user-21", now + 21).allowed,
+    checkArenaFightRateLimit(req, "user-31", now + 31).allowed,
     false,
   );
 });

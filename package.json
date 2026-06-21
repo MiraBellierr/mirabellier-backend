@@ -11,7 +11,8 @@
     "test": "node --test",
     "export:arena": "node scripts/export-arena-csv.cjs",
     "export:levels": "node scripts/export-arena-levels.cjs",
-    "migrate:card-rarities": "node scripts/migrate-arena-card-rarities.cjs"
+    "migrate:card-rarities": "node scripts/migrate-arena-card-rarities.cjs",
+    "migrate:remove-arena-materials": "node scripts/remove-arena-materials.cjs --apply"
   },
   "dependencies": {
     "axios": "^1.13.2",

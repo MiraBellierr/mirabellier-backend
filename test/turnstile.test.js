@@ -24,12 +24,15 @@ function restoreEnv(name, value) {
 
 test("Turnstile verification accepts a successful matching action", async (t) => {
   const previousSecret = process.env.TURNSTILE_SECRET_KEY;
+  const previousNodeEnv = process.env.NODE_ENV;
   const previousFetch = global.fetch;
   t.after(() => {
     restoreEnv("TURNSTILE_SECRET_KEY", previousSecret);
+    restoreEnv("NODE_ENV", previousNodeEnv);
     global.fetch = previousFetch;
   });
 
+  process.env.NODE_ENV = "production";
   process.env.TURNSTILE_SECRET_KEY = "test-secret";
   global.fetch = async (_url, init) => {
     const payload = JSON.parse(init.body);
@@ -56,10 +59,13 @@ test("Turnstile verification accepts a successful matching action", async (t) =>
 
 test("Turnstile verification rejects a missing token", async (t) => {
   const previousSecret = process.env.TURNSTILE_SECRET_KEY;
+  const previousNodeEnv = process.env.NODE_ENV;
   t.after(() => {
     restoreEnv("TURNSTILE_SECRET_KEY", previousSecret);
+    restoreEnv("NODE_ENV", previousNodeEnv);
   });
 
+  process.env.NODE_ENV = "production";
   process.env.TURNSTILE_SECRET_KEY = "test-secret";
 
   await assert.rejects(
@@ -72,12 +78,15 @@ test("Turnstile verification rejects a missing token", async (t) => {
 
 test("Turnstile verification rejects a mismatched action", async (t) => {
   const previousSecret = process.env.TURNSTILE_SECRET_KEY;
+  const previousNodeEnv = process.env.NODE_ENV;
   const previousFetch = global.fetch;
   t.after(() => {
     restoreEnv("TURNSTILE_SECRET_KEY", previousSecret);
+    restoreEnv("NODE_ENV", previousNodeEnv);
     global.fetch = previousFetch;
   });
 
+  process.env.NODE_ENV = "production";
   process.env.TURNSTILE_SECRET_KEY = "test-secret";
   global.fetch = async () =>
     new Response(
