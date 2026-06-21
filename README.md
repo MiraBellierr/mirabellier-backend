@@ -81,38 +81,31 @@ DISCORD_CALLBACK_URL=http://localhost:3000/auth/discord/callback
 FRONTEND_URL=http://localhost:5173
 MAL_CLIENT_ID=your_myanimelist_client_id
 MAL_USERNAME=your_myanimelist_username
-JIKAN_API_BASE=http://localhost:8080/v4
-JIKAN_HEALTH_PATH=/
 WEBSITE_BASE=https://mirabellier.com
 INDEXNOW_KEY=your-indexnow-key
 ```
 
 Useful optional vars are documented in `.env.example` (session cookie options, QOTD webhook options, MAL refresh interval, quote schedule, and IndexNow toggles).
 
-### Optional: run Jikan locally for Arena
+### Arena character catalog
 
-Arena card draws use Jikan for character data. To run `jikan-me/jikan-rest` locally:
+Arena card draws use the favorites-ranked local file at
+`data/mal-characters.json`. Refresh it by scraping MyAnimeList:
 
 ```bash
 cd mirabellier-backend
-npm run jikan:up
+npm run scrape:mal:characters
 ```
 
-Set the old backend to use it:
+The scraper checkpoints every 50 characters and resumes automatically. You can
+override the catalog path if needed:
 
 ```env
-JIKAN_API_BASE=http://localhost:8080/v4
-JIKAN_HEALTH_PATH=/
+MAL_CHARACTERS_FILE=./data/mal-characters.json
 ```
 
-Direct local readiness checks:
-
-```bash
-curl http://localhost:8080/v4
-curl http://localhost:3000/v1/arena/jikan-health
-```
-
-The frontend checks the backend's `/arena/jikan-health` route, and the backend checks the configured `JIKAN_API_BASE`. That keeps production visitors away from `localhost:8080` while still letting the server use local Jikan. The local Jikan container starts with its own MongoDB data volume. Jikan's container docs note that fresh local data starts empty and full indexing can take a long time, so Arena still falls back to the existing SQLite card pool when local Jikan cannot return a usable random character.
+Card rarity follows the character's position in that ranked file: top 1% UR,
+next 4% SSR, next 10% SR, next 25% R, and the remaining 60% C.
 
 ### 3. Start the server
 
@@ -135,11 +128,9 @@ If `PORT` is missing, `app.js` falls back to `5000`.
 
 - `npm run dev` - run backend with nodemon
 - `npm start` - run backend normally
-- `npm run jikan:up` - start local Jikan REST + MongoDB
-- `npm run jikan:down` - stop local Jikan REST + MongoDB
-- `npm run jikan:logs` - follow local Jikan REST logs
 - `npm run generate:sitemap` - regenerate sitemap data
-- `npm run fetch:jikan:characters` - refresh local arena character source data
+- `npm run scrape:mal:characters` - refresh the ranked local Arena character catalog
+- `npm run migrate:card-rarities` - preview rank-based rarity updates for stored cards
 - `npm test` - run Node tests
 
 ## Main route map

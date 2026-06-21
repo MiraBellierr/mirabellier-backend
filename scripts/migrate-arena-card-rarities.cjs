@@ -7,7 +7,10 @@ const Database = require("better-sqlite3");
 const BACKEND_ROOT = path.resolve(__dirname, "..");
 require("dotenv").config({ path: path.join(BACKEND_ROOT, ".env") });
 
-const { rarityFromFavorites } = require("../lib/arena-service");
+const {
+  getArenaCharacterCatalog,
+  rarityFromCharacterRank,
+} = require("../lib/arena-characters");
 
 const CARD_JSON_TARGETS = [
   {
@@ -86,7 +89,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Update stored Arena card rarities using the current favorites rule.
+  console.log(`Update stored Arena card rarities using mal-characters.json rank.
 
 Usage:
   npm run migrate:card-rarities
@@ -100,10 +103,12 @@ Options:
   --help, -h         Show this help
 
 Current rule:
-  0 favorites        C
-  1-29,999           Logarithmic C/R/SR/SSR curve
-  30,000+            UR
-  Missing favorites  Left unchanged`);
+  Top 1%             UR
+  Next 4%            SSR
+  Next 10%           SR
+  Next 25%           R
+  Remaining 60%      C
+  Missing catalog ID Left unchanged`);
 }
 
 function quoteIdentifier(value) {
@@ -137,6 +142,7 @@ function emptyTargetStats(target) {
 
 function collectTargetChanges(db, target) {
   const stats = emptyTargetStats(target);
+  const catalog = getArenaCharacterCatalog();
   if (!tableExists(db, target.table)) {
     return { stats: { ...stats, missingTable: true }, changes: [] };
   }
@@ -168,26 +174,34 @@ function collectTargetChanges(db, target) {
       continue;
     }
 
-    if (card.favorites === null || card.favorites === undefined) {
+    const catalogCharacter = catalog.byMalId.get(Number(card.malId));
+    if (!catalogCharacter) {
       stats.skippedMissing += 1;
       continue;
     }
 
-    const favorites = Number(card.favorites);
-    if (!Number.isFinite(favorites)) {
-      stats.skippedMissing += 1;
-      continue;
-    }
-
-    const nextRarity = rarityFromFavorites(favorites);
-    if (card.rarity === nextRarity) {
+    const nextRarity = rarityFromCharacterRank(
+      catalogCharacter.popularity,
+      catalog.characters.length,
+    );
+    const nextCard = {
+      ...card,
+      popularity: catalogCharacter.popularity,
+      favorites: catalogCharacter.favorites,
+      rarity: nextRarity,
+    };
+    if (
+      card.rarity === nextRarity &&
+      Number(card.popularity) === catalogCharacter.popularity &&
+      Number(card.favorites) === catalogCharacter.favorites
+    ) {
       stats.unchanged += 1;
       continue;
     }
 
     changes.push({
       rowId: row.rowId,
-      cardJson: JSON.stringify({ ...card, rarity: nextRarity }),
+      cardJson: JSON.stringify(nextCard),
       from: card.rarity ?? null,
       to: nextRarity,
     });
@@ -249,7 +263,7 @@ function printSummary(summary) {
     }
     console.log(
       `- ${target.name}: ${target.scanned} scanned, ${target.changed} to update, ` +
-        `${target.unchanged} already current, ${target.skippedMissing} missing favorites, ` +
+        `${target.unchanged} already current, ${target.skippedMissing} missing catalog IDs, ` +
         `${target.invalidJson} invalid JSON`,
     );
   }
