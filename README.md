@@ -173,6 +173,9 @@ If `PORT` is missing, `app.js` falls back to `5000`.
 - `GET /arena/profile` - arena profile payload
 - `GET /arena/collection` - owned cards payload
 - `POST /arena/collection/select-card` - choose active card
+- `GET /arena/updates` - newest Arena home update posts
+- `POST /arena/updates` - publish an Arena update (owner only)
+- `DELETE /arena/updates/:updateId` - delete an Arena update (owner only)
 - `POST /arena/fight` - run fight
 - `POST /arena/draw-card` - daily draw
 - `GET /arena/shop` - shop payload

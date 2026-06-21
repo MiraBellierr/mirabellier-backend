@@ -37,6 +37,7 @@ const {
   calculateAttackOutcome,
   consumeTempGuard,
   getCardShopPrice,
+  isRandomCardOfferAvailable,
   rollFightMaterialRewards,
   runPassivesForTrigger,
   simulateFight,
@@ -1041,7 +1042,7 @@ test("card shop shares five unique daily offers and refreshes by UTC date", asyn
       (offer) => offer.price === first.prices[offer.card.rarity],
     ),
   );
-  assert.equal(first.randomOffer.price, 500);
+  assert.equal(first.randomOffer, null);
   assert.equal(
     new Set(first.dailyOffers.map((offer) => offer.card.malId)).size,
     5,
@@ -1065,6 +1066,36 @@ test("card shop prices cards by rarity", () => {
   assert.equal(getCardShopPrice("SR"), 1000);
   assert.equal(getCardShopPrice("SSR"), 5000);
   assert.equal(getCardShopPrice("UR"), 10000);
+});
+
+test("random card offer is removed at the June 23, 2026 UTC cutoff", async () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 1000 });
+
+  assert.equal(isRandomCardOfferAvailable("2026-06-22"), true);
+  assert.equal(isRandomCardOfferAvailable("2026-06-23"), false);
+  const before = await getArenaCardShopPayload(db, "u1", {
+    recordedDate: "2026-06-22",
+  });
+  const cutoff = await getArenaCardShopPayload(db, "u1", {
+    recordedDate: "2026-06-23",
+  });
+  assert.equal(before.randomOffer?.price, 500);
+  assert.equal(before.randomOffer?.endsAt, "2026-06-23T00:00:00.000Z");
+  assert.equal(cutoff.randomOffer, null);
+  await assert.rejects(
+    () =>
+      buyArenaShopCard(
+        db,
+        "u1",
+        { kind: "random" },
+        { recordedDate: "2026-06-23" },
+      ),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_RANDOM_CARD_OFFER_ENDED",
+  );
+  assert.equal(getArenaProfilePayload(db, "u1").coins, 1000);
 });
 
 test("daily card purchases are sold per account and preserve selected card", async () => {
@@ -1153,13 +1184,13 @@ test("random card purchases remain available and failures never charge coins", a
     db,
     "u1",
     { kind: "random" },
-    { drawCard: drawCommonCard },
+    { recordedDate: "2026-06-22", drawCard: drawCommonCard },
   );
   const second = await buyArenaShopCard(
     db,
     "u1",
     { kind: "random" },
-    { drawCard: drawCommonCard },
+    { recordedDate: "2026-06-22", drawCard: drawCommonCard },
   );
   assert.equal(first.card.rarity, "C");
   assert.equal(first.pricePaid, 500);
@@ -1168,7 +1199,13 @@ test("random card purchases remain available and failures never charge coins", a
   assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 2);
 
   await assert.rejects(
-    () => buyArenaShopCard(db, "u1", { kind: "random" }),
+    () =>
+      buyArenaShopCard(
+        db,
+        "u1",
+        { kind: "random" },
+        { recordedDate: "2026-06-22" },
+      ),
     (error) =>
       error instanceof ArenaHttpError &&
       error.code === "ARENA_NOT_ENOUGH_COINS" &&
@@ -1182,6 +1219,7 @@ test("random card purchases remain available and failures never charge coins", a
     "u3",
     { kind: "random" },
     {
+      recordedDate: "2026-06-22",
       drawCard: async () => ({
         malId: 1,
         title: "Ultra Rare Character",
@@ -1206,6 +1244,7 @@ test("random card purchases remain available and failures never charge coins", a
         "u2",
         { kind: "random" },
         {
+          recordedDate: "2026-06-22",
           drawCard: async () => {
             throw new Error("source unavailable");
           },
