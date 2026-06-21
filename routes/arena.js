@@ -23,7 +23,6 @@ const {
   startPlaybackFight,
   useConsumable,
 } = require("../lib/arena-service");
-const { checkJikanHealth } = require("../lib/arena-mal");
 const {
   TurnstileError,
   verifyTurnstileToken,
@@ -66,33 +65,12 @@ function handleArenaError(error, res) {
     });
   }
 
-  if (error && typeof error === "object" && error.code === "MAL_CONFIG_MISSING") {
-    setNoStoreHeaders(res);
-    return res.status(503).json({
-      code: "MAL_CONFIG_MISSING",
-      error: error.message,
-    });
-  }
-
   if (error && typeof error === "object" && error.code === "MAL_POOL_EMPTY") {
     setNoStoreHeaders(res);
     return res.status(503).json({
       code: "MAL_POOL_EMPTY",
       error:
         "Arena card pool is currently unavailable. Please try again in a moment.",
-    });
-  }
-
-  if (error && typeof error === "object" && error.code === "MAL_SOURCE_RATE_LIMIT") {
-    setNoStoreHeaders(res);
-    return res.status(503).json({
-      code: "MAL_SOURCE_RATE_LIMIT",
-      error:
-        "Arena card source is rate-limited right now. Please retry in a moment.",
-      retryAfterMs:
-        Number.isFinite(Number(error.retryAfterMs)) && Number(error.retryAfterMs) > 0
-          ? Number(error.retryAfterMs)
-          : undefined,
     });
   }
 
@@ -106,29 +84,6 @@ function handleArenaError(error, res) {
 module.exports = function registerArenaRoutes(app, deps) {
   const { db, authFromReq } = deps;
   const router = express.Router();
-
-  router.get("/jikan-health", async (_req, res) => {
-    try {
-      const response = await checkJikanHealth();
-      if (response.status >= 400 && response.status < 600) {
-        setNoStoreHeaders(res);
-        return res.status(503).json({
-          code: "JIKAN_MAINTENANCE",
-          error: "Arena is in maintenance. Please try again later.",
-          sourceStatus: response.status,
-        });
-      }
-
-      setNoStoreHeaders(res);
-      return res.json({ ok: true, sourceStatus: response.status });
-    } catch {
-      setNoStoreHeaders(res);
-      return res.status(503).json({
-        code: "JIKAN_MAINTENANCE",
-        error: "Arena is in maintenance. Please try again later.",
-      });
-    }
-  });
 
   router.get("/profile", async (req, res) => {
     try {

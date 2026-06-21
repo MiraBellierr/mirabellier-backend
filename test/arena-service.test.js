@@ -21,7 +21,7 @@ const {
   getArenaSkillTreePayload,
   getLeaderboard,
   getPlaybackFightState,
-  rarityFromFavorites,
+  rarityFromCharacterRank,
   resolveRoundWinner,
   resetArenaSkills,
   runFight,
@@ -424,15 +424,16 @@ test("round power includes metadata and rarity modifiers", () => {
   assert.ok(result.breakdown.popularityBonus >= 0);
 });
 
-test("favorites-based rarity mapping makes 30k and above UR", () => {
-  assert.equal(rarityFromFavorites(0), "C");
-  assert.equal(rarityFromFavorites(53), "C");
-  assert.equal(rarityFromFavorites(7000), "R");
-  assert.equal(rarityFromFavorites(15000), "SR");
-  assert.equal(rarityFromFavorites(25000), "SSR");
-  assert.equal(rarityFromFavorites(29999), "SSR");
-  assert.equal(rarityFromFavorites(30000), "UR");
-  assert.equal(rarityFromFavorites(60000), "UR");
+test("character rank maps to the configured rarity percentiles", () => {
+  assert.equal(rarityFromCharacterRank(1, 100), "UR");
+  assert.equal(rarityFromCharacterRank(2, 100), "SSR");
+  assert.equal(rarityFromCharacterRank(5, 100), "SSR");
+  assert.equal(rarityFromCharacterRank(6, 100), "SR");
+  assert.equal(rarityFromCharacterRank(15, 100), "SR");
+  assert.equal(rarityFromCharacterRank(16, 100), "R");
+  assert.equal(rarityFromCharacterRank(40, 100), "R");
+  assert.equal(rarityFromCharacterRank(41, 100), "C");
+  assert.equal(rarityFromCharacterRank(100, 100), "C");
 });
 
 test("stored cards with zero favorites are normalized to C rarity", () => {
