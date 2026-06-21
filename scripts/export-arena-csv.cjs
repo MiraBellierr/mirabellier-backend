@@ -76,6 +76,9 @@ const profiles = db
        p.guard,
        p.speed,
        p.luck,
+       p.eloRating,
+       p.eloMatches,
+       p.peakElo,
        p.lifetimeCoinsEarned,
        p.lastCardDrawDate,
        p.dailyCardDrawCount,
@@ -93,6 +96,7 @@ const profileColumns = [
   "userId", "playerName", "level", "xp", "coins",
   "wins", "losses", "winStreak",
   "hp", "power", "guard", "speed", "luck",
+  "eloRating", "eloMatches", "peakElo",
   "lifetimeCoinsEarned", "lastCardDrawDate", "dailyCardDrawCount",
   "catalogVersion", "lastFightAt", "createdAt", "updatedAt",
 ];

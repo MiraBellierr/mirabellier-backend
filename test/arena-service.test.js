@@ -21,6 +21,7 @@ const {
   getArenaSkillTreePayload,
   getLeaderboard,
   getPlaybackFightState,
+  normalizeArenaEffects,
   rarityFromCharacterRank,
   resolveRoundWinner,
   resetArenaSkills,
@@ -35,6 +36,8 @@ const { SHOP_ITEMS } = require("../lib/arena-constants");
 const {
   buildPassiveRuntime,
   calculateAttackOutcome,
+  calculateEloExchange,
+  chooseEloOpponent,
   consumeTempGuard,
   getCardShopPrice,
   isRandomCardOfferAvailable,
@@ -69,6 +72,9 @@ function createTestDb() {
       speed INTEGER NOT NULL DEFAULT 10,
       luck INTEGER NOT NULL DEFAULT 6,
       lifetimeCoinsEarned INTEGER NOT NULL DEFAULT 0,
+      eloRating INTEGER NOT NULL DEFAULT 1000,
+      eloMatches INTEGER NOT NULL DEFAULT 0,
+      peakElo INTEGER NOT NULL DEFAULT 1000,
       selectedCardJson TEXT,
       lastCardDrawDate TEXT,
       dailyCardDrawCount INTEGER NOT NULL DEFAULT 0,
@@ -270,8 +276,9 @@ function insertProfile(db, input) {
     `INSERT INTO arena_profiles (
       userId, level, xp, coins, wins, losses, winStreak,
       hp, power, guard, speed, luck, lifetimeCoinsEarned,
+      eloRating, eloMatches, peakElo,
       selectedCardJson, lastCardDrawDate, dailyCardDrawCount, catalogVersion, effectsJson, lastFightAt, createdAt, updatedAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.userId,
     input.level ?? 1,
@@ -286,6 +293,9 @@ function insertProfile(db, input) {
     input.speed ?? 10,
     input.luck ?? 6,
     input.lifetimeCoinsEarned ?? 0,
+    input.eloRating ?? 1000,
+    input.eloMatches ?? 0,
+    input.peakElo ?? input.eloRating ?? 1000,
     input.selectedCard ? JSON.stringify(input.selectedCard) : null,
     input.lastCardDrawDate ?? null,
     input.dailyCardDrawCount ?? 0,
@@ -421,7 +431,7 @@ test("round power includes metadata and rarity modifiers", () => {
   });
 
   assert.equal(typeof result.value, "number");
-  assert.equal(result.breakdown.rarityPower, 34);
+  assert.equal(result.breakdown.rarityPower, 12);
   assert.ok(result.breakdown.malScoreBonus >= 0);
   assert.ok(result.breakdown.popularityBonus >= 0);
 });
@@ -601,23 +611,53 @@ test("Verdant Core restores actual battle HP after damage", async () => {
   assert.ok(result.battle.console.some((entry) => entry.line.includes("recovered 4 HP")));
 });
 
-test("all potion effects last 50 fights", () => {
-  const durationFieldByItemId = {
-    red_tonic: "charges",
-    green_draft: "fights",
-    amber_draft: "fights",
-    frost_elixir: "fights",
-    viridian_elixir: "charges",
-    sun_elixir: "fights",
-    star_tonic: "fights",
-    prism_draught: "charges",
+test("potion effects use short tactical durations", () => {
+  const durationByItemId = {
+    red_tonic: ["charges", 5],
+    green_draft: ["fights", 10],
+    amber_draft: ["fights", 10],
+    frost_elixir: ["fights", 5],
+    viridian_elixir: ["charges", 1],
+    sun_elixir: ["fights", 10],
+    star_tonic: ["fights", 10],
+    prism_draught: ["charges", 1],
   };
 
-  Object.entries(durationFieldByItemId).forEach(([itemId, durationField]) => {
+  Object.entries(durationByItemId).forEach(([itemId, [durationField, duration]]) => {
     const item = SHOP_ITEMS.find((candidate) => candidate.id === itemId);
     assert.ok(item, `Missing potion fixture: ${itemId}`);
-    assert.equal(item.consumableEffect?.[durationField], 50);
+    assert.equal(item.consumableEffect?.[durationField], duration);
   });
+});
+
+test("legacy active consumable durations are clamped to tactical maxima", () => {
+  const effects = normalizeArenaEffects({
+    expBoostWinsRemaining: 50,
+    coinBoostWinsRemaining: 50,
+    rerollKeepHigherCharges: 8,
+    streakShieldCharges: 8,
+    upgradeLowestRarityCharges: 50,
+    guaranteeSsrPlusCharges: 50,
+    fightStartShieldCharges: 50,
+    evadeBoostFightsRemaining: 50,
+    firstHitTrueDamageCharges: 8,
+    higherRarityDamageBonusPctCharges: 8,
+    gateKeyCharges: 8,
+    doublePassiveTriggerFightsRemaining: 8,
+  });
+
+  assert.equal(effects.expBoostWinsRemaining, 10);
+  assert.equal(effects.coinBoostWinsRemaining, 10);
+  assert.equal(effects.rerollKeepHigherCharges, 1);
+  assert.equal(effects.streakShieldCharges, 2);
+  assert.equal(effects.upgradeLowestRarityCharges, 1);
+  assert.equal(effects.guaranteeSsrPlusCharges, 1);
+  assert.equal(effects.fightStartShieldCharges, 5);
+  assert.equal(effects.evadeBoostFightsRemaining, 5);
+  assert.equal(effects.firstHitTrueDamageCharges, 1);
+  assert.equal(effects.higherRarityDamageBonusPctCharges, 1);
+  assert.equal(effects.gateKeyCharges, 1);
+  assert.equal(effects.doublePassiveTriggerFightsRemaining, 3);
 });
 
 test("fight-start passive shields absorb damage before HP is lost", async () => {
@@ -739,20 +779,69 @@ test("Lantern Oil is consumed only against a higher-rarity opponent", async () =
   assert.equal(higherRarity.effectUsage.usedHigherRarityBonus, true);
 });
 
-test("fight materials roll zero or one item from each of tiers one through three", () => {
-  const values = [0.9, 0, 0.1, 0.9, 0.99];
-  const rewards = rollFightMaterialRewards(() => values.shift() ?? 0);
+test("fights no longer drop crafting materials", () => {
+  assert.deepEqual(rollFightMaterialRewards(), []);
+});
 
-  assert.deepEqual(
-    rewards.map((reward) => ({
-      tier: reward.tier,
-      quantity: reward.quantity,
-    })),
-    [
-      { tier: "Rookie", quantity: 1 },
-      { tier: "Silver", quantity: 1 },
-    ],
+test("ELO exchange uses provisional and established K factors with a rating floor", () => {
+  const provisional = calculateEloExchange(
+    { eloRating: 1000, eloMatches: 0 },
+    { eloRating: 1000, eloMatches: 0 },
   );
+  assert.equal(provisional.kFactor, 40);
+  assert.equal(provisional.delta, 20);
+  assert.equal(provisional.winnerAfter, 1020);
+  assert.equal(provisional.loserAfter, 980);
+
+  const upset = calculateEloExchange(
+    { eloRating: 800, eloMatches: 30 },
+    { eloRating: 1200, eloMatches: 30 },
+  );
+  assert.equal(upset.kFactor, 24);
+  assert.ok(upset.delta > 12);
+
+  const established = calculateEloExchange(
+    { eloRating: 1000, eloMatches: 20 },
+    { eloRating: 1000, eloMatches: 20 },
+  );
+  assert.equal(established.kFactor, 24);
+  assert.equal(established.delta, 12);
+
+  const floored = calculateEloExchange(
+    { eloRating: 1000, eloMatches: 20 },
+    { eloRating: 100, eloMatches: 20 },
+  );
+  assert.equal(floored.delta, 0);
+  assert.equal(floored.loserAfter, 100);
+});
+
+test("ELO matchmaking prefers nearby ratings and avoids recent opponents", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    eloRating: 1000,
+    selectedCard: makeCard(1, "C"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    eloRating: 1010,
+    selectedCard: makeCard(2, "C"),
+  });
+  insertProfile(db, {
+    userId: "u3",
+    eloRating: 1300,
+    selectedCard: makeCard(3, "C"),
+  });
+
+  assert.equal(chooseEloOpponent(db, "u1", () => 0).userId, "u2");
+
+  db.prepare(
+    `INSERT INTO arena_fights (
+      id, userId, opponentUserId, result, roundsJson, xpDelta, coinDelta, createdAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run("recent", "u1", "u2", "win", "[]", 1, 1, new Date().toISOString());
+
+  assert.equal(chooseEloOpponent(db, "u1", () => 0).userId, "u3");
 });
 
 test("tie break uses speed before coinflip", () => {
@@ -923,17 +1012,10 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
   assert.ok(response.battle);
   assert.equal(response.rewards.xp, 1);
   assert.equal(response.rewards.coins, 0);
-  assert.ok(response.rewards.materialDrops.length <= 3);
-  assert.ok(
-    response.rewards.materialDrops.every(
-      (drop) =>
-        ["Rookie", "Bronze", "Silver"].includes(drop.tier) &&
-        drop.quantity === 1,
-    ),
-  );
+  assert.deepEqual(response.rewards.materialDrops, []);
   assert.equal(response.profile.losses, 1);
-  assert.equal(response.profile.effects.expBoostWinsRemaining, 49);
-  assert.equal(response.profile.effects.coinBoostWinsRemaining, 49);
+  assert.equal(response.profile.effects.expBoostWinsRemaining, 9);
+  assert.equal(response.profile.effects.coinBoostWinsRemaining, 9);
 });
 
 test("fight includes hp battle console events", async () => {
@@ -975,7 +1057,26 @@ test("playback fight state keeps finalized exp and coin rewards", async () => {
   assert.ok(persisted?.rewards);
   assert.ok(persisted.rewards.xp >= 1);
   assert.ok(persisted.rewards.coins >= 0);
+  assert.equal(persisted.rewards.elo?.rated, true);
+  assert.equal(
+    persisted.rewards.elo.playerDelta + persisted.rewards.elo.opponentDelta,
+    0,
+  );
+  assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
+  assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
+  assert.deepEqual(
+    [
+      getArenaProfilePayload(db, "u1").eloRating,
+      getArenaProfilePayload(db, "u2").eloRating,
+    ].sort((a, b) => a - b),
+    [980, 1020],
+  );
   assert.deepEqual(persisted.rewards, fight.rewards);
+
+  const repeated = advancePlaybackFightTurn(db, "u1");
+  assert.deepEqual(repeated.rewards, persisted.rewards);
+  assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
+  assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
 });
 
 test("fight cooldown blocks rapid repeat fights", async () => {
@@ -1330,11 +1431,11 @@ test("using consumable applies effect and consumes quantity", () => {
 
   const useResult = useConsumable(db, "u1", "red_tonic");
   assert.equal(useResult.activatedItemId, "red_tonic");
-  assert.equal(useResult.effects.fightStartShieldCharges, 50);
+  assert.equal(useResult.effects.fightStartShieldCharges, 5);
   assert.equal(useResult.effects.fightStartShieldAmount, 20);
 
   const profile = getArenaProfilePayload(db, "u1");
-  assert.equal(profile.effects.fightStartShieldCharges, 50);
+  assert.equal(profile.effects.fightStartShieldCharges, 5);
   assert.equal(profile.effects.fightStartShieldAmount, 20);
 });
 
@@ -1365,6 +1466,38 @@ test("rich leaderboard sorts by coins then lifetime earned", () => {
   const board = getLeaderboard(db, "rich", 10);
   assert.equal(board.entries[0].user.id, "u3");
   assert.equal(board.entries[1].user.id, "u2");
+});
+
+test("ELO leaderboard sorts by rating, matches, and peak rating", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    eloRating: 1200,
+    eloMatches: 10,
+    peakElo: 1250,
+    selectedCard: makeCard(1, "C"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    eloRating: 1200,
+    eloMatches: 25,
+    peakElo: 1220,
+    selectedCard: makeCard(2, "C"),
+  });
+  insertProfile(db, {
+    userId: "u3",
+    eloRating: 1100,
+    eloMatches: 30,
+    peakElo: 1300,
+    selectedCard: makeCard(3, "C"),
+  });
+
+  const board = getLeaderboard(db, "elo", 10);
+  assert.equal(board.entries[0].user.id, "u2");
+  assert.equal(board.entries[0].eloProvisional, false);
+  assert.equal(board.entries[1].user.id, "u1");
+  assert.equal(board.entries[1].eloProvisional, true);
+  assert.equal(board.entries[2].user.id, "u3");
 });
 
 test("daily draw is limited to ten cards per day", async () => {
@@ -1419,4 +1552,7 @@ test("first player can fight npc fallback when no real opponent", async () => {
   const result = await runFight(db, "u1");
   assert.equal(result.opponent.isNpc, true);
   assert.equal(result.opponent.displayName, "Training Slime");
+  assert.equal(result.rewards.elo.rated, false);
+  assert.equal(result.profile.eloRating, 1000);
+  assert.equal(result.profile.eloMatches, 0);
 });
