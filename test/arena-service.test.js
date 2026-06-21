@@ -7,18 +7,25 @@ const {
   __test,
   advancePlaybackFightTurn,
   activateArenaSkill,
+  buyArenaMarketListing,
   buyArenaShopCard,
   buyShopItem,
+  cancelArenaMarketListing,
   craftShopRecipe,
   calculateRoundPower,
   calculateWinCoins,
   calculateWinXp,
+  createArenaMarketListing,
+  createArenaUpdate,
+  deleteArenaUpdate,
   drawDailyCard,
   equipShopItem,
   getArenaCardShopPayload,
   getArenaCollectionPayload,
+  getArenaMarketListings,
   getArenaProfilePayload,
   getArenaSkillTreePayload,
+  getArenaUpdates,
   getLeaderboard,
   getPlaybackFightState,
   rarityFromCharacterRank,
@@ -37,6 +44,8 @@ const {
   calculateAttackOutcome,
   consumeTempGuard,
   getCardShopPrice,
+  getMarketIvBand,
+  getMarketPrice,
   isRandomCardOfferAvailable,
   rollFightMaterialRewards,
   runPassivesForTrigger,
@@ -163,6 +172,43 @@ function createTestDb() {
       offerDate TEXT NOT NULL,
       purchasedAt TEXT NOT NULL,
       UNIQUE (userId, offerId)
+    )`,
+  ).run();
+
+  db.prepare(
+    `CREATE TABLE arena_market_listings (
+      id TEXT PRIMARY KEY,
+      sellerUserId TEXT NOT NULL,
+      buyerUserId TEXT,
+      cardInstanceId TEXT NOT NULL,
+      cardJson TEXT NOT NULL,
+      cardTitle TEXT NOT NULL,
+      malId INTEGER NOT NULL,
+      rarity TEXT NOT NULL,
+      ivTotal INTEGER NOT NULL,
+      ivBand TEXT NOT NULL,
+      price INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      soldAt TEXT,
+      cancelledAt TEXT
+    )`,
+  ).run();
+  db.prepare(
+    `CREATE UNIQUE INDEX idx_arena_market_active_card
+     ON arena_market_listings(cardInstanceId)
+     WHERE status = 'active'`,
+  ).run();
+
+  db.prepare(
+    `CREATE TABLE arena_updates (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      createdByUserId TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
     )`,
   ).run();
 
@@ -340,6 +386,51 @@ function makeCard(id = 1, rarity = "C") {
     },
     drawnAt: new Date().toISOString(),
   };
+}
+
+function insertCollectionCardFixture(db, userId, card) {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_card_collection (
+      id, userId, cardInstanceId, cardJson, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    `collection-${userId}-${card.cardInstanceId}`,
+    userId,
+    card.cardInstanceId,
+    JSON.stringify(card),
+    now,
+    now,
+  );
+}
+
+function insertMarketListingFixture(db, input) {
+  const card = input.card ?? makeCard(input.malId ?? 1, input.rarity ?? "C");
+  const timestamp = input.timestamp ?? new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_market_listings (
+      id, sellerUserId, buyerUserId, cardInstanceId, cardJson,
+      cardTitle, malId, rarity, ivTotal, ivBand, price, status,
+      createdAt, updatedAt, soldAt, cancelledAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.id,
+    input.sellerUserId ?? "u1",
+    input.buyerUserId ?? null,
+    card.cardInstanceId,
+    JSON.stringify(card),
+    card.title,
+    input.malId ?? card.malId,
+    input.rarity ?? card.rarity,
+    input.ivTotal ?? card.iv.total,
+    input.ivBand ?? getMarketIvBand(input.ivTotal ?? card.iv.total).id,
+    input.price,
+    input.status ?? "active",
+    timestamp,
+    timestamp,
+    input.status === "sold" ? timestamp : null,
+    input.status === "cancelled" ? timestamp : null,
+  );
 }
 
 function findPassive(key) {
@@ -1407,6 +1498,301 @@ test("collection card can be selected as active card", async () => {
 
   assert.equal(switched.selectedCard.cardInstanceId, card.cardInstanceId);
   assert.equal(switched.profile.selectedCard?.cardInstanceId, card.cardInstanceId);
+});
+
+test("market IV totals map to the four configured bands", () => {
+  assert.equal(getMarketIvBand(0).id, "0-31");
+  assert.equal(getMarketIvBand(31).id, "0-31");
+  assert.equal(getMarketIvBand(32).id, "32-62");
+  assert.equal(getMarketIvBand(62).id, "32-62");
+  assert.equal(getMarketIvBand(63).id, "63-93");
+  assert.equal(getMarketIvBand(93).id, "63-93");
+  assert.equal(getMarketIvBand(94).id, "94-124");
+  assert.equal(getMarketIvBand(124).id, "94-124");
+});
+
+test("arena updates are validated, listed newest first, and deletable", () => {
+  const db = createTestDb();
+  assert.throws(
+    () => createArenaUpdate(db, "u1", { title: "", body: "Message" }),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_UPDATE_TITLE_REQUIRED",
+  );
+  const first = createArenaUpdate(db, "u1", {
+    title: "First update",
+    body: "Arena is open.",
+  });
+  const second = createArenaUpdate(db, "u1", {
+    title: "Second update",
+    body: "The market is live.",
+  });
+  const updates = getArenaUpdates(db, { limit: 5 });
+  assert.equal(updates.length, 2);
+  assert.equal(updates[0].id, second.id);
+  assert.equal(updates[1].id, first.id);
+  assert.deepEqual(deleteArenaUpdate(db, first.id), {
+    deletedUpdateId: first.id,
+  });
+  assert.equal(getArenaUpdates(db).length, 1);
+  assert.throws(
+    () => deleteArenaUpdate(db, first.id),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_UPDATE_NOT_FOUND",
+  );
+});
+
+test("market price averages only the latest 30 matching completed sales", () => {
+  const db = createTestDb();
+  for (let index = 1; index <= 35; index += 1) {
+    insertMarketListingFixture(db, {
+      id: `sold-${index}`,
+      card: { ...makeCard(1, "SR"), cardInstanceId: `sold-card-${index}` },
+      malId: 1,
+      ivTotal: 80,
+      ivBand: "63-93",
+      price: index,
+      status: "sold",
+      timestamp: new Date(Date.UTC(2026, 0, index)).toISOString(),
+    });
+  }
+  insertMarketListingFixture(db, {
+    id: "active-outlier",
+    card: { ...makeCard(1, "SR"), cardInstanceId: "active-outlier-card" },
+    malId: 1,
+    ivTotal: 80,
+    price: 999999,
+    status: "active",
+  });
+  insertMarketListingFixture(db, {
+    id: "cancelled-outlier",
+    card: { ...makeCard(1, "SR"), cardInstanceId: "cancelled-outlier-card" },
+    malId: 1,
+    ivTotal: 80,
+    price: 999999,
+    status: "cancelled",
+  });
+
+  assert.deepEqual(getMarketPrice(db, 1, "63-93", "SR"), {
+    value: 21,
+    source: "sales_average",
+    sampleSize: 30,
+  });
+  assert.deepEqual(getMarketPrice(db, 2, "63-93", "SR"), {
+    value: getCardShopPrice("SR"),
+    source: "shop_baseline",
+    sampleSize: 0,
+  });
+});
+
+test("listing moves a card into escrow and clears it when selected", () => {
+  const db = createTestDb();
+  const card = makeCard(1, "R");
+  insertProfile(db, {
+    userId: "u1",
+    selectedCard: card,
+  });
+  insertCollectionCardFixture(db, "u1", card);
+
+  const result = createArenaMarketListing(db, "u1", {
+    cardInstanceId: card.cardInstanceId,
+    price: 250,
+  });
+
+  assert.equal(result.listing.status, "active");
+  assert.equal(result.listing.price, 250);
+  assert.equal(result.profile.selectedCard, null);
+  assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 0);
+  assert.throws(
+    () => selectCollectionCard(db, "u1", card.cardInstanceId),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_COLLECTION_CARD_NOT_FOUND",
+  );
+});
+
+test("listing validates price, active fights, and seller listing limits", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1" });
+  const card = makeCard(1, "R");
+  insertCollectionCardFixture(db, "u1", card);
+
+  assert.throws(
+    () =>
+      createArenaMarketListing(db, "u1", {
+        cardInstanceId: card.cardInstanceId,
+        price: 1.5,
+      }),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_MARKET_PRICE_INVALID",
+  );
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_active_fights (
+      userId, fightId, cursor, state, simulationJson, opponentJson,
+      playerEffectsJson, createdAt, updatedAt
+    ) VALUES (?, ?, 0, 'active', '{}', '{}', '{}', ?, ?)`,
+  ).run("u1", "fight-active", now, now);
+  assert.throws(
+    () =>
+      createArenaMarketListing(db, "u1", {
+        cardInstanceId: card.cardInstanceId,
+        price: 100,
+      }),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_MARKET_FIGHT_ACTIVE",
+  );
+  db.prepare("DELETE FROM arena_active_fights WHERE userId = ?").run("u1");
+
+  for (let index = 0; index < 20; index += 1) {
+    insertMarketListingFixture(db, {
+      id: `active-${index}`,
+      card: {
+        ...makeCard(index + 10, "C"),
+        cardInstanceId: `active-card-${index}`,
+      },
+      sellerUserId: "u1",
+      price: 10 + index,
+      status: "active",
+    });
+  }
+  assert.throws(
+    () =>
+      createArenaMarketListing(db, "u1", {
+        cardInstanceId: card.cardInstanceId,
+        price: 100,
+      }),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_MARKET_LISTING_LIMIT",
+  );
+});
+
+test("cancelling restores the same card without reselecting it", () => {
+  const db = createTestDb();
+  const card = makeCard(1, "SSR");
+  insertProfile(db, { userId: "u1", selectedCard: card });
+  insertProfile(db, { userId: "u2" });
+  insertCollectionCardFixture(db, "u1", card);
+  const created = createArenaMarketListing(db, "u1", {
+    cardInstanceId: card.cardInstanceId,
+    price: 5000,
+  });
+
+  assert.throws(
+    () => cancelArenaMarketListing(db, "u2", created.listing.listingId),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_MARKET_NOT_SELLER",
+  );
+  const cancelled = cancelArenaMarketListing(
+    db,
+    "u1",
+    created.listing.listingId,
+  );
+  const restored = getArenaCollectionPayload(db, "u1");
+  assert.equal(cancelled.listing.status, "cancelled");
+  assert.equal(restored.profile.selectedCard, null);
+  assert.equal(restored.cards[0].cardInstanceId, card.cardInstanceId);
+  assert.deepEqual(restored.cards[0].iv, card.iv);
+});
+
+test("buying transfers ownership and coins without inflating lifetime earnings", () => {
+  const db = createTestDb();
+  const card = makeCard(1, "UR");
+  insertProfile(db, {
+    userId: "u1",
+    coins: 100,
+    lifetimeCoinsEarned: 777,
+  });
+  insertProfile(db, {
+    userId: "u2",
+    coins: 1000,
+    lifetimeCoinsEarned: 888,
+  });
+  insertProfile(db, {
+    userId: "u3",
+    coins: 10,
+  });
+  insertCollectionCardFixture(db, "u1", card);
+  const created = createArenaMarketListing(db, "u1", {
+    cardInstanceId: card.cardInstanceId,
+    price: 600,
+  });
+
+  assert.throws(
+    () => buyArenaMarketListing(db, "u1", created.listing.listingId),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_MARKET_SELF_PURCHASE",
+  );
+  assert.throws(
+    () => buyArenaMarketListing(db, "u3", created.listing.listingId),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_NOT_ENOUGH_COINS",
+  );
+  const bought = buyArenaMarketListing(db, "u2", created.listing.listingId);
+  const seller = getArenaProfilePayload(db, "u1");
+  const buyer = getArenaProfilePayload(db, "u2");
+  assert.equal(bought.listing.status, "sold");
+  assert.equal(bought.listing.buyerUserId, "u2");
+  assert.equal(seller.coins, 700);
+  assert.equal(buyer.coins, 400);
+  assert.equal(seller.lifetimeCoinsEarned, 777);
+  assert.equal(buyer.lifetimeCoinsEarned, 888);
+  assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 0);
+  assert.equal(
+    getArenaCollectionPayload(db, "u2").cards[0].cardInstanceId,
+    card.cardInstanceId,
+  );
+  assert.throws(
+    () => buyArenaMarketListing(db, "u3", created.listing.listingId),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_MARKET_LISTING_INACTIVE",
+  );
+});
+
+test("market listing query filters and paginates active listings", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1" });
+  insertMarketListingFixture(db, {
+    id: "listing-a",
+    card: makeCard(1, "R"),
+    rarity: "R",
+    price: 300,
+    status: "active",
+  });
+  insertMarketListingFixture(db, {
+    id: "listing-b",
+    card: makeCard(2, "SR"),
+    rarity: "SR",
+    price: 200,
+    status: "active",
+  });
+  insertMarketListingFixture(db, {
+    id: "listing-cancelled",
+    card: makeCard(3, "SR"),
+    rarity: "SR",
+    price: 100,
+    status: "cancelled",
+  });
+
+  const payload = getArenaMarketListings(db, "u1", {
+    rarity: "SR",
+    sort: "price-asc",
+    page: 1,
+    limit: 1,
+  });
+  assert.equal(payload.total, 1);
+  assert.equal(payload.listings.length, 1);
+  assert.equal(payload.listings[0].listingId, "listing-b");
+  assert.equal(payload.listings[0].marketPrice.source, "shop_baseline");
 });
 
 test("first player can fight npc fallback when no real opponent", async () => {
