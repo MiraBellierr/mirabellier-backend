@@ -13,7 +13,7 @@ const DEFAULT_OUT_FILE = path.resolve(
   __dirname,
   "..",
   "data",
-  "mal-characters.json",
+    "mal-characters.json",
 );
 
 function sleep(ms) {

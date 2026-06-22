@@ -8,11 +8,13 @@
     "dev": "nodemon app.js",
     "generate:sitemap": "node scripts/generate-sitemap.cjs",
     "scrape:mal:characters": "node scripts/scrape-mal-characters.cjs",
+    "add-element-to-catalog": "node scripts/add-element-to-catalog.cjs",
     "test": "node --test",
     "export:arena": "node scripts/export-arena-csv.cjs",
     "export:levels": "node scripts/export-arena-levels.cjs",
     "migrate:card-rarities": "node scripts/migrate-arena-card-rarities.cjs",
-    "migrate:remove-arena-materials": "node scripts/remove-arena-materials.cjs --apply"
+    "migrate:remove-arena-materials": "node scripts/remove-arena-materials.cjs --apply",
+    "migrate:card-elements": "node scripts/migrate-arena-card-elements.cjs"
   },
   "dependencies": {
     "axios": "^1.13.2",
