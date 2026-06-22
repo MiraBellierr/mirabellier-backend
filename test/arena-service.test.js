@@ -650,18 +650,18 @@ test("legacy active consumable durations are clamped to tactical maxima", () => 
     doublePassiveTriggerFightsRemaining: 8,
   });
 
-  assert.equal(effects.expBoostWinsRemaining, 30);
-  assert.equal(effects.coinBoostWinsRemaining, 30);
-  assert.equal(effects.rerollKeepHigherCharges, 8);
-  assert.equal(effects.streakShieldCharges, 8);
-  assert.equal(effects.upgradeLowestRarityCharges, 10);
-  assert.equal(effects.guaranteeSsrPlusCharges, 10);
-  assert.equal(effects.fightStartShieldCharges, 20);
-  assert.equal(effects.evadeBoostFightsRemaining, 20);
-  assert.equal(effects.firstHitTrueDamageCharges, 8);
-  assert.equal(effects.higherRarityDamageBonusPctCharges, 8);
-  assert.equal(effects.gateKeyCharges, 8);
-  assert.equal(effects.doublePassiveTriggerFightsRemaining, 8);
+  assert.equal(effects.expBoostWinsRemaining, 40);
+  assert.equal(effects.coinBoostWinsRemaining, 40);
+  assert.equal(effects.rerollKeepHigherCharges, 4);
+  assert.equal(effects.streakShieldCharges, 6);
+  assert.equal(effects.upgradeLowestRarityCharges, 6);
+  assert.equal(effects.guaranteeSsrPlusCharges, 6);
+  assert.equal(effects.fightStartShieldCharges, 16);
+  assert.equal(effects.evadeBoostFightsRemaining, 16);
+  assert.equal(effects.firstHitTrueDamageCharges, 4);
+  assert.equal(effects.higherRarityDamageBonusPctCharges, 4);
+  assert.equal(effects.gateKeyCharges, 4);
+  assert.equal(effects.doublePassiveTriggerFightsRemaining, 6);
 });
 
 test("fight-start passive shields absorb damage before HP is lost", async () => {
@@ -1018,8 +1018,8 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
   assert.equal(response.rewards.coins, 0);
   assert.deepEqual(response.rewards.materialDrops, []);
   assert.equal(response.profile.losses, 1);
-  assert.equal(response.profile.effects.expBoostWinsRemaining, 30);
-  assert.equal(response.profile.effects.coinBoostWinsRemaining, 30);
+  assert.equal(response.profile.effects.expBoostWinsRemaining, 40);
+  assert.equal(response.profile.effects.coinBoostWinsRemaining, 40);
 });
 
 test("fight includes hp battle console events", async () => {
