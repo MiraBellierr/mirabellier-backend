@@ -117,8 +117,8 @@ module.exports = (app, { db, authFromReq }) => {
   router.post("/game/:gameId/deck", (req, res) => {
     try {
       const user = requireAuthUser(req);
-      const { cards } = req.body || {};
-      const result = submitDeck(db, req.params.gameId, user.id, cards);
+      const { cards, elementPool } = req.body || {};
+      const result = submitDeck(db, req.params.gameId, user.id, cards, elementPool);
       setNoStore(res);
       res.json(result);
     } catch (error) {
