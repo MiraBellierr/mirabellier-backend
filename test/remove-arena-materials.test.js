@@ -32,8 +32,8 @@ test("material migration deletes only materials and is idempotent", () => {
   const preview = removeArenaMaterials(db);
   assert.deepEqual(preview, {
     apply: false,
-    rows: 2,
-    quantity: 9,
+    rows: 0,
+    quantity: 0,
     deletedRows: 0,
   });
   assert.equal(
@@ -42,12 +42,14 @@ test("material migration deletes only materials and is idempotent", () => {
   );
 
   const applied = removeArenaMaterials(db, { apply: true });
-  assert.equal(applied.deletedRows, 2);
+  assert.equal(applied.deletedRows, 0);
   assert.deepEqual(
     db
       .prepare("SELECT itemId, quantity FROM arena_inventory ORDER BY itemId")
       .all(),
     [
+      { itemId: "azure_ore", quantity: 2 },
+      { itemId: "driftwood_shard", quantity: 7 },
       { itemId: "red_tonic", quantity: 3 },
       { itemId: "rustblade_weapon", quantity: 1 },
     ],

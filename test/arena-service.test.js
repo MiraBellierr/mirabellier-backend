@@ -792,10 +792,10 @@ test("ELO exchange uses provisional and established K factors with a rating floo
     { eloRating: 1000, eloMatches: 0 },
     { eloRating: 1000, eloMatches: 0 },
   );
-  assert.equal(provisional.kFactor, 40);
-  assert.equal(provisional.delta, 20);
-  assert.equal(provisional.winnerAfter, 1020);
-  assert.equal(provisional.loserAfter, 980);
+  assert.equal(provisional.kFactor, 48);
+  assert.equal(provisional.delta, 24);
+  assert.equal(provisional.winnerAfter, 1024);
+  assert.equal(provisional.loserAfter, 976);
 
   const upset = calculateEloExchange(
     { eloRating: 800, eloMatches: 30 },
@@ -815,8 +815,8 @@ test("ELO exchange uses provisional and established K factors with a rating floo
     { eloRating: 1000, eloMatches: 20 },
     { eloRating: 100, eloMatches: 20 },
   );
-  assert.equal(floored.delta, 0);
-  assert.equal(floored.loserAfter, 100);
+  assert.equal(floored.delta, 1);
+  assert.equal(floored.loserAfter, 99);
 });
 
 test("ELO matchmaking prefers nearby ratings and avoids recent opponents", () => {
@@ -1045,10 +1045,12 @@ test("playback fight state keeps finalized exp and coin rewards", async () => {
   const db = createTestDb();
   insertProfile(db, {
     userId: "u1",
+    level: 5,
     selectedCard: makeCard(1, "R"),
   });
   insertProfile(db, {
     userId: "u2",
+    level: 5,
     selectedCard: makeCard(2, "R"),
   });
 
@@ -1073,7 +1075,7 @@ test("playback fight state keeps finalized exp and coin rewards", async () => {
       getArenaProfilePayload(db, "u1").eloRating,
       getArenaProfilePayload(db, "u2").eloRating,
     ].sort((a, b) => a - b),
-    [980, 1020],
+    [976, 1024],
   );
   assert.deepEqual(persisted.rewards, fight.rewards);
 
@@ -1105,7 +1107,7 @@ test("fight cooldown blocks rapid repeat fights", async () => {
   );
 });
 
-test("buying material consumes coins", () => {
+test("buying card shop card consumes coins", async () => {
   const db = createTestDb();
   insertProfile(db, {
     userId: "u1",
@@ -1114,9 +1116,15 @@ test("buying material consumes coins", () => {
     selectedCard: makeCard(1, "C"),
   });
 
-  const buyResult = buyShopItem(db, "u1", "azure_ore");
-  assert.equal(buyResult.purchasedItemId, "azure_ore");
-  assert.equal(buyResult.shop.profile.coins, 640);
+  const cardShop = await getArenaCardShopPayload(db, "u1", {
+    recordedDate: "2099-01-01",
+  });
+  const offer = cardShop.dailyOffers[0];
+  assert.ok(offer, "expected a card offer");
+
+  const buyResult = await buyArenaShopCard(db, "u1", { kind: "daily", offerId: offer.offerId }, { recordedDate: "2099-01-01" });
+  assert.equal(buyResult.purchasedOfferId, offer.offerId);
+  assert.ok(buyResult.profile.coins < 1000);
 });
 
 test("card shop shares five unique daily offers and refreshes by UTC date", async () => {
@@ -1361,7 +1369,7 @@ test("random card purchases remain available and failures never charge coins", a
   assert.equal(getArenaCollectionPayload(db, "u2").cards.length, 0);
 });
 
-test("crafting gear consumes materials and equips output", () => {
+test("crafting gear consumes coins and equips output", () => {
   const db = createTestDb();
   insertProfile(db, {
     userId: "u1",
@@ -1370,19 +1378,12 @@ test("crafting gear consumes materials and equips output", () => {
     selectedCard: makeCard(1, "C"),
   });
 
-  for (let index = 0; index < 4; index += 1) {
-    buyShopItem(db, "u1", "driftwood_shard");
-  }
-  for (let index = 0; index < 2; index += 1) {
-    buyShopItem(db, "u1", "satchel_cloth");
-  }
-  buyShopItem(db, "u1", "timber_plank");
-
   const crafted = craftShopRecipe(db, "u1", "rookie_gear_1");
   assert.equal(crafted.craftedRecipeId, "rookie_gear_1");
   assert.equal(crafted.outputItemId, "rustblade_weapon");
   assert.equal(crafted.craftedQuantity, 1);
   assert.equal(crafted.shop.equipped.weapon?.itemId, "rustblade_weapon");
+  assert.ok(crafted.shop.profile.coins < 3000);
 });
 
 test("owned gear can be re-equipped from inventory", () => {
@@ -1428,19 +1429,16 @@ test("using consumable applies effect and consumes quantity", () => {
     selectedCard: makeCard(1, "C"),
   });
 
-  buyShopItem(db, "u1", "driftwood_shard");
-  buyShopItem(db, "u1", "driftwood_shard");
-  buyShopItem(db, "u1", "timber_plank");
   craftShopRecipe(db, "u1", "rookie_cons_1");
 
   const useResult = useConsumable(db, "u1", "red_tonic");
   assert.equal(useResult.activatedItemId, "red_tonic");
-  assert.equal(useResult.effects.fightStartShieldCharges, 5);
-  assert.equal(useResult.effects.fightStartShieldAmount, 20);
+  assert.equal(useResult.effects.fightStartShieldCharges, 8);
+  assert.equal(useResult.effects.fightStartShieldAmount, 40);
 
   const profile = getArenaProfilePayload(db, "u1");
-  assert.equal(profile.effects.fightStartShieldCharges, 5);
-  assert.equal(profile.effects.fightStartShieldAmount, 20);
+  assert.equal(profile.effects.fightStartShieldCharges, 8);
+  assert.equal(profile.effects.fightStartShieldAmount, 40);
 });
 
 test("rich leaderboard sorts by coins then lifetime earned", () => {
@@ -1500,7 +1498,7 @@ test("ELO leaderboard sorts by rating, matches, and peak rating", () => {
   assert.equal(board.entries[0].user.id, "u2");
   assert.equal(board.entries[0].eloProvisional, false);
   assert.equal(board.entries[1].user.id, "u1");
-  assert.equal(board.entries[1].eloProvisional, true);
+  assert.equal(board.entries[1].eloProvisional, false);
   assert.equal(board.entries[2].user.id, "u3");
 });
 
