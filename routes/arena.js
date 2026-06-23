@@ -1,5 +1,6 @@
 const express = require("express");
 const {
+  acceptTradeRequest,
   advancePlaybackFightTurn,
   activateArenaSkill,
   ArenaHttpError,
@@ -7,29 +8,48 @@ const {
   buyArenaShopCard,
   buyShopItem,
   cancelArenaMarketListing,
+  cancelArenaTradeListing,
+  cancelTradeRequest,
+  cancelTradeSession,
+  confirmTrade,
   craftShopRecipe,
   createArenaMarketListing,
+  createArenaTradeListing,
   createArenaUpdate,
   deleteArenaUpdate,
+  denyTradeRequest,
   drawDailyCard,
   equipShopItem,
   getArenaCardShopPayload,
   getArenaCollectionPayload,
   getArenaMarketListings,
   getArenaMarketPriceGuide,
+  getArenaNotifications,
+  getArenaNotificationUnreadCount,
   getArenaProfilePayload,
   getArenaSkillTreePayload,
   getArenaShopPayload,
+  getArenaTradeListings,
   getArenaUpdates,
+  getIncomingTradeRequests,
   getLeaderboard,
   getMyArenaMarketListings,
+  getMyArenaTradeListings,
   getPlaybackFightState,
+  getTradeSession,
   hasActiveFight,
+  markAllArenaNotificationsRead,
+  markArenaNotificationRead,
+  offerCardInTrade,
+  removeCardFromTrade,
   runFight,
   resetArenaSkills,
+  searchArenaUsers,
   selectCollectionCard,
+  sendTradeRequest,
   skipPlaybackFightToEnd,
   startPlaybackFight,
+  unconfirmTrade,
   useConsumable,
 } = require("../lib/arena-service");
 const { isOwner } = require("../lib/authz");
@@ -532,6 +552,299 @@ module.exports = function registerArenaRoutes(app, deps) {
         page: req.query?.page,
         perPage: req.query?.perPage,
       });
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  // ---------------------------------------------------------------
+  //  Trade
+  // ---------------------------------------------------------------
+
+  router.get("/trade/users", (req, res) => {
+    try {
+      requireAuthUser(req, authFromReq);
+      const q = String(req.query?.q || "").trim();
+      if (!q || q.length < 1) {
+        setNoStoreHeaders(res);
+        return res.json({ users: [] });
+      }
+      const users = searchArenaUsers(db, q);
+      setNoStoreHeaders(res);
+      res.json({ users });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/trade/listings", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getArenaTradeListings(db, user.id, {
+        page: req.query?.page,
+        limit: req.query?.limit,
+        search: req.query?.search,
+        wantedRarity: req.query?.wantedRarity,
+        wantedElement: req.query?.wantedElement,
+      });
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/trade/listings/mine", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getMyArenaTradeListings(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/listings", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = createArenaTradeListing(db, user.id, {
+        cardInstanceId: req.body?.cardInstanceId,
+        wantedRarity: req.body?.wantedRarity,
+        wantedElement: req.body?.wantedElement,
+        note: req.body?.note,
+      });
+      setNoStoreHeaders(res);
+      res.status(201).json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/listings/:listingId/cancel", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = cancelArenaTradeListing(
+        db,
+        user.id,
+        req.params.listingId,
+      );
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/request", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = sendTradeRequest(db, user.id, req.body?.responderId, req.body?.cardInstanceId);
+      setNoStoreHeaders(res);
+      res.status(201).json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/trade/request/:requestId", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const row = db
+        .prepare(
+          `SELECT r.*, s.id AS sessionId
+           FROM arena_trade_requests r
+           LEFT JOIN arena_trade_sessions s ON s.requestId = r.id
+           WHERE r.id = ? AND (r.askerId = ? OR r.responderId = ?)
+           LIMIT 1`,
+        )
+        .get(req.params.requestId, user.id, user.id);
+      if (!row) {
+        throw new ArenaHttpError(
+          404,
+          "Trade request not found.",
+          "ARENA_TRADE_REQUEST_NOT_FOUND",
+        );
+      }
+      setNoStoreHeaders(res);
+      res.json({
+        id: row.id,
+        askerId: row.askerId,
+        responderId: row.responderId,
+        status: row.status,
+        createdAt: row.createdAt,
+        sessionId: row.sessionId || null,
+      });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/trade/requests/incoming", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const requests = getIncomingTradeRequests(db, user.id);
+      setNoStoreHeaders(res);
+      res.json({ requests });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/requests/:requestId/accept", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = acceptTradeRequest(db, user.id, req.params.requestId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/requests/:requestId/deny", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = denyTradeRequest(db, user.id, req.params.requestId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/requests/:requestId/cancel", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = cancelTradeRequest(db, user.id, req.params.requestId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/trade/session/:sessionId", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const session = getTradeSession(db, user.id, req.params.sessionId);
+      setNoStoreHeaders(res);
+      res.json({ session });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/session/:sessionId/offer-card", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = offerCardInTrade(
+        db,
+        user.id,
+        req.params.sessionId,
+        req.body?.cardInstanceId,
+      );
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/session/:sessionId/remove-card", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = removeCardFromTrade(
+        db,
+        user.id,
+        req.params.sessionId,
+      );
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/session/:sessionId/confirm", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = confirmTrade(db, user.id, req.params.sessionId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/session/:sessionId/unconfirm", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = unconfirmTrade(db, user.id, req.params.sessionId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/session/:sessionId/cancel", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = cancelTradeSession(db, user.id, req.params.sessionId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  // ---------------------------------------------------------------
+  //  Notifications
+  // ---------------------------------------------------------------
+
+  router.get("/notifications", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getArenaNotifications(db, user.id, {
+        page: req.query?.page,
+        limit: req.query?.limit,
+      });
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/notifications/unread-count", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const count = getArenaNotificationUnreadCount(db, user.id);
+      setNoStoreHeaders(res);
+      res.json({ count });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/notifications/:notificationId/read", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = markArenaNotificationRead(db, user.id, req.params.notificationId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/notifications/read-all", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = markAllArenaNotificationsRead(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {

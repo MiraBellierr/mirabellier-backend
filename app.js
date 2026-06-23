@@ -1,5 +1,6 @@
 const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, ".env") });
+const http = require("http");
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
@@ -282,4 +283,83 @@ app.post("/posts-img", uploads.imageUpload.single("image"), imageUploadHandler);
 // Serve static files with long cache headers
 app.use("/images", createStaticMiddleware(uploads.IMAGES_DIR));
 
-app.listen(PORT);
+// ── WebSocket infrastructure ──
+
+const WebSocketEvents = require("./lib/websocket-events");
+const { initWebSocketServer } = require("./lib/websocket-server");
+const arenaService = require("./lib/arena-service");
+const { getCurrentlyWatchingAnimeFeed } = require("./lib/mal-anime");
+
+// WS auth token endpoint — returns a short-lived token for WebSocket connection
+app.post("/auth/ws-token", (req, res) => {
+  try {
+    const user = authFromReq(req);
+    if (!user) return res.status(401).json({ error: "unauthenticated" });
+    const wsManager = require("./lib/websocket-server").getWebSocketManager();
+    if (!wsManager) return res.status(503).json({ error: "WebSocket not available" });
+    const token = wsManager.createWsToken(user.id);
+    res.json({ token });
+  } catch {
+    res.status(500).json({ error: "failed" });
+  }
+});
+
+const httpServer = http.createServer(app);
+
+initWebSocketServer(httpServer, {
+  db,
+  handleMessage(userId, msg, reply) {
+    switch (msg.type) {
+      case WebSocketEvents.C2S.ARENA_FIGHT_START: {
+        arenaService.startPlaybackFight(db, userId).then(
+          (state) => reply({ type: WebSocketEvents.S2C.ARENA_FIGHT_TURN, data: state }),
+          (err) => reply({
+            type: WebSocketEvents.S2C.ARENA_FIGHT_ERROR,
+            data: { code: err.code || "ARENA_FIGHT_ERROR", message: err.message },
+          }),
+        );
+        break;
+      }
+      case WebSocketEvents.C2S.ARENA_FIGHT_ADVANCE: {
+        try {
+          const state = arenaService.advancePlaybackFightTurn(db, userId);
+          if (state.isFinished) {
+            reply({ type: WebSocketEvents.S2C.ARENA_FIGHT_FINISHED, data: state });
+          } else {
+            reply({ type: WebSocketEvents.S2C.ARENA_FIGHT_TURN, data: state });
+          }
+        } catch (err) {
+          reply({
+            type: WebSocketEvents.S2C.ARENA_FIGHT_ERROR,
+            data: { code: err.code || "ARENA_FIGHT_ERROR", message: err.message },
+          });
+        }
+        break;
+      }
+      case WebSocketEvents.C2S.ARENA_FIGHT_SKIP: {
+        try {
+          const state = arenaService.skipPlaybackFightToEnd(db, userId);
+          reply({ type: WebSocketEvents.S2C.ARENA_FIGHT_FINISHED, data: state });
+        } catch (err) {
+          reply({
+            type: WebSocketEvents.S2C.ARENA_FIGHT_ERROR,
+            data: { code: err.code || "ARENA_FIGHT_ERROR", message: err.message },
+          });
+        }
+        break;
+      }
+      case WebSocketEvents.C2S.ANIME_SUBSCRIBE: {
+        getCurrentlyWatchingAnimeFeed(db).then(
+          (data) => reply({ type: WebSocketEvents.S2C.ANIME_CURRENTLY_WATCHING, data }),
+          (err) => reply({
+            type: WebSocketEvents.S2C.ANIME_CURRENTLY_WATCHING,
+            data: { code: err.code || "MAL_UNAVAILABLE", error: err.message },
+          }),
+        );
+        break;
+      }
+    }
+  },
+});
+
+httpServer.listen(PORT);
