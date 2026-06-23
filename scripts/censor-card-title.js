@@ -11,7 +11,7 @@ const Database = require("better-sqlite3");
 const DB_FILE =
   process.env.DB_FILE || path.join(__dirname, "..", "database.sqlite3");
 
-const TARGET_PATTERN = /adolf\s*hitler/i;
+const TARGET_PATTERN = /hitler,\s*adolf/i;
 const REPLACEMENT = "A.H.";
 
 const dryRun = process.argv.includes("--dry");
