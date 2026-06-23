@@ -3,20 +3,26 @@ const {
   advancePlaybackFightTurn,
   activateArenaSkill,
   ArenaHttpError,
+  buyArenaMarketListing,
   buyArenaShopCard,
   buyShopItem,
+  cancelArenaMarketListing,
   craftShopRecipe,
+  createArenaMarketListing,
   createArenaUpdate,
   deleteArenaUpdate,
   drawDailyCard,
   equipShopItem,
   getArenaCardShopPayload,
   getArenaCollectionPayload,
+  getArenaMarketListings,
+  getArenaMarketPriceGuide,
   getArenaProfilePayload,
   getArenaSkillTreePayload,
   getArenaShopPayload,
   getArenaUpdates,
   getLeaderboard,
+  getMyArenaMarketListings,
   getPlaybackFightState,
   hasActiveFight,
   runFight,
@@ -231,6 +237,94 @@ module.exports = function registerArenaRoutes(app, deps) {
       }
 
       const payload = selectCollectionCard(db, user.id, cardInstanceId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/market/listings", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getArenaMarketListings(db, user.id, {
+        page: req.query?.page,
+        limit: req.query?.limit,
+        search: req.query?.search,
+        rarity: req.query?.rarity,
+        ivBand: req.query?.ivBand,
+        sort: req.query?.sort,
+      });
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/market/price", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getArenaMarketPriceGuide(db, user.id, {
+        malId: req.query?.malId,
+        ivTotal: req.query?.ivTotal,
+        rarity: req.query?.rarity,
+      });
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/market/listings/mine", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getMyArenaMarketListings(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/market/listings", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = createArenaMarketListing(db, user.id, {
+        cardInstanceId: req.body?.cardInstanceId,
+        price: req.body?.price,
+      });
+      setNoStoreHeaders(res);
+      res.status(201).json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/market/listings/:listingId/buy", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = buyArenaMarketListing(
+        db,
+        user.id,
+        req.params.listingId,
+      );
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/market/listings/:listingId/cancel", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = cancelArenaMarketListing(
+        db,
+        user.id,
+        req.params.listingId,
+      );
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
