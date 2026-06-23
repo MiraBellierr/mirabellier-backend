@@ -904,4 +904,5 @@ module.exports = function registerArenaRoutes(app, deps) {
   });
 
   app.use("/arena", router);
+  app.use("/ar", router);
 };
