@@ -61,19 +61,26 @@ function main() {
   const db = new Database(DB_FILE);
   db.pragma("journal_mode = WAL");
 
+  const COMPENSATION = 10000;
+
   const tables = [
-    { table: "arena_card_collection", idCol: "id", cardCol: "cardJson", keyCol: "id" },
-    { table: "arena_profiles", idCol: "userId", cardCol: "selectedCardJson", keyCol: "userId" },
-    { table: "arena_market_listings", idCol: "id", cardCol: "cardJson", keyCol: "id" },
-    { table: "arena_trade_listings", idCol: "id", cardCol: "cardJson", keyCol: "id" },
-    { table: "arena_daily_card_offers", idCol: "offerId", cardCol: "cardJson", keyCol: "offerId" },
+    { table: "arena_card_collection", keyCol: "id", cardCol: "cardJson", ownerCol: "userId" },
+    { table: "arena_profiles", keyCol: "userId", cardCol: "selectedCardJson", ownerCol: "userId" },
+    { table: "arena_market_listings", keyCol: "id", cardCol: "cardJson", ownerCol: "sellerUserId" },
+    { table: "arena_trade_listings", keyCol: "id", cardCol: "cardJson", ownerCol: "userId" },
+    { table: "arena_daily_card_offers", keyCol: "offerId", cardCol: "cardJson", ownerCol: null },
   ];
 
   let totalRemoved = 0;
+  let totalCompensated = 0;
+  const compensatedUsers = new Map(); // userId → count
 
-  for (const { table, idCol, cardCol, keyCol } of tables) {
+  for (const { table, keyCol, cardCol, ownerCol } of tables) {
+    const selectCols = ownerCol
+      ? `${keyCol}, ${cardCol}, ${ownerCol}`
+      : `${keyCol}, ${cardCol}`;
     const rows = db.prepare(
-      `SELECT ${keyCol}, ${cardCol} FROM ${table} WHERE ${cardCol} IS NOT NULL`,
+      `SELECT ${selectCols} FROM ${table} WHERE ${cardCol} IS NOT NULL`,
     ).all();
 
     const toDelete = [];
@@ -88,7 +95,12 @@ function main() {
         card.title === CENSORED_NAME ||
         (removedIds.length > 0 && removedIds.includes(Number(card.malId)))
       ) {
-        toDelete.push({ key: row[keyCol], title: card.title, malId: card.malId });
+        toDelete.push({
+          key: row[keyCol],
+          title: card.title,
+          malId: card.malId,
+          ownerId: ownerCol ? row[ownerCol] : null,
+        });
       }
     }
 
@@ -106,8 +118,17 @@ function main() {
                 `DELETE FROM ${table} WHERE ${keyCol} = ?`,
               ).run(entry.key);
             }
+
+            // Compensate owner
+            if (entry.ownerId) {
+              const current = compensatedUsers.get(entry.ownerId) || 0;
+              compensatedUsers.set(entry.ownerId, current + 1);
+              db.prepare(
+                `UPDATE arena_profiles SET coins = coins + ?, updatedAt = ? WHERE userId = ?`,
+              ).run(COMPENSATION, new Date().toISOString(), entry.ownerId);
+            }
           }
-          console.log(`  ${tag}${table}: ${entry.title} (malId=${entry.malId})`);
+          console.log(`  ${tag}${table}: ${entry.title} (malId=${entry.malId}) +${COMPENSATION} coins`);
         }
       });
       tx();
@@ -115,7 +136,13 @@ function main() {
     }
   }
 
+  totalCompensated = [...compensatedUsers.values()].reduce((s, n) => s + n, 0);
+
   console.log(`${tag}Done. ${catalogRemoved} from catalog, ${totalRemoved} from database.`);
+  if (totalCompensated > 0) {
+    const totalCoins = totalCompensated * COMPENSATION;
+    console.log(`  Compensated ${compensatedUsers.size} user(s) with ${totalCoins.toLocaleString()} coins (${COMPENSATION} per card).`);
+  }
 
   db.close();
 }
