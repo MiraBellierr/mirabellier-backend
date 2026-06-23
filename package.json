@@ -16,7 +16,9 @@
     "migrate:remove-arena-materials": "node scripts/remove-arena-materials.cjs --apply",
     "migrate:card-elements": "node scripts/migrate-arena-card-elements.cjs",
     "refund:gear": "node scripts/refund-gear.js",
-    "refund:gear:dry": "node scripts/refund-gear.js --dry"
+    "refund:gear:dry": "node scripts/refund-gear.js --dry",
+    "backfill:card-from": "node scripts/backfill-card-from.js",
+    "backfill:card-from:dry": "node scripts/backfill-card-from.js --dry"
   },
   "dependencies": {
     "axios": "^1.13.2",
