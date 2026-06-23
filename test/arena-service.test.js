@@ -709,13 +709,21 @@ test("Verdant Core restores actual battle HP after damage", async () => {
 test("potion effects use short tactical durations", () => {
   const durationByItemId = {
     red_tonic: ["charges", 8],
-    green_draft: ["fights", 20],
-    amber_draft: ["fights", 20],
-    frost_elixir: ["fights", 8],
+    green_draft: ["fights", 10],
+    amber_draft: ["fights", 10],
+    frost_elixir: ["fights", 5],
     viridian_elixir: ["charges", 3],
-    sun_elixir: ["fights", 30],
-    star_tonic: ["fights", 20],
-    prism_draught: ["charges", 3],
+    sun_elixir: ["charges", 2],
+    star_tonic: ["fights", 5],
+    fuse_bomb: ["charges", 2],
+    lantern_oil: ["charges", 3],
+    seeker_lens: ["fights", 3],
+    oath_ribbon: ["fights", 5],
+    treasure_cache: ["charges", 2],
+    prism_draught: ["charges", 2],
+    sacred_candles: ["charges", 3],
+    gate_key: ["fights", 3],
+    chrono_vial: ["charges", 2],
   };
 
   Object.entries(durationByItemId).forEach(([itemId, [durationField, duration]]) => {
@@ -750,7 +758,7 @@ test("legacy active consumable durations are clamped to tactical maxima", () => 
   assert.equal(effects.fightStartShieldCharges, 16);
   assert.equal(effects.evadeBoostFightsRemaining, 16);
   assert.equal(effects.firstHitTrueDamageCharges, 4);
-  assert.equal(effects.higherRarityDamageBonusPctCharges, 4);
+  assert.equal(effects.higherRarityDamageBonusPctCharges, 6);
   assert.equal(effects.gateKeyCharges, 4);
   assert.equal(effects.doublePassiveTriggerFightsRemaining, 6);
 });
@@ -1525,11 +1533,150 @@ test("using consumable applies effect and consumes quantity", () => {
   const useResult = useConsumable(db, "u1", "red_tonic");
   assert.equal(useResult.activatedItemId, "red_tonic");
   assert.equal(useResult.effects.fightStartShieldCharges, 8);
-  assert.equal(useResult.effects.fightStartShieldAmount, 40);
+  assert.equal(useResult.effects.fightStartShieldAmount, 60);
 
   const profile = getArenaProfilePayload(db, "u1");
   assert.equal(profile.effects.fightStartShieldCharges, 8);
-  assert.equal(profile.effects.fightStartShieldAmount, 40);
+  assert.equal(profile.effects.fightStartShieldAmount, 60);
+});
+
+test("Berserker's Brew applies +20% damage boost", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "rookie_cons_2");
+  const result = useConsumable(db, "u1", "green_draft");
+  assert.equal(result.effects.damageBoostPct, 20);
+  assert.equal(result.effects.damageBoostFightsRemaining, 10);
+});
+
+test("Scout's Whistle applies +12% speed boost", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "rookie_cons_3");
+  const result = useConsumable(db, "u1", "amber_draft");
+  assert.equal(result.effects.speedBoostPct, 12);
+  assert.equal(result.effects.speedBoostFightsRemaining, 10);
+});
+
+test("Phoenix Feather applies death save charges", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "silver_cons_1");
+  const result = useConsumable(db, "u1", "sun_elixir");
+  assert.equal(result.effects.deathSaveCharges, 2);
+});
+
+test("Titan Draught applies +15% all stats", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "silver_cons_2");
+  const result = useConsumable(db, "u1", "star_tonic");
+  assert.equal(result.effects.statSteroidPct, 15);
+  assert.equal(result.effects.statSteroidFightsRemaining, 5);
+});
+
+test("Seeker Lens applies +20% crit chance", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 30, coins: 100000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "gold_cons_1");
+  const result = useConsumable(db, "u1", "seeker_lens");
+  assert.equal(result.effects.critChanceBoostPct, 20);
+  assert.equal(result.effects.critChanceBoostFightsRemaining, 3);
+});
+
+test("Oath Ribbon applies +15% guard boost", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 30, coins: 100000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "gold_cons_2");
+  const result = useConsumable(db, "u1", "oath_ribbon");
+  assert.equal(result.effects.guardBoostPct, 15);
+  assert.equal(result.effects.guardBoostFightsRemaining, 5);
+});
+
+test("Arcane Mirror applies match rarity charges", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 30, coins: 100000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "gold_cons_3");
+  const result = useConsumable(db, "u1", "treasure_cache");
+  assert.equal(result.effects.matchRarityCharges, 2);
+});
+
+test("Prism Draught applies first attack double charges", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 50, coins: 100000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "mythic_cons_1");
+  const result = useConsumable(db, "u1", "prism_draught");
+  assert.equal(result.effects.firstAttackDoubleCharges, 2);
+});
+
+test("Vampiric Fang applies 20% lifesteal", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 50, coins: 100000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "mythic_cons_3");
+  const result = useConsumable(db, "u1", "gate_key");
+  assert.equal(result.effects.vampiricHealPct, 20);
+  assert.equal(result.effects.vampiricHealFightsRemaining, 3);
+});
+
+test("Fuse Bomb deals +100 true damage", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "bronze_cons_3");
+  const result = useConsumable(db, "u1", "fuse_bomb");
+  assert.equal(result.effects.firstHitTrueDamageValue, 100);
+  assert.equal(result.effects.firstHitTrueDamageCharges, 2);
+});
+
+test("Lantern Oil applies +50% damage vs higher rarity", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "silver_cons_3");
+  const result = useConsumable(db, "u1", "lantern_oil");
+  assert.equal(result.effects.higherRarityDamageBonusPct, 50);
+  assert.equal(result.effects.higherRarityDamageBonusPctCharges, 3);
+});
+
+test("Phoenix Feather prevents KO in combat", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    coins: 10000,
+    selectedCard: makeCard(1, "C"),
+  });
+  const player = getArenaProfilePayload(db, "u1");
+  const opponent = makeCombatSnapshot({ id: 2, stats: { power: 200, speed: 200 } });
+  const result = await simulateFight(db, { player, opponent, playerEffects: { deathSaveCharges: 1 }, randomFn: () => 0.5 });
+  // With death save, player should survive even with overpowered opponent
+  assert.equal(result.effectUsage.usedDeathSave, true);
+});
+
+test("Vampiric Fang heals player on successful hit", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    coins: 10000,
+    selectedCard: makeCard(1, "C"),
+  });
+  const player = getArenaProfilePayload(db, "u1");
+  const opponent = makeCombatSnapshot({ id: 2, stats: { power: 1, speed: 1, guard: 0 } });
+  const result = await simulateFight(db, { player, opponent, playerEffects: { vampiricHealPct: 20, vampiricHealFightsRemaining: 1 }, randomFn: () => 0.99 });
+  assert.equal(result.effectUsage.usedVampiricHeal, true);
+});
+
+test("Berserker's Brew applies damage boost in combat", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    coins: 10000,
+    selectedCard: makeCard(1, "C"),
+  });
+  const player = getArenaProfilePayload(db, "u1");
+  const opponent = makeCombatSnapshot({ id: 2, stats: { power: 1, speed: 1, guard: 0 } });
+  const result = await simulateFight(db, { player, opponent, playerEffects: { damageBoostPct: 20, damageBoostFightsRemaining: 1 }, randomFn: () => 0.99 });
+  assert.equal(result.effectUsage.usedDamageBoost, true);
 });
 
 test("rich leaderboard sorts by coins then lifetime earned", () => {
