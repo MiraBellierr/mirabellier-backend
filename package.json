@@ -15,6 +15,7 @@
     "migrate:card-rarities": "node scripts/migrate-arena-card-rarities.cjs",
     "migrate:remove-arena-materials": "node scripts/remove-arena-materials.cjs --apply",
     "migrate:card-elements": "node scripts/migrate-arena-card-elements.cjs",
+    "migrate:clamp-defend-pct": "node scripts/clamp-equipment-defend-pct.cjs",
     "refund:gear": "node scripts/refund-gear.js",
     "refund:gear:dry": "node scripts/refund-gear.js --dry",
     "backfill:card-from": "node scripts/backfill-card-from.js",
