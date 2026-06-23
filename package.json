@@ -28,7 +28,8 @@
     "multer": "^2.0.2",
     "passport": "^0.7.0",
     "passport-discord": "^0.1.4",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
