@@ -106,58 +106,61 @@ function main() {
     `${tag}Collection: ${updated} updated, ${already} already had from, ${skipped} skipped.`,
   );
 
+  function backfillTable(table, idCol, cardCol, whereClause = "") {
+    const rows = db.prepare(
+      `SELECT ${idCol}, ${cardCol} FROM ${table} WHERE ${cardCol} IS NOT NULL ${whereClause}`,
+    ).all();
+
+    let up = 0;
+    let sk = 0;
+    let al = 0;
+
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        let card;
+        try {
+          card = JSON.parse(row[cardCol]);
+        } catch {
+          sk++;
+          continue;
+        }
+
+        if (!card || !card.malId) { sk++; continue; }
+        if (card.from) { al++; continue; }
+
+        const from = catalogMap.get(Number(card.malId));
+        if (!from) { sk++; continue; }
+
+        card.from = from;
+
+        if (!dryRun) {
+          db.prepare(
+            `UPDATE ${table} SET ${cardCol} = ?, updatedAt = ? WHERE ${idCol} = ?`,
+          ).run(JSON.stringify(card), new Date().toISOString(), row[idCol]);
+        }
+
+        up++;
+      }
+    });
+
+    tx();
+
+    console.log(
+      `${tag}${table}: ${up} updated, ${al} already had from, ${sk} skipped.`,
+    );
+  }
+
   // Also backfill selected cards in arena_profiles
-  const profileRows = db.prepare(
-    "SELECT userId, selectedCardJson FROM arena_profiles WHERE selectedCardJson IS NOT NULL",
-  ).all();
+  backfillTable("arena_profiles", "userId", "selectedCardJson");
 
-  let selUpdated = 0;
-  let selSkipped = 0;
-  let selAlready = 0;
+  // Backfill market listings
+  backfillTable("arena_market_listings", "id", "cardJson");
 
-  const tx2 = db.transaction(() => {
-    for (const row of profileRows) {
-      let card;
-      try {
-        card = JSON.parse(row.selectedCardJson);
-      } catch {
-        selSkipped++;
-        continue;
-      }
+  // Backfill trade listings
+  backfillTable("arena_trade_listings", "id", "cardJson");
 
-      if (!card || !card.malId) {
-        selSkipped++;
-        continue;
-      }
-
-      if (card.from) {
-        selAlready++;
-        continue;
-      }
-
-      const from = catalogMap.get(Number(card.malId));
-      if (!from) {
-        selSkipped++;
-        continue;
-      }
-
-      card.from = from;
-
-      if (!dryRun) {
-        db.prepare(
-          "UPDATE arena_profiles SET selectedCardJson = ?, updatedAt = ? WHERE userId = ?",
-        ).run(JSON.stringify(card), new Date().toISOString(), row.userId);
-      }
-
-      selUpdated++;
-    }
-  });
-
-  tx2();
-
-  console.log(
-    `${tag}Selected: ${selUpdated} updated, ${selAlready} already had from, ${selSkipped} skipped.`,
-  );
+  // Backfill daily card offers
+  backfillTable("arena_daily_card_offers", "offerId", "cardJson");
 
   db.close();
 }
