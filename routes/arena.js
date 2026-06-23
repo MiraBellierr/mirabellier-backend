@@ -46,10 +46,12 @@ const {
   resetArenaSkills,
   searchArenaUsers,
   selectCollectionCard,
+  toggleCollectionCardFavorite,
   sendTradeRequest,
   skipPlaybackFightToEnd,
   startPlaybackFight,
   unconfirmTrade,
+  unequipEquipmentSlot,
   useConsumable,
 } = require("../lib/arena-service");
 const { isOwner } = require("../lib/authz");
@@ -257,6 +259,22 @@ module.exports = function registerArenaRoutes(app, deps) {
       }
 
       const payload = selectCollectionCard(db, user.id, cardInstanceId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/collection/toggle-favorite", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const cardInstanceId = String(req.body?.cardInstanceId || "").trim();
+      if (!cardInstanceId) {
+        throw new ArenaHttpError(400, "cardInstanceId is required.", "ARENA_CARD_INSTANCE_REQUIRED");
+      }
+
+      const payload = toggleCollectionCardFavorite(db, user.id, cardInstanceId);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
@@ -515,14 +533,30 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.post("/shop/equip", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
-      const itemId = String(req.body?.itemId || "").trim();
-      if (!itemId) {
-        throw new ArenaHttpError(400, "itemId is required.", "ARENA_ITEM_REQUIRED");
+      const pieceId = String(req.body?.pieceId || "").trim();
+      if (!pieceId) {
+        throw new ArenaHttpError(400, "pieceId is required.", "ARENA_PIECE_REQUIRED");
       }
 
-      const payload = equipShopItem(db, user.id, itemId);
+      const payload = equipShopItem(db, user.id, pieceId);
       setNoStoreHeaders(res);
       res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/unequip", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const slot = String(req.body?.slot || "").trim();
+      if (!slot || !["weapon", "armor", "charm"].includes(slot)) {
+        throw new ArenaHttpError(400, "Valid slot is required (weapon, armor, charm).", "ARENA_SLOT_REQUIRED");
+      }
+
+      unequipEquipmentSlot(db, user.id, slot);
+      setNoStoreHeaders(res);
+      res.json({ success: true, slot });
     } catch (error) {
       handleArenaError(error, res);
     }
