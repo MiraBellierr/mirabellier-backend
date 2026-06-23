@@ -145,10 +145,31 @@ function main() {
   }
   console.log(`  ${offersUpdated} updated, ${offersSkipped} skipped`);
 
+  // 4. arena_market_listings
+  console.log("Updating arena_market_listings...");
+  let marketUpdated = 0;
+  let marketSkipped = 0;
+  const listings = db.prepare("SELECT id, cardJson FROM arena_market_listings").all();
+  const updateListing = db.prepare("UPDATE arena_market_listings SET cardJson = ?, updatedAt = datetime('now') WHERE id = ?");
+  for (const row of listings) {
+    if (!needsElement(row.cardJson)) {
+      marketSkipped += 1;
+      continue;
+    }
+    const newJson = addElementToCard(row.cardJson, elementMap);
+    if (newJson) {
+      updateListing.run(newJson, row.id);
+      marketUpdated += 1;
+    } else {
+      marketSkipped += 1;
+    }
+  }
+  console.log(`  ${marketUpdated} updated, ${marketSkipped} skipped`);
+
   db.close();
 
-  const totalUpdated = updated + profileUpdated + offersUpdated;
-  const totalSkipped = skipped + profileSkipped + offersSkipped;
+  const totalUpdated = updated + profileUpdated + offersUpdated + marketUpdated;
+  const totalSkipped = skipped + profileSkipped + offersSkipped + marketSkipped;
   console.log(`\nDone. ${totalUpdated} cards updated, ${totalSkipped} already had elements or skipped.`);
 }
 
