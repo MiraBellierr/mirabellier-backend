@@ -52,6 +52,7 @@ const {
   startPlaybackFight,
   unconfirmTrade,
   unequipEquipmentSlot,
+  fodderEquipmentPiece,
   useConsumable,
 } = require("../lib/arena-service");
 const { isOwner } = require("../lib/authz");
@@ -557,6 +558,22 @@ module.exports = function registerArenaRoutes(app, deps) {
       unequipEquipmentSlot(db, user.id, slot);
       setNoStoreHeaders(res);
       res.json({ success: true, slot });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/fodder", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const pieceId = String(req.body?.pieceId || "").trim();
+      if (!pieceId) {
+        throw new ArenaHttpError(400, "pieceId is required.", "ARENA_PIECE_REQUIRED");
+      }
+
+      const payload = fodderEquipmentPiece(db, user.id, pieceId);
+      setNoStoreHeaders(res);
+      res.json(payload);
     } catch (error) {
       handleArenaError(error, res);
     }
