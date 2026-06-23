@@ -370,7 +370,7 @@ async function main() {
   if (
     options.resume &&
     output.complete &&
-    ["empty-page", "short-page", "duplicate-page"].includes(output.completionReason)
+    ["empty-page", "short-page"].includes(output.completionReason)
   ) {
     console.log(`Nothing to do: ${options.outFile} is already marked complete.`);
     return;
@@ -414,16 +414,11 @@ async function main() {
     pagesScraped += 1;
     const nextLimit = limit + PAGE_SIZE;
     const shortPage = pageCharacters.length < PAGE_SIZE;
-    const duplicatePage = newCharacters === 0;
 
     output.characters = Array.from(characterMap.values());
     output.nextLimit = nextLimit;
-    output.complete = shortPage || duplicatePage;
-    output.completionReason = shortPage
-      ? "short-page"
-      : duplicatePage
-        ? "duplicate-page"
-        : null;
+    output.complete = shortPage;
+    output.completionReason = shortPage ? "short-page" : null;
     output.generatedAt = new Date().toISOString();
     saveOutput(options.outFile, output);
 
@@ -431,7 +426,7 @@ async function main() {
       `?limit=${limit}: found ${pageCharacters.length}, added ${newCharacters}, total ${output.characters.length}`,
     );
 
-    if (shortPage || duplicatePage) break;
+    if (shortPage) break;
 
     limit = nextLimit;
     if (pagesScraped < options.maxPages && options.delayMs > 0) {
