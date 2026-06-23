@@ -103,7 +103,60 @@ function main() {
 
   const tag = dryRun ? "[DRY RUN] " : "";
   console.log(
-    `${tag}Done. ${updated} updated, ${already} already had from, ${skipped} skipped.`,
+    `${tag}Collection: ${updated} updated, ${already} already had from, ${skipped} skipped.`,
+  );
+
+  // Also backfill selected cards in arena_profiles
+  const profileRows = db.prepare(
+    "SELECT userId, selectedCardJson FROM arena_profiles WHERE selectedCardJson IS NOT NULL",
+  ).all();
+
+  let selUpdated = 0;
+  let selSkipped = 0;
+  let selAlready = 0;
+
+  const tx2 = db.transaction(() => {
+    for (const row of profileRows) {
+      let card;
+      try {
+        card = JSON.parse(row.selectedCardJson);
+      } catch {
+        selSkipped++;
+        continue;
+      }
+
+      if (!card || !card.malId) {
+        selSkipped++;
+        continue;
+      }
+
+      if (card.from) {
+        selAlready++;
+        continue;
+      }
+
+      const from = catalogMap.get(Number(card.malId));
+      if (!from) {
+        selSkipped++;
+        continue;
+      }
+
+      card.from = from;
+
+      if (!dryRun) {
+        db.prepare(
+          "UPDATE arena_profiles SET selectedCardJson = ?, updatedAt = ? WHERE userId = ?",
+        ).run(JSON.stringify(card), new Date().toISOString(), row.userId);
+      }
+
+      selUpdated++;
+    }
+  });
+
+  tx2();
+
+  console.log(
+    `${tag}Selected: ${selUpdated} updated, ${selAlready} already had from, ${selSkipped} skipped.`,
   );
 
   db.close();
