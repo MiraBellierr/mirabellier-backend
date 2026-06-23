@@ -20,7 +20,9 @@
     "backfill:card-from": "node scripts/backfill-card-from.js",
     "backfill:card-from:dry": "node scripts/backfill-card-from.js --dry",
     "censor:card": "node scripts/censor-card-title.js",
-    "censor:card:dry": "node scripts/censor-card-title.js --dry"
+    "censor:card:dry": "node scripts/censor-card-title.js --dry",
+    "remove:hitler": "node scripts/remove-hitler.js",
+    "remove:hitler:dry": "node scripts/remove-hitler.js --dry"
   },
   "dependencies": {
     "axios": "^1.13.2",
