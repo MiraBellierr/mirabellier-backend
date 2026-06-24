@@ -40,6 +40,7 @@ const {
   hasActiveFight,
   markAllArenaNotificationsRead,
   markArenaNotificationRead,
+  mintRainbowCard,
   offerCardInTrade,
   removeCardFromTrade,
   runFight,
@@ -886,6 +887,17 @@ module.exports = function registerArenaRoutes(app, deps) {
     try {
       const user = requireAuthUser(req, authFromReq);
       const payload = markArenaNotificationRead(db, user.id, req.params.notificationId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/mint", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = mintRainbowCard(db, user.id, req.body?.cardInstanceId1, req.body?.cardInstanceId2);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
