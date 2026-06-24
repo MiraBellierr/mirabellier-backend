@@ -79,7 +79,7 @@ function createTestDb() {
       power INTEGER NOT NULL DEFAULT 12,
       guard INTEGER NOT NULL DEFAULT 12,
       speed INTEGER NOT NULL DEFAULT 10,
-      luck INTEGER NOT NULL DEFAULT 6,
+      effectHit INTEGER NOT NULL DEFAULT 3,
       lifetimeCoinsEarned INTEGER NOT NULL DEFAULT 0,
       eloRating INTEGER NOT NULL DEFAULT 1000,
       eloMatches INTEGER NOT NULL DEFAULT 0,
@@ -321,7 +321,7 @@ function insertProfile(db, input) {
   db.prepare(
     `INSERT INTO arena_profiles (
       userId, level, xp, coins, wins, losses, winStreak,
-      hp, power, guard, speed, luck, lifetimeCoinsEarned,
+      hp, power, guard, speed, effectHit, lifetimeCoinsEarned,
       eloRating, eloMatches, peakElo,
       selectedCardJson, lastCardDrawDate, dailyCardDrawCount, catalogVersion, effectsJson, lastFightAt, createdAt, updatedAt
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -337,7 +337,7 @@ function insertProfile(db, input) {
     input.power ?? 12,
     input.guard ?? 12,
     input.speed ?? 10,
-    input.luck ?? 6,
+    input.effectHit ?? 6,
     input.lifetimeCoinsEarned ?? 0,
     input.eloRating ?? 1000,
     input.eloMatches ?? 0,
@@ -393,7 +393,7 @@ function makeCard(id = 1, rarity = "C") {
       power: 20,
       guard: 20,
       speed: 20,
-      luck: 20,
+      effectHit: 20,
       total: 80,
     },
     drawnAt: new Date().toISOString(),
@@ -462,7 +462,7 @@ function makeCombatSnapshot({
     power: 20,
     guard: 12,
     speed: 10,
-    luck: 6,
+    effectHit: 6,
     ...stats,
   };
 
@@ -506,8 +506,8 @@ function makeEffects(overrides = {}) {
 test("xp formula and reward formulas stay stable", () => {
   assert.equal(xpToNext(1), 120);
   assert.equal(xpToNext(10), 4080);
-  assert.equal(calculateWinXp(20, 2, 3), 41);
-  assert.equal(calculateWinCoins(20, 12, 16), 93);
+  assert.equal(calculateWinXp(20, 2, 3), 67);
+  assert.equal(calculateWinCoins(20, 12), 90);
 });
 
 test("round power includes metadata and rarity modifiers", () => {
@@ -515,7 +515,7 @@ test("round power includes metadata and rarity modifiers", () => {
     power: 10,
     guard: 10,
     speed: 10,
-    luck: 10,
+    effectHit: 10,
     equipmentBonus: 5,
     rarity: "SSR",
     card: {
@@ -581,24 +581,24 @@ test("profile totals expose and include selected card IV combat bonuses", () => 
     power: 12,
     guard: 12,
     speed: 10,
-    luck: 6,
+    effectHit: 6,
     selectedCard: makeCard(1, "R"),
   });
 
   const profile = getArenaProfilePayload(db, "u1");
   assert.deepEqual(profile.stats.card, {
-    hp: 20,
+    hp: 10,
     power: 6,
     guard: 6,
     speed: 6,
-    luck: 6,
+    effectHit: 6,
   });
   assert.deepEqual(profile.stats.total, {
-    hp: 140,
+    hp: 130,
     power: 18,
     guard: 18,
     speed: 16,
-    luck: 12,
+    effectHit: 12,
   });
 });
 
@@ -607,8 +607,8 @@ test("Riversteel applies its critical bonus before attack resolution", () => {
   const mods = runPassivesForTrigger({
     trigger: "onAttack",
     passives: [findPassive("riversteel_edge")],
-    selfStats: { power: 10, guard: 10, speed: 10, luck: 10 },
-    opponentStats: { power: 10, guard: 10, speed: 10, luck: 10 },
+    selfStats: { power: 10, guard: 10, speed: 10, effectHit: 10 },
+    opponentStats: { power: 10, guard: 10, speed: 10, effectHit: 10 },
     selfRuntime,
     opponentRuntime: buildPassiveRuntime(),
     context: { self: {}, opponent: {}, attack: {} },
@@ -619,13 +619,13 @@ test("Riversteel applies its critical bonus before attack resolution", () => {
 });
 
 test("Guard Cap grants temporary guard without permanently mutating stats", () => {
-  const stats = { power: 10, guard: 12, speed: 10, luck: 10 };
+  const stats = { power: 10, guard: 12, speed: 10, effectHit: 10 };
   const runtime = buildPassiveRuntime();
   runPassivesForTrigger({
     trigger: "onDamageTaken",
     passives: [findPassive("guard_cap_focus")],
     selfStats: stats,
-    opponentStats: { power: 10, guard: 10, speed: 10, luck: 10 },
+    opponentStats: { power: 10, guard: 10, speed: 10, effectHit: 10 },
     selfRuntime: runtime,
     opponentRuntime: buildPassiveRuntime(),
     context: { self: {}, opponent: {}, attack: {} },
@@ -644,8 +644,8 @@ test("Twinlight rolls its extra-strike chance exactly once", () => {
   const mods = runPassivesForTrigger({
     trigger: "onDamageDealt",
     passives: [findPassive("double_strike")],
-    selfStats: { power: 10, guard: 10, speed: 10, luck: 10 },
-    opponentStats: { power: 10, guard: 10, speed: 10, luck: 10 },
+    selfStats: { power: 10, guard: 10, speed: 10, effectHit: 10 },
+    opponentStats: { power: 10, guard: 10, speed: 10, effectHit: 10 },
     selfRuntime: buildPassiveRuntime(),
     opponentRuntime: buildPassiveRuntime(),
     context: { self: {}, defender: {}, attack: {} },
@@ -666,8 +666,8 @@ test("Fuse Bomb true damage bypasses reductions and critical scaling", () => {
     return () => values.shift() ?? 0.5;
   };
   const input = {
-    attackerStats: { power: 30, guard: 10, speed: 10, luck: 10 },
-    defenderStats: { power: 10, guard: 30, speed: 10, luck: 10 },
+    attackerStats: { power: 30, guard: 10, speed: 10, effectHit: 10 },
+    defenderStats: { power: 10, guard: 30, speed: 10, effectHit: 10 },
     attackerRarity: "C",
     defenderDamageReductionPct: 80,
     defenderDamageReductionFlat: 100,
@@ -1086,7 +1086,7 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
     power: 1,
     guard: 1,
     speed: 1,
-    luck: 1,
+    effectHit: 1,
     effects: makeEffects({
       expBoostPct: 20,
       expBoostWinsRemaining: 50,
@@ -1106,7 +1106,7 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
     power: 400,
     guard: 400,
     speed: 400,
-    luck: 400,
+    effectHit: 400,
     selectedCard: makeCard(2, "UR"),
   });
 

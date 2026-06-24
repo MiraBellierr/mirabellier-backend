@@ -13,7 +13,7 @@ const DB_FILE =
 
 const CARD_IV_MAX = 31;
 const BONUS_POINTS = 2;
-const STATS = ["power", "guard", "speed", "luck"];
+const STATS = ["power", "guard", "speed", "effectHit"];
 
 const dryRun = process.argv.includes("--dry");
 
@@ -26,7 +26,7 @@ function addIvPoints(iv) {
     power: iv.power || 0,
     guard: iv.guard || 0,
     speed: iv.speed || 0,
-    luck: iv.luck || 0,
+    effectHit: iv.effectHit || 0,
   };
 
   for (let i = 0; i < BONUS_POINTS; i++) {
@@ -36,7 +36,7 @@ function addIvPoints(iv) {
     result[pick]++;
   }
 
-  result.total = result.power + result.guard + result.speed + result.luck;
+  result.total = result.power + result.guard + result.speed + result.effectHit;
   return result;
 }
 
@@ -76,7 +76,7 @@ function bumpTable(db, table, idCol, cardCol, whereClause = "") {
         newIv.power === (card.iv.power || 0) &&
         newIv.guard === (card.iv.guard || 0) &&
         newIv.speed === (card.iv.speed || 0) &&
-        newIv.luck === (card.iv.luck || 0)
+        newIv.effectHit === (card.iv.effectHit || 0)
       ) {
         already++;
         continue;
