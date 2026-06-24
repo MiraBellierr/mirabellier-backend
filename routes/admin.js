@@ -46,7 +46,7 @@ function createCard(malCard) {
   const ivPower = randomInt(CARD_IV_MIN, CARD_IV_MAX);
   const ivGuard = randomInt(CARD_IV_MIN, CARD_IV_MAX);
   const ivSpeed = randomInt(CARD_IV_MIN, CARD_IV_MAX);
-  const ivLuck = randomInt(CARD_IV_MIN, CARD_IV_MAX);
+  const ivEffectHit = randomInt(CARD_IV_MIN, CARD_IV_MAX);
 
   return {
     cardInstanceId: makeId("card"),
@@ -72,8 +72,8 @@ function createCard(malCard) {
       power: ivPower,
       guard: ivGuard,
       speed: ivSpeed,
-      luck: ivLuck,
-      total: ivPower + ivGuard + ivSpeed + ivLuck,
+      effectHit: ivEffectHit,
+      total: ivPower + ivGuard + ivSpeed + ivEffectHit,
     },
     drawnAt: nowIso(),
   };

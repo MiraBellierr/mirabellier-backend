@@ -35,7 +35,7 @@ function card(malId, rarity, extra = {}) {
     imageUrl: "https://example.com/card.jpg",
     favorites: -1,
     rarity,
-    iv: { power: 1, guard: 2, speed: 3, luck: 4, total: 10 },
+    iv: { power: 1, guard: 2, speed: 3, effectHit: 4, total: 10 },
     ...extra,
   });
 }
@@ -88,7 +88,7 @@ test("card rarity migration previews and applies all stored card locations", () 
     power: 1,
     guard: 2,
     speed: 3,
-    luck: 4,
+    effectHit: 4,
     total: 10,
   });
   assert.equal(selected.rarity, "SSR");
