@@ -19,6 +19,7 @@ const {
   deleteArenaUpdate,
   denyTradeRequest,
   drawDailyCard,
+  drawArenaPack,
   equipShopItem,
   getArenaCardShopPayload,
   getArenaCollectionPayload,
@@ -466,6 +467,18 @@ module.exports = function registerArenaRoutes(app, deps) {
     }
   });
 
+  router.post("/draw-pack", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const count = Number(req.body?.count) || 5;
+      const payload = await drawArenaPack(db, user.id, count);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
   router.get("/shop", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
@@ -480,7 +493,8 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.get("/shop/cards", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
-      const payload = await getArenaCardShopPayload(db, user.id);
+      const forceRandomPack = req.query.forceRandomPack === "1" && isOwner(user);
+      const payload = await getArenaCardShopPayload(db, user.id, { forceRandomPack });
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
@@ -491,10 +505,11 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.post("/shop/cards/buy", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
+      const forceRandomPack = req.body?.forceRandomPack === true && isOwner(user);
       const payload = await buyArenaShopCard(db, user.id, {
         kind: req.body?.kind,
         offerId: req.body?.offerId,
-      });
+      }, { forceRandomPack });
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {

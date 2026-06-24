@@ -112,6 +112,8 @@ module.exports = function registerAdminRoutes(app, deps) {
         hasArenaProfile: Boolean(profile),
         coins: profile?.coins ?? null,
         level: profile?.level ?? null,
+        dailyDrawsUsed: profile?.dailyCardDrawCount ?? 0,
+        lastCardDrawDate: profile?.lastCardDrawDate ?? null,
       });
     } catch (error) {
       res.status(500).json({ error: "Failed to look up user" });
@@ -201,6 +203,35 @@ module.exports = function registerAdminRoutes(app, deps) {
       });
     } catch (error) {
       res.status(500).json({ error: "Failed to add cards" });
+    }
+  });
+
+  router.post("/users/:userId/reset-draws", (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const user = authFromReq(req);
+      if (!isOwner(user)) return res.status(403).json({ error: "Forbidden" });
+
+      const targetUserId = req.params.userId;
+      const profile = db
+        .prepare("SELECT * FROM arena_profiles WHERE userId = ?")
+        .get(targetUserId);
+      if (!profile) {
+        return res.status(404).json({ error: "User has no arena profile" });
+      }
+
+      const now = nowIso();
+      db.prepare(
+        "UPDATE arena_profiles SET dailyCardDrawCount = 0, lastCardDrawDate = NULL, updatedAt = ? WHERE userId = ?",
+      ).run(now, targetUserId);
+
+      res.json({
+        userId: targetUserId,
+        message: "Daily draws reset. User can now open packs again.",
+        dailyDrawsUsed: 0,
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to reset draws" });
     }
   });
 
