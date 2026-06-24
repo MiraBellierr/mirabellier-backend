@@ -571,7 +571,8 @@ module.exports = function registerArenaRoutes(app, deps) {
         throw new ArenaHttpError(400, "pieceId is required.", "ARENA_PIECE_REQUIRED");
       }
 
-      const payload = fodderEquipmentPiece(db, user.id, pieceId);
+      const refundAmount = Number(req.body?.refundAmount) || 0;
+      const payload = fodderEquipmentPiece(db, user.id, pieceId, refundAmount);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
