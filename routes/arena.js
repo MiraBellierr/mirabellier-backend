@@ -45,6 +45,8 @@ const {
   mintRainbowCard,
   offerCardInTrade,
   removeCardFromTrade,
+  offerCoinInTrade,
+  removeCoinFromTrade,
   runFight,
   resetArenaSkills,
   searchArenaUsers,
@@ -827,6 +829,37 @@ module.exports = function registerArenaRoutes(app, deps) {
     try {
       const user = requireAuthUser(req, authFromReq);
       const payload = removeCardFromTrade(
+        db,
+        user.id,
+        req.params.sessionId,
+      );
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/session/:sessionId/offer-coins", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = offerCoinInTrade(
+        db,
+        user.id,
+        req.params.sessionId,
+        req.body?.amount,
+      );
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/trade/session/:sessionId/remove-coins", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = removeCoinFromTrade(
         db,
         user.id,
         req.params.sessionId,
