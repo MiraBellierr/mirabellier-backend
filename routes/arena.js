@@ -200,6 +200,7 @@ module.exports = function registerArenaRoutes(app, deps) {
         sort: req.query?.sort,
         search: req.query?.search,
         element: req.query?.element,
+        duplicates: req.query?.duplicates,
       });
       setNoStoreHeaders(res);
       res.json(payload);
