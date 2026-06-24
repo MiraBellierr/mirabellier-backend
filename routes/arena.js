@@ -24,6 +24,7 @@ const {
   getArenaCollectionPayload,
   getArenaMarketListings,
   getArenaMarketPriceGuide,
+  getMintDuplicates,
   getArenaNotifications,
   getArenaNotificationUnreadCount,
   getArenaProfilePayload,
@@ -887,6 +888,17 @@ module.exports = function registerArenaRoutes(app, deps) {
     try {
       const user = requireAuthUser(req, authFromReq);
       const payload = markArenaNotificationRead(db, user.id, req.params.notificationId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/mint/duplicates", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getMintDuplicates(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
