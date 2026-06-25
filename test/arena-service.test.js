@@ -1416,7 +1416,7 @@ test("random card offer is removed at the June 23, 2026 UTC cutoff", async () =>
   assert.equal(getArenaProfilePayload(db, "u1").coins, 1000);
 });
 
-test("daily card purchases are sold globally and preserve selected card", async () => {
+test("daily card purchases are limited to once per user and preserve selected card", async () => {
   const db = createTestDb();
   const selectedCard = makeCard(99, "SSR");
   insertProfile(db, {
@@ -1479,19 +1479,21 @@ test("daily card purchases are sold globally and preserve selected card", async 
     otherAccountShop.dailyOffers.find(
       (candidate) => candidate.offerId === offer.offerId,
     )?.sold,
-    true,
+    false,
   );
-  await assert.rejects(
-    () =>
-      buyArenaShopCard(db, "u2", {
-        kind: "daily",
-        offerId: offer.offerId,
-      }, {
-        recordedDate: "2099-02-01",
-      }),
-    (error) =>
-      error instanceof ArenaHttpError &&
-      error.code === "ARENA_CARD_SHOP_ALREADY_SOLD",
+  const secondPurchase = await buyArenaShopCard(db, "u2", {
+    kind: "daily",
+    offerId: offer.offerId,
+  }, {
+    recordedDate: "2099-02-01",
+  });
+
+  assert.equal(secondPurchase.purchasedOfferId, offer.offerId);
+  assert.equal(
+    secondPurchase.cardShop.dailyOffers.find(
+      (candidate) => candidate.offerId === offer.offerId,
+    )?.sold,
+    true,
   );
 });
 
