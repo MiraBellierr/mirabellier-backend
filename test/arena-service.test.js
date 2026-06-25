@@ -2451,7 +2451,8 @@ test("completed trade session transfers multiple offered cards", () => {
 });
 
 test("arena archive searches character names", () => {
-  const payload = getArenaArchivePayload({ search: "Faye Valentine", perPage: 10 });
+  const db = createTestDb();
+  const payload = getArenaArchivePayload(db, "u1", { search: "Faye Valentine", perPage: 10 });
 
   assert.ok(payload.total >= 1);
   assert.ok(payload.cards.some((card) => card.title === "Valentine, Faye"));
@@ -2461,7 +2462,8 @@ test("arena archive searches character names", () => {
 });
 
 test("arena archive searches all appearance titles", () => {
-  const payload = getArenaArchivePayload({
+  const db = createTestDb();
+  const payload = getArenaArchivePayload(db, "u1", {
     search: "Tengoku no Tobira",
     perPage: 20,
   });
@@ -2470,13 +2472,44 @@ test("arena archive searches all appearance titles", () => {
 });
 
 test("arena archive paginates catalog order by default", () => {
-  const payload = getArenaArchivePayload({ page: 1, perPage: 3 });
+  const db = createTestDb();
+  const payload = getArenaArchivePayload(db, "u1", { page: 1, perPage: 3 });
 
   assert.equal(payload.page, 1);
   assert.equal(payload.perPage, 3);
   assert.equal(payload.cards.length, 3);
   assert.ok(payload.total > 3);
   assert.ok(payload.totalPages > 1);
+});
+
+test("arena archive filters owned and not-owned catalog cards", () => {
+  const db = createTestDb();
+  const searchPayload = getArenaArchivePayload(db, "u1", {
+    search: "Faye Valentine",
+    perPage: 10,
+  });
+  const faye = searchPayload.cards.find((card) => card.title === "Valentine, Faye");
+  assert.ok(faye);
+
+  insertCollectionCardFixture(db, "u1", {
+    ...makeCard(faye.malId),
+    cardInstanceId: "owned-faye",
+    title: faye.title,
+  });
+
+  const owned = getArenaArchivePayload(db, "u1", {
+    search: "Faye Valentine",
+    ownership: "owned",
+    perPage: 10,
+  });
+  const notOwned = getArenaArchivePayload(db, "u1", {
+    search: "Faye Valentine",
+    ownership: "not-owned",
+    perPage: 10,
+  });
+
+  assert.ok(owned.cards.some((card) => card.malId === faye.malId && card.owned));
+  assert.ok(!notOwned.cards.some((card) => card.malId === faye.malId));
 });
 
 test("arena archive route requires authentication", async () => {

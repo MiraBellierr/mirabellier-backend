@@ -216,11 +216,12 @@ module.exports = function registerArenaRoutes(app, deps) {
 
   router.get("/archive", async (req, res) => {
     try {
-      requireAuthUser(req, authFromReq);
-      const payload = getArenaArchivePayload({
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getArenaArchivePayload(db, user.id, {
         page: req.query?.page,
         perPage: req.query?.perPage,
         search: req.query?.search,
+        ownership: req.query?.ownership,
       });
       setNoStoreHeaders(res);
       res.json(payload);
