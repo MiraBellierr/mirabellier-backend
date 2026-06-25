@@ -21,6 +21,7 @@ const {
   drawDailyCard,
   drawArenaPack,
   equipShopItem,
+  getArenaArchivePayload,
   getArenaCardShopPayload,
   getArenaCollectionPayload,
   getArenaMarketListings,
@@ -205,6 +206,21 @@ module.exports = function registerArenaRoutes(app, deps) {
         search: req.query?.search,
         element: req.query?.element,
         duplicates: req.query?.duplicates,
+      });
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/archive", async (req, res) => {
+    try {
+      requireAuthUser(req, authFromReq);
+      const payload = getArenaArchivePayload({
+        page: req.query?.page,
+        perPage: req.query?.perPage,
+        search: req.query?.search,
       });
       setNoStoreHeaders(res);
       res.json(payload);
@@ -848,6 +864,7 @@ module.exports = function registerArenaRoutes(app, deps) {
         db,
         user.id,
         req.params.sessionId,
+        req.body?.cardInstanceId,
       );
       setNoStoreHeaders(res);
       res.json(payload);

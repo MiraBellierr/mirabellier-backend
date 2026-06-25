@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Database = require("better-sqlite3");
+const express = require("express");
 
 const {
   ArenaHttpError,
@@ -22,6 +23,7 @@ const {
   drawDailyCard,
   equipShopItem,
   getArenaCardShopPayload,
+  getArenaArchivePayload,
   getArenaCollectionPayload,
   getArenaMarketListings,
   getArenaProfilePayload,
@@ -44,6 +46,7 @@ const {
   useConsumable,
   xpToNext,
 } = require("../lib/arena-service");
+const registerArenaRoutes = require("../routes/arena");
 const { SHOP_ITEMS } = require("../lib/arena-constants");
 
 const {
@@ -280,6 +283,8 @@ function createTestDb() {
       responderId TEXT NOT NULL,
       askerCardInstanceId TEXT,
       responderCardInstanceId TEXT,
+      askerCardInstanceIdsJson TEXT,
+      responderCardInstanceIdsJson TEXT,
       askerCoins INTEGER NOT NULL DEFAULT 0,
       responderCoins INTEGER NOT NULL DEFAULT 0,
       askerConfirmed INTEGER NOT NULL DEFAULT 0,
@@ -2327,7 +2332,10 @@ test("trade session offer changes reset both confirmations", () => {
 
   assert.equal(changed.askerConfirmed, false);
   assert.equal(changed.responderConfirmed, false);
-  assert.equal(changed.responderCard.cardInstanceId, replacementResponderCard.cardInstanceId);
+  assert.deepEqual(
+    changed.responderCards.map((card) => card.cardInstanceId).sort(),
+    [firstResponderCard.cardInstanceId, replacementResponderCard.cardInstanceId].sort(),
+  );
 
   const afterResponderConfirm = confirmTrade(db, "u2", "session-confirm-reset");
   assert.equal(afterResponderConfirm.status, "active");
@@ -2340,6 +2348,10 @@ test("trade session offer changes reset both confirmations", () => {
   assert.ok(
     db.prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
       .get("u2", replacementResponderCard.cardInstanceId),
+  );
+  assert.ok(
+    db.prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
+      .get("u2", firstResponderCard.cardInstanceId),
   );
 });
 
@@ -2380,6 +2392,112 @@ test("completed trade session clears both traded selected cards", () => {
     db.prepare("SELECT selectedCardJson FROM arena_profiles WHERE userId = ?").get("u2").selectedCardJson,
     null,
   );
+});
+
+test("completed trade session transfers multiple offered cards", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 1000 });
+  insertProfile(db, { userId: "u2", coins: 1000 });
+
+  const askerCardOne = makeCard(51, "SR");
+  const askerCardTwo = makeCard(52, "SSR");
+  const responderCardOne = makeCard(53, "R");
+  insertCollectionCardFixture(db, "u1", askerCardOne);
+  insertCollectionCardFixture(db, "u1", askerCardTwo);
+  insertCollectionCardFixture(db, "u2", responderCardOne);
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_trade_sessions (
+      id, requestId, askerId, responderId,
+      askerCardInstanceId, responderCardInstanceId,
+      askerCardInstanceIdsJson, responderCardInstanceIdsJson,
+      askerConfirmed, responderConfirmed, status, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'active', ?, ?)`,
+  ).run(
+    "session-multi-complete",
+    "request-multi-complete",
+    "u1",
+    "u2",
+    askerCardOne.cardInstanceId,
+    responderCardOne.cardInstanceId,
+    JSON.stringify([askerCardOne.cardInstanceId, askerCardTwo.cardInstanceId]),
+    JSON.stringify([responderCardOne.cardInstanceId]),
+    now,
+    now,
+  );
+
+  const completed = confirmTrade(db, "u2", "session-multi-complete");
+
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(
+    completed.askerCards.map((card) => card.cardInstanceId).sort(),
+    [askerCardOne.cardInstanceId, askerCardTwo.cardInstanceId].sort(),
+  );
+  assert.deepEqual(
+    completed.responderCards.map((card) => card.cardInstanceId),
+    [responderCardOne.cardInstanceId],
+  );
+  for (const card of [askerCardOne, askerCardTwo]) {
+    assert.ok(
+      db.prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
+        .get("u2", card.cardInstanceId),
+    );
+  }
+  assert.ok(
+    db.prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
+      .get("u1", responderCardOne.cardInstanceId),
+  );
+});
+
+test("arena archive searches character names", () => {
+  const payload = getArenaArchivePayload({ search: "Faye Valentine", perPage: 10 });
+
+  assert.ok(payload.total >= 1);
+  assert.ok(payload.cards.some((card) => card.title === "Valentine, Faye"));
+  const card = payload.cards.find((entry) => entry.title === "Valentine, Faye");
+  assert.equal(card.iv.total, 0);
+  assert.equal(card.drawnAt, null);
+});
+
+test("arena archive searches all appearance titles", () => {
+  const payload = getArenaArchivePayload({
+    search: "Tengoku no Tobira",
+    perPage: 20,
+  });
+
+  assert.ok(payload.cards.some((card) => card.title === "Valentine, Faye"));
+});
+
+test("arena archive paginates catalog order by default", () => {
+  const payload = getArenaArchivePayload({ page: 1, perPage: 3 });
+
+  assert.equal(payload.page, 1);
+  assert.equal(payload.perPage, 3);
+  assert.equal(payload.cards.length, 3);
+  assert.ok(payload.total > 3);
+  assert.ok(payload.totalPages > 1);
+});
+
+test("arena archive route requires authentication", async () => {
+  const db = createTestDb();
+  const app = express();
+  registerArenaRoutes(app, { db, authFromReq: () => null });
+  const server = app.listen(0);
+  try {
+    await new Promise((resolve) => server.once("listening", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(`http://127.0.0.1:${address.port}/arena/archive`);
+    const body = await response.json();
+
+    assert.equal(response.status, 401);
+    assert.equal(body.code, "ARENA_UNAUTHENTICATED");
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
 });
 
 test("first player can fight npc fallback when no real opponent", async () => {
