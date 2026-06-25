@@ -1,9 +1,13 @@
 /**
- * Backfills the "from" field on existing cardJson entries in arena_card_collection.
- * Reads the character catalog for each card's malId and adds the first anime appearance.
+ * Backfills / updates the "from" field on existing cardJson entries in the database.
+ * Reads the character catalog for each card's malId and sets the first anime appearance name.
+ *
+ * With --force, overwrites existing from values with the catalog's current title.
  *
  * Usage:  node scripts/backfill-card-from.js
  * Dry run: node scripts/backfill-card-from.js --dry
+ * Force:   node scripts/backfill-card-from.js --force
+ * Force + dry: node scripts/backfill-card-from.js --force --dry
  */
 const path = require("path");
 const Database = require("better-sqlite3");
@@ -17,6 +21,7 @@ const CATALOG_FILE =
     : path.resolve(__dirname, "..", "data", "mal-characters.json");
 
 const dryRun = process.argv.includes("--dry");
+const force = process.argv.includes("--force");
 
 function buildCatalogMap() {
   const raw = JSON.parse(fs.readFileSync(CATALOG_FILE, "utf8"));
@@ -73,15 +78,17 @@ function main() {
         continue;
       }
 
-      if (card.from) {
-        already++;
-        continue;
-      }
-
       const from = catalogMap.get(Number(card.malId));
       if (!from) {
         skipped++;
         continue;
+      }
+
+      if (card.from) {
+        if (!force || card.from === from) {
+          already++;
+          continue;
+        }
       }
 
       card.from = from;
@@ -126,10 +133,13 @@ function main() {
         }
 
         if (!card || !card.malId) { sk++; continue; }
-        if (card.from) { al++; continue; }
 
         const from = catalogMap.get(Number(card.malId));
         if (!from) { sk++; continue; }
+
+        if (card.from) {
+          if (!force || card.from === from) { al++; continue; }
+        }
 
         card.from = from;
 
