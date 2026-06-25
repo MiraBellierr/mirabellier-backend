@@ -16,6 +16,7 @@ const {
   calculateWinCoins,
   calculateWinXp,
   createArenaMarketListing,
+  createArenaTradeListing,
   createArenaUpdate,
   deleteArenaUpdate,
   drawDailyCard,
@@ -25,6 +26,7 @@ const {
   getArenaMarketListings,
   getArenaProfilePayload,
   getArenaSkillTreePayload,
+  getArenaTradeListings,
   getArenaUpdates,
   getLeaderboard,
   getPlaybackFightState,
@@ -32,8 +34,10 @@ const {
   rarityFromCharacterRank,
   resolveRoundWinner,
   resetArenaSkills,
+  rerollArenaCardShopOffers,
   runFight,
   selectCollectionCard,
+  sendTradeRequest,
   startPlaybackFight,
   useConsumable,
   xpToNext,
@@ -103,6 +107,19 @@ function createTestDb() {
       quantity INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
+    )`,
+  ).run();
+
+  db.prepare(
+    `CREATE TABLE arena_equipment_pieces (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      slot TEXT NOT NULL,
+      mainStatType TEXT NOT NULL,
+      mainStatValue REAL NOT NULL,
+      subStats TEXT NOT NULL,
+      equipped INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL
     )`,
   ).run();
 
@@ -215,6 +232,73 @@ function createTestDb() {
       createdByUserId TEXT NOT NULL,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
+    )`,
+  ).run();
+
+  db.prepare(
+    `CREATE TABLE arena_trade_listings (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      cardInstanceId TEXT NOT NULL,
+      cardJson TEXT NOT NULL,
+      cardTitle TEXT NOT NULL,
+      malId INTEGER NOT NULL,
+      rarity TEXT NOT NULL,
+      ivTotal INTEGER NOT NULL,
+      element TEXT,
+      wantedRarity TEXT,
+      wantedElement TEXT,
+      wantedCardJson TEXT,
+      note TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      cancelledAt TEXT
+    )`,
+  ).run();
+  db.prepare(
+    `CREATE TABLE arena_trade_requests (
+      id TEXT PRIMARY KEY,
+      askerId TEXT NOT NULL,
+      responderId TEXT NOT NULL,
+      listingId TEXT,
+      askerCardInstanceId TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      respondedAt TEXT,
+      cancelledAt TEXT
+    )`,
+  ).run();
+  db.prepare(
+    `CREATE TABLE arena_trade_sessions (
+      id TEXT PRIMARY KEY,
+      requestId TEXT NOT NULL,
+      askerId TEXT NOT NULL,
+      responderId TEXT NOT NULL,
+      askerCardInstanceId TEXT,
+      responderCardInstanceId TEXT,
+      askerCoins INTEGER NOT NULL DEFAULT 0,
+      responderCoins INTEGER NOT NULL DEFAULT 0,
+      askerConfirmed INTEGER NOT NULL DEFAULT 0,
+      responderConfirmed INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      completedAt TEXT
+    )`,
+  ).run();
+  db.prepare(
+    `CREATE TABLE arena_notifications (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT,
+      link TEXT,
+      metadata TEXT,
+      isRead INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL
     )`,
   ).run();
 
@@ -397,6 +481,28 @@ function makeCard(id = 1, rarity = "C") {
       total: 80,
     },
     drawnAt: new Date().toISOString(),
+  };
+}
+
+function makeMalCard(id = 1, popularity = Number.MAX_SAFE_INTEGER) {
+  return {
+    malId: id,
+    title: `Card ${id}`,
+    url: `https://myanimelist.net/character/${id}`,
+    imageUrl: `https://cdn.test/${id}.jpg`,
+    meanScore: 8,
+    popularity,
+    favorites: 10000,
+    nsfw: "white",
+  };
+}
+
+function makeDrawSequence(ids) {
+  let index = 0;
+  return async () => {
+    const id = ids[index % ids.length];
+    index += 1;
+    return makeMalCard(id);
   };
 }
 
@@ -1232,13 +1338,13 @@ test("card shop shares five unique daily offers and refreshes by UTC date", asyn
   insertProfile(db, { userId: "u2", coins: 5000 });
 
   const first = await getArenaCardShopPayload(db, "u1", {
-    recordedDate: "2099-01-01",
+    recordedDate: "2099-01-05",
   });
   const second = await getArenaCardShopPayload(db, "u2", {
-    recordedDate: "2099-01-01",
+    recordedDate: "2099-01-05",
   });
   const nextDay = await getArenaCardShopPayload(db, "u1", {
-    recordedDate: "2099-01-02",
+    recordedDate: "2099-01-06",
   });
 
   assert.equal(first.dailyOffers.length, 5);
@@ -1260,8 +1366,8 @@ test("card shop shares five unique daily offers and refreshes by UTC date", asyn
     5,
   );
   assert.deepEqual(second.dailyOffers, first.dailyOffers);
-  assert.equal(first.nextRefreshAt, "2099-01-02T00:00:00.000Z");
-  assert.equal(nextDay.offerDate, "2099-01-02");
+  assert.equal(first.nextRefreshAt, "2099-01-06T00:00:00.000Z");
+  assert.equal(nextDay.offerDate, "2099-01-06");
   assert.ok(
     nextDay.dailyOffers.every(
       (offer) =>
@@ -1310,7 +1416,7 @@ test("random card offer is removed at the June 23, 2026 UTC cutoff", async () =>
   assert.equal(getArenaProfilePayload(db, "u1").coins, 1000);
 });
 
-test("daily card purchases are sold per account and preserve selected card", async () => {
+test("daily card purchases are sold globally and preserve selected card", async () => {
   const db = createTestDb();
   const selectedCard = makeCard(99, "SSR");
   insertProfile(db, {
@@ -1324,11 +1430,16 @@ test("daily card purchases are sold per account and preserve selected card", asy
     selectedCard: makeCard(98, "SR"),
   });
 
-  const shop = await getArenaCardShopPayload(db, "u1");
+  const shop = await getArenaCardShopPayload(db, "u1", {
+    recordedDate: "2099-02-01",
+    drawCard: makeDrawSequence([1, 2, 3, 4, 5]),
+  });
   const offer = shop.dailyOffers[0];
   const firstPurchase = await buyArenaShopCard(db, "u1", {
     kind: "daily",
     offerId: offer.offerId,
+  }, {
+    recordedDate: "2099-02-01",
   });
 
   assert.equal(firstPurchase.pricePaid, offer.price);
@@ -1353,27 +1464,73 @@ test("daily card purchases are sold per account and preserve selected card", asy
       buyArenaShopCard(db, "u1", {
         kind: "daily",
         offerId: offer.offerId,
+      }, {
+        recordedDate: "2099-02-01",
       }),
     (error) =>
       error instanceof ArenaHttpError &&
       error.code === "ARENA_CARD_SHOP_ALREADY_SOLD",
   );
 
-  const otherAccountShop = await getArenaCardShopPayload(db, "u2");
+  const otherAccountShop = await getArenaCardShopPayload(db, "u2", {
+    recordedDate: "2099-02-01",
+  });
   assert.equal(
     otherAccountShop.dailyOffers.find(
       (candidate) => candidate.offerId === offer.offerId,
     )?.sold,
-    false,
+    true,
   );
-  const secondPurchase = await buyArenaShopCard(db, "u2", {
-    kind: "daily",
-    offerId: offer.offerId,
+  await assert.rejects(
+    () =>
+      buyArenaShopCard(db, "u2", {
+        kind: "daily",
+        offerId: offer.offerId,
+      }, {
+        recordedDate: "2099-02-01",
+      }),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_CARD_SHOP_ALREADY_SOLD",
+  );
+});
+
+test("admin reroll replaces today's global card shop offers", async () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 5000 });
+  insertProfile(db, { userId: "u2", coins: 5000 });
+
+  const initial = await getArenaCardShopPayload(db, "u1", {
+    recordedDate: "2099-03-01",
+    drawCard: makeDrawSequence([1, 2, 3, 4, 5]),
   });
-  assert.notEqual(
-    secondPurchase.card.cardInstanceId,
-    firstPurchase.card.cardInstanceId,
+  const initialMalIds = initial.dailyOffers.map((offer) => offer.card.malId);
+  await buyArenaShopCard(db, "u1", {
+    kind: "daily",
+    offerId: initial.dailyOffers[0].offerId,
+  }, {
+    recordedDate: "2099-03-01",
+  });
+
+  const rerolled = await rerollArenaCardShopOffers(db, {
+    recordedDate: "2099-03-01",
+    drawCard: makeDrawSequence([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+  });
+  const rerolledMalIds = rerolled.dailyOffers.map((offer) => offer.card.malId);
+
+  assert.equal(rerolled.offerDate, "2099-03-01");
+  assert.equal(rerolled.deletedOffers, 5);
+  assert.equal(rerolled.deletedPurchases, 1);
+  assert.deepEqual(rerolledMalIds, [6, 7, 8, 9, 10]);
+  assert.ok(
+    rerolledMalIds.every((malId) => !initialMalIds.includes(malId)),
   );
+
+  const shopAfterReroll = await getArenaCardShopPayload(db, "u2", {
+    recordedDate: "2099-03-01",
+  });
+  assert.equal(shopAfterReroll.dailyOffers.length, 5);
+  assert.ok(shopAfterReroll.dailyOffers.every((offer) => !offer.sold));
 });
 
 test("random card purchases remain available and failures never charge coins", async () => {
@@ -2075,6 +2232,57 @@ test("market listing query filters and paginates active listings", () => {
   assert.equal(payload.listings.length, 1);
   assert.equal(payload.listings[0].listingId, "listing-b");
   assert.equal(payload.listings[0].marketPrice.source, "shop_baseline");
+});
+
+test("trade listings can request a specific card", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 1000 });
+  insertProfile(db, { userId: "u2", coins: 1000 });
+
+  const listedCard = makeCard(21, "SR");
+  const wrongOffer = makeCard(88, "R");
+  const matchingOffer = { ...makeCard(1, "R"), cardInstanceId: "card-1-u2" };
+  insertCollectionCardFixture(db, "u1", listedCard);
+  insertCollectionCardFixture(db, "u2", wrongOffer);
+  insertCollectionCardFixture(db, "u2", matchingOffer);
+
+  const created = createArenaTradeListing(db, "u1", {
+    cardInstanceId: listedCard.cardInstanceId,
+    wantedCardMalId: matchingOffer.malId,
+    wantedRarity: "R",
+  });
+  assert.equal(created.listing.wantedCard.malId, matchingOffer.malId);
+
+  const listings = getArenaTradeListings(db, "u2");
+  assert.equal(listings.listings[0].wantedCard.malId, matchingOffer.malId);
+
+  assert.throws(
+    () =>
+      sendTradeRequest(
+        db,
+        "u2",
+        "u1",
+        wrongOffer.cardInstanceId,
+        { listingId: created.listing.id },
+      ),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_TRADE_WANTED_CARD_REQUIRED",
+  );
+
+  const request = sendTradeRequest(
+    db,
+    "u2",
+    "u1",
+    matchingOffer.cardInstanceId,
+    { listingId: created.listing.id },
+  );
+  assert.ok(request.requestId);
+  const row = db
+    .prepare("SELECT listingId, askerCardInstanceId FROM arena_trade_requests WHERE id = ?")
+    .get(request.requestId);
+  assert.equal(row.listingId, created.listing.id);
+  assert.equal(row.askerCardInstanceId, matchingOffer.cardInstanceId);
 });
 
 test("first player can fight npc fallback when no real opponent", async () => {

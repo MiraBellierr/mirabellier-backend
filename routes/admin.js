@@ -6,6 +6,7 @@ const {
   getArenaCharacterCatalog,
   rarityFromCharacterRank,
 } = require("../lib/arena-characters");
+const { rerollArenaCardShopOffers } = require("../lib/arena-service");
 
 const CARD_IV_MIN = 0;
 const CARD_IV_MAX = 31;
@@ -232,6 +233,19 @@ module.exports = function registerAdminRoutes(app, deps) {
       });
     } catch (error) {
       res.status(500).json({ error: "Failed to reset draws" });
+    }
+  });
+
+  router.post("/arena/card-shop/reroll", async (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const user = authFromReq(req);
+      if (!isOwner(user)) return res.status(403).json({ error: "Forbidden" });
+
+      const payload = await rerollArenaCardShopOffers(db);
+      res.json(payload);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to reroll card shop" });
     }
   });
 
