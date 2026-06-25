@@ -49,6 +49,7 @@ const {
   removeCoinFromTrade,
   runFight,
   resetArenaSkills,
+  searchArenaTradeCards,
   searchArenaUsers,
   selectCollectionCard,
   toggleCollectionCardFavorite,
@@ -651,6 +652,18 @@ module.exports = function registerArenaRoutes(app, deps) {
     }
   });
 
+  router.get("/trade/cards", (req, res) => {
+    try {
+      requireAuthUser(req, authFromReq);
+      const q = String(req.query?.q || "").trim();
+      const cards = q ? searchArenaTradeCards(q) : [];
+      setNoStoreHeaders(res);
+      res.json({ cards });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
   router.get("/trade/listings", (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
@@ -684,6 +697,7 @@ module.exports = function registerArenaRoutes(app, deps) {
       const user = requireAuthUser(req, authFromReq);
       const payload = createArenaTradeListing(db, user.id, {
         cardInstanceId: req.body?.cardInstanceId,
+        wantedCardMalId: req.body?.wantedCardMalId,
         wantedRarity: req.body?.wantedRarity,
         wantedElement: req.body?.wantedElement,
         note: req.body?.note,
@@ -713,7 +727,9 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.post("/trade/request", (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
-      const payload = sendTradeRequest(db, user.id, req.body?.responderId, req.body?.cardInstanceId);
+      const payload = sendTradeRequest(db, user.id, req.body?.responderId, req.body?.cardInstanceId, {
+        listingId: req.body?.listingId,
+      });
       setNoStoreHeaders(res);
       res.status(201).json(payload);
     } catch (error) {
