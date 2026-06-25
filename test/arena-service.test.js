@@ -30,7 +30,9 @@ const {
   getArenaUpdates,
   getLeaderboard,
   getPlaybackFightState,
+  confirmTrade,
   normalizeArenaEffects,
+  offerCardInTrade,
   rarityFromCharacterRank,
   resolveRoundWinner,
   resetArenaSkills,
@@ -2285,6 +2287,99 @@ test("trade listings can request a specific card", () => {
     .get(request.requestId);
   assert.equal(row.listingId, created.listing.id);
   assert.equal(row.askerCardInstanceId, matchingOffer.cardInstanceId);
+});
+
+test("trade session offer changes reset both confirmations", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 1000 });
+  insertProfile(db, { userId: "u2", coins: 1000 });
+
+  const askerCard = makeCard(31, "SR");
+  const firstResponderCard = makeCard(32, "SR");
+  const replacementResponderCard = makeCard(33, "SSR");
+  insertCollectionCardFixture(db, "u1", askerCard);
+  insertCollectionCardFixture(db, "u2", firstResponderCard);
+  insertCollectionCardFixture(db, "u2", replacementResponderCard);
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_trade_sessions (
+      id, requestId, askerId, responderId, askerCardInstanceId, responderCardInstanceId,
+      askerConfirmed, responderConfirmed, status, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, 1, 0, 'active', ?, ?)`,
+  ).run(
+    "session-confirm-reset",
+    "request-confirm-reset",
+    "u1",
+    "u2",
+    askerCard.cardInstanceId,
+    firstResponderCard.cardInstanceId,
+    now,
+    now,
+  );
+
+  const changed = offerCardInTrade(
+    db,
+    "u2",
+    "session-confirm-reset",
+    replacementResponderCard.cardInstanceId,
+  );
+
+  assert.equal(changed.askerConfirmed, false);
+  assert.equal(changed.responderConfirmed, false);
+  assert.equal(changed.responderCard.cardInstanceId, replacementResponderCard.cardInstanceId);
+
+  const afterResponderConfirm = confirmTrade(db, "u2", "session-confirm-reset");
+  assert.equal(afterResponderConfirm.status, "active");
+  assert.equal(afterResponderConfirm.askerConfirmed, false);
+  assert.equal(afterResponderConfirm.responderConfirmed, true);
+  assert.ok(
+    db.prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
+      .get("u1", askerCard.cardInstanceId),
+  );
+  assert.ok(
+    db.prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
+      .get("u2", replacementResponderCard.cardInstanceId),
+  );
+});
+
+test("completed trade session clears both traded selected cards", () => {
+  const db = createTestDb();
+  const askerCard = makeCard(41, "SSR");
+  const responderCard = makeCard(42, "SSR");
+  insertProfile(db, { userId: "u1", coins: 1000, selectedCard: askerCard });
+  insertProfile(db, { userId: "u2", coins: 1000, selectedCard: responderCard });
+  insertCollectionCardFixture(db, "u1", askerCard);
+  insertCollectionCardFixture(db, "u2", responderCard);
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_trade_sessions (
+      id, requestId, askerId, responderId, askerCardInstanceId, responderCardInstanceId,
+      askerConfirmed, responderConfirmed, status, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, 1, 0, 'active', ?, ?)`,
+  ).run(
+    "session-selected-clear",
+    "request-selected-clear",
+    "u1",
+    "u2",
+    askerCard.cardInstanceId,
+    responderCard.cardInstanceId,
+    now,
+    now,
+  );
+
+  const completed = confirmTrade(db, "u2", "session-selected-clear");
+
+  assert.equal(completed.status, "completed");
+  assert.equal(
+    db.prepare("SELECT selectedCardJson FROM arena_profiles WHERE userId = ?").get("u1").selectedCardJson,
+    null,
+  );
+  assert.equal(
+    db.prepare("SELECT selectedCardJson FROM arena_profiles WHERE userId = ?").get("u2").selectedCardJson,
+    null,
+  );
 });
 
 test("first player can fight npc fallback when no real opponent", async () => {
