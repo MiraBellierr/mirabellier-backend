@@ -394,7 +394,10 @@ function extractUniqueMalIds(output) {
       if (!match) continue;
       const type = match[1];
       const id = match[2];
-      entries.set(id, { type, name: app.name });
+      const key = `${type}:${id}`;
+      if (!entries.has(key)) {
+        entries.set(key, { type, numericId: id, name: app.name });
+      }
     }
   }
   return entries;
@@ -459,15 +462,15 @@ async function enrichWithEnglishTitles(options) {
     const batch = remaining.slice(i, i + concurrency);
 
     const results = await Promise.all(
-      batch.map(async ([id, { type, name }]) => {
-        const en = await fetchEnglishTitle(type, id);
-        return { id, en, name };
+      batch.map(async ([key, { type, numericId, name }]) => {
+        const en = await fetchEnglishTitle(type, numericId);
+        return { key, en, name };
       }),
     );
 
-    for (const { id, en, name } of results) {
+    for (const { key, en, name } of results) {
       const label = en || name;
-      titles[id] = label;
+      titles[key] = label;
       done++;
       if (en && en !== name) {
         console.log(`[${done}/${total}] ${name} → ${label}`);
@@ -489,6 +492,13 @@ async function enrichWithEnglishTitles(options) {
   saveTitlesProgress(titles);
   console.log(`\nFetched ${Object.keys(titles).length} titles. Applying to characters...`);
 
+  // Backup before overwriting
+  const backupPath = options.outFile.replace(".json", "-backup.json");
+  if (!fs.existsSync(backupPath)) {
+    fs.writeFileSync(backupPath, JSON.stringify(data, null, 2));
+    console.log(`Backup saved to ${path.basename(backupPath)}`);
+  }
+
   let replaced = 0;
   let unchanged = 0;
 
@@ -498,8 +508,9 @@ async function enrichWithEnglishTitles(options) {
         /https?:\/\/myanimelist\.net\/(anime|manga)\/(\d+)/,
       );
       if (!match) continue;
+      const type = match[1];
       const id = match[2];
-      const en = titles[id];
+      const en = titles[`${type}:${id}`];
       if (en && en !== app.name) {
         app.name = en;
         replaced++;
@@ -509,12 +520,6 @@ async function enrichWithEnglishTitles(options) {
     }
   }
 
-  // Backup before overwriting
-  const backupPath = options.outFile.replace(".json", "-backup.json");
-  if (!fs.existsSync(backupPath)) {
-    fs.writeFileSync(backupPath, JSON.stringify(data, null, 2));
-    console.log(`Backup saved to ${path.basename(backupPath)}`);
-  }
   saveOutput(options.outFile, data);
   console.log(`Replaced ${replaced} names, ${unchanged} already English. Done.`);
 }
