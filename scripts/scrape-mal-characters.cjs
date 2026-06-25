@@ -40,6 +40,9 @@ function parseArgs(argv) {
     outFile: DEFAULT_OUT_FILE,
     resume: true,
     help: false,
+    englishTitles: false,
+    englishOnly: false,
+    englishConcurrency: 3,
   };
 
   for (const arg of argv) {
@@ -70,6 +73,18 @@ function parseArgs(argv) {
     if (key === "timeout") {
       options.timeoutMs = parsePositiveInt(rawValue, options.timeoutMs);
     }
+    if (arg === "--english-titles") {
+      options.englishTitles = true;
+      continue;
+    }
+    if (arg === "--english-only") {
+      options.englishTitles = true;
+      options.englishOnly = true;
+      continue;
+    }
+    if (key === "english-concurrency") {
+      options.englishConcurrency = parsePositiveInt(rawValue, options.englishConcurrency);
+    }
     if (key === "retries") {
       options.maxRetries = parsePositiveInt(rawValue, options.maxRetries);
     }
@@ -92,19 +107,24 @@ Usage:
   node scripts/scrape-mal-characters.cjs [options]
 
 Options:
-  --start=<limit>     Initial ?limit= value (default: 0)
-  --pages=<count>     Stop after this many pages (default: all pages)
-  --delay=<ms>        Delay between pages (default: ${DEFAULT_DELAY_MS})
-  --timeout=<ms>      Request timeout (default: ${DEFAULT_TIMEOUT_MS})
-  --retries=<count>   Retries for rate limits and temporary errors (default: ${DEFAULT_MAX_RETRIES})
-  --out=<path>        Output JSON path (default: data/mal-characters.json)
-  --resume            Continue from an existing output file (default)
-  --no-resume         Start fresh and overwrite the output file
-  --help, -h          Show this help
+  --start=<limit>           Initial ?limit= value (default: 0)
+  --pages=<count>           Stop after this many pages (default: all pages)
+  --delay=<ms>              Delay between pages (default: ${DEFAULT_DELAY_MS})
+  --timeout=<ms>            Request timeout (default: ${DEFAULT_TIMEOUT_MS})
+  --retries=<count>         Retries for rate limits and temporary errors (default: ${DEFAULT_MAX_RETRIES})
+  --out=<path>              Output JSON path (default: data/mal-characters.json)
+  --resume                  Continue from an existing output file (default)
+  --no-resume               Start fresh and overwrite the output file
+  --english-titles          After scraping, fetch English titles from Jikan API and replace appearance names
+  --english-only            Only enrich existing file with English titles (skip scraping)
+  --english-concurrency=<n> Concurrent Jikan requests per second (default: 3)
+  --help, -h                Show this help
 
 Examples:
   npm run scrape:mal:characters
   npm run scrape:mal:characters -- --pages=2 --no-resume
+  npm run scrape:mal:characters -- --english-titles
+  node scripts/scrape-mal-characters.cjs --english-only
 `);
 }
 
@@ -359,10 +379,157 @@ function saveOutput(filePath, output) {
   fs.renameSync(temporaryPath, filePath);
 }
 
+// ---------- English title enrichment via Jikan API ----------
+
+const JIKAN_BASE = "https://api.jikan.moe/v4";
+const TITLES_PROGRESS_FILE = path.resolve(__dirname, "..", "data", "mal-english-titles.json");
+
+function extractUniqueMalIds(output) {
+  const entries = new Map();
+  for (const char of output.characters) {
+    for (const app of char.appearances || []) {
+      const match = (app.url || "").match(
+        /https?:\/\/myanimelist\.net\/(anime|manga)\/(\d+)/,
+      );
+      if (!match) continue;
+      const type = match[1];
+      const id = match[2];
+      entries.set(id, { type, name: app.name });
+    }
+  }
+  return entries;
+}
+
+function loadTitlesProgress() {
+  if (fs.existsSync(TITLES_PROGRESS_FILE)) {
+    return JSON.parse(fs.readFileSync(TITLES_PROGRESS_FILE, "utf8"));
+  }
+  return {};
+}
+
+function saveTitlesProgress(map) {
+  fs.writeFileSync(TITLES_PROGRESS_FILE, JSON.stringify(map, null, 2));
+}
+
+async function fetchEnglishTitle(type, id, retries = 3) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const res = await fetch(`${JIKAN_BASE}/${type}/${id}`);
+    if (res.status === 429) {
+      const wait = Number(res.headers.get("Retry-After") || 3);
+      console.warn(`  Rate limited on ${type}/${id}, sleeping ${wait}s...`);
+      await sleep(wait * 1000);
+      continue;
+    }
+    if (!res.ok) {
+      if (attempt < retries - 1) {
+        await sleep(2000);
+        continue;
+      }
+      console.warn(`  HTTP ${res.status} for ${type}/${id} (giving up)`);
+      return null;
+    }
+    const json = await res.json();
+    return json.data?.title_english || json.data?.title || null;
+  }
+  return null;
+}
+
+async function enrichWithEnglishTitles(options) {
+  const data = JSON.parse(fs.readFileSync(options.outFile, "utf8"));
+  if (!data || !Array.isArray(data.characters)) {
+    throw new Error(`File is not a valid scraper output: ${options.outFile}`);
+  }
+
+  const entries = extractUniqueMalIds(data);
+  const titles = loadTitlesProgress();
+  let done = Object.keys(titles).length;
+  const total = entries.size;
+  let lastSave = done;
+  const concurrency = options.englishConcurrency;
+
+  console.log(`\nEnriching with English titles via Jikan API...`);
+  console.log(`Unique entries: ${total}, already fetched: ${done}, remaining: ${total - done}`);
+  console.log(`Concurrency: ${concurrency} req/s`);
+  console.log("");
+
+  const remaining = [...entries.entries()].filter(([id]) => !(id in titles));
+
+  for (let i = 0; i < remaining.length; i += concurrency) {
+    const batchStart = Date.now();
+    const batch = remaining.slice(i, i + concurrency);
+
+    const results = await Promise.all(
+      batch.map(async ([id, { type, name }]) => {
+        const en = await fetchEnglishTitle(type, id);
+        return { id, en, name };
+      }),
+    );
+
+    for (const { id, en, name } of results) {
+      const label = en || name;
+      titles[id] = label;
+      done++;
+      if (en && en !== name) {
+        console.log(`[${done}/${total}] ${name} → ${label}`);
+      }
+    }
+
+    if (done - lastSave >= 300) {
+      saveTitlesProgress(titles);
+      lastSave = done;
+      console.log(`  --- saved ${done} entries ---`);
+    }
+
+    const elapsed = Date.now() - batchStart;
+    if (elapsed < 1000 && i + concurrency < remaining.length) {
+      await sleep(1000 - elapsed);
+    }
+  }
+
+  saveTitlesProgress(titles);
+  console.log(`\nFetched ${Object.keys(titles).length} titles. Applying to characters...`);
+
+  let replaced = 0;
+  let unchanged = 0;
+
+  for (const char of data.characters) {
+    for (const app of char.appearances || []) {
+      const match = (app.url || "").match(
+        /https?:\/\/myanimelist\.net\/(anime|manga)\/(\d+)/,
+      );
+      if (!match) continue;
+      const id = match[2];
+      const en = titles[id];
+      if (en && en !== app.name) {
+        app.name = en;
+        replaced++;
+      } else if (en === app.name) {
+        unchanged++;
+      }
+    }
+  }
+
+  // Backup before overwriting
+  const backupPath = options.outFile.replace(".json", "-backup.json");
+  if (!fs.existsSync(backupPath)) {
+    fs.writeFileSync(backupPath, JSON.stringify(data, null, 2));
+    console.log(`Backup saved to ${path.basename(backupPath)}`);
+  }
+  saveOutput(options.outFile, data);
+  console.log(`Replaced ${replaced} names, ${unchanged} already English. Done.`);
+}
+
+// ---------- main ----------
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     printHelp();
+    return;
+  }
+
+  if (options.englishOnly) {
+    await enrichWithEnglishTitles(options);
     return;
   }
 
@@ -438,6 +605,10 @@ async function main() {
     `${output.complete ? "Done" : "Stopped after the requested page limit"}. ` +
       `Saved ${output.characters.length} characters to ${options.outFile}`,
   );
+
+  if (options.englishTitles) {
+    await enrichWithEnglishTitles(options);
+  }
 }
 
 main().catch((error) => {
