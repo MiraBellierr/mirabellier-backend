@@ -1908,7 +1908,7 @@ test("daily draw is limited to ten cards per day", async () => {
   for (let index = 0; index < 10; index += 1) {
     const draw = await drawDailyCard(db, "u1");
     assert.ok(draw.card);
-    assert.ok(draw.profile.selectedCard);
+    assert.equal(draw.profile.selectedCard, null);
     assert.equal(draw.profile.dailyDrawLimit, 10);
     assert.equal(draw.profile.dailyDrawsUsed, index + 1);
     assert.equal(draw.profile.dailyDrawsRemaining, Math.max(10 - (index + 1), 0));
