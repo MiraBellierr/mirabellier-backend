@@ -99,6 +99,8 @@ function createTestDb() {
       catalogVersion TEXT NOT NULL DEFAULT 'v2',
       effectsJson TEXT,
       lastFightAt TEXT,
+      dailyOpponentCount INTEGER NOT NULL DEFAULT 0,
+      lastOpponentDate TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     )`,
