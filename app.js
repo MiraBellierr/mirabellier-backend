@@ -272,7 +272,9 @@ registerRoutes(app);
 generateSitemap(db);
 startQuoteOfTheDayScheduler();
 startQuestionOfTheDayDiscordScheduler(db);
+const { resetAllDefenderCaps } = require("./lib/arena/legacy-service");
 const { startHallOfFameScheduler } = require("./lib/arena-hall-of-fame-scheduler");
+resetAllDefenderCaps(db);
 startHallOfFameScheduler(db);
 const indexNowKeyResult = ensureIndexNowKeyFile();
 if (indexNowKeyResult.ok === false) {
