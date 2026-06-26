@@ -272,6 +272,8 @@ registerRoutes(app);
 generateSitemap(db);
 startQuoteOfTheDayScheduler();
 startQuestionOfTheDayDiscordScheduler(db);
+const { startHallOfFameScheduler } = require("./lib/arena-hall-of-fame-scheduler");
+startHallOfFameScheduler(db);
 const indexNowKeyResult = ensureIndexNowKeyFile();
 if (indexNowKeyResult.ok === false) {
   console.warn(`[indexnow] ${indexNowKeyResult.error}`);

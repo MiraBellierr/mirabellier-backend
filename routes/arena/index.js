@@ -34,6 +34,7 @@ const {
   getArenaShopPayload,
   getArenaTradeListings,
   getArenaUpdates,
+  getHallOfFame,
   getIncomingTradeRequests,
   getLeaderboard,
   getMyArenaMarketListings,
@@ -954,6 +955,18 @@ module.exports = function registerArenaRoutes(app, deps) {
     try {
       const user = requireAuthUser(req, authFromReq);
       const payload = markAllArenaNotificationsRead(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/hall-of-fame", (req, res) => {
+    try {
+      const month = req.query.month || null;
+      const page = Math.max(1, parseInt(req.query.page) || 1);
+      const payload = getHallOfFame(db, { month, page, perPage: 12 });
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
