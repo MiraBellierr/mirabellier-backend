@@ -101,6 +101,7 @@ function createTestDb() {
       lastFightAt TEXT,
       dailyOpponentCount INTEGER NOT NULL DEFAULT 0,
       lastOpponentDate TEXT,
+      tutorialComplete INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     )`,
