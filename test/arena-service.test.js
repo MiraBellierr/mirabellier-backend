@@ -157,6 +157,7 @@ function createTestDb() {
       userId TEXT NOT NULL,
       cardInstanceId TEXT NOT NULL,
       cardJson TEXT NOT NULL,
+      isFavorite INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     )`,
@@ -558,10 +559,44 @@ function insertMarketListingFixture(db, input) {
   );
 }
 
+const PASSIVE_FIXTURES = {
+  riversteel_edge: {
+    key: "riversteel_edge",
+    trigger: "onAttack",
+    priority: 10,
+    actions: [{ type: "bonusCritChancePct", value: 10 }],
+  },
+  guard_cap_focus: {
+    key: "guard_cap_focus",
+    trigger: "onDamageTaken",
+    priority: 6,
+    actions: [{ type: "grantTempGuard", value: 4, turns: 1, chancePct: 20 }],
+  },
+  double_strike: {
+    key: "double_strike",
+    trigger: "onDamageDealt",
+    priority: 12,
+    actions: [{ type: "extraStrikePct", chancePct: 12, value: 40 }],
+  },
+  verdant_regen: {
+    key: "verdant_regen",
+    trigger: "onDamageTaken",
+    priority: 7,
+    actions: [{ type: "healFlat", value: 4, maxTriggersPerFight: 3 }],
+  },
+};
+
 function findPassive(key) {
-  const item = SHOP_ITEMS.find((candidate) => candidate.passive?.key === key);
-  assert.ok(item, `Missing passive fixture: ${key}`);
-  return item.passive;
+  const passive = PASSIVE_FIXTURES[key];
+  assert.ok(passive, `Missing passive fixture: ${key}`);
+  return passive;
+}
+
+function getConsumableEffect(itemId) {
+  const item = SHOP_ITEMS.find((candidate) => candidate.id === itemId);
+  assert.equal(item?.type, "consumable", `Missing consumable fixture: ${itemId}`);
+  assert.ok(item.consumableEffect, `Missing consumable effect fixture: ${itemId}`);
+  return item.consumableEffect;
 }
 
 function makeCombatSnapshot({
@@ -819,30 +854,32 @@ test("Verdant Core restores actual battle HP after damage", async () => {
   assert.ok(result.battle.console.some((entry) => entry.line.includes("recovered 4 HP")));
 });
 
-test("potion effects use short tactical durations", () => {
+test("potion effects define positive stackable durations", () => {
   const durationByItemId = {
-    red_tonic: ["charges", 8],
-    green_draft: ["fights", 10],
-    amber_draft: ["fights", 10],
-    frost_elixir: ["fights", 5],
-    viridian_elixir: ["charges", 3],
-    sun_elixir: ["charges", 2],
-    star_tonic: ["fights", 5],
-    fuse_bomb: ["charges", 2],
-    lantern_oil: ["charges", 3],
-    seeker_lens: ["fights", 3],
-    oath_ribbon: ["fights", 5],
-    treasure_cache: ["charges", 2],
-    prism_draught: ["charges", 2],
-    sacred_candles: ["charges", 3],
-    gate_key: ["fights", 3],
-    chrono_vial: ["charges", 2],
+    red_tonic: "charges",
+    green_draft: "fights",
+    amber_draft: "fights",
+    frost_elixir: "fights",
+    viridian_elixir: "charges",
+    sun_elixir: "charges",
+    star_tonic: "fights",
+    fuse_bomb: "charges",
+    lantern_oil: "charges",
+    seeker_lens: "fights",
+    oath_ribbon: "fights",
+    treasure_cache: "charges",
+    prism_draught: "charges",
+    sacred_candles: "charges",
+    gate_key: "fights",
+    chrono_vial: "charges",
   };
 
-  Object.entries(durationByItemId).forEach(([itemId, [durationField, duration]]) => {
-    const item = SHOP_ITEMS.find((candidate) => candidate.id === itemId);
-    assert.ok(item, `Missing potion fixture: ${itemId}`);
-    assert.equal(item.consumableEffect?.[durationField], duration);
+  Object.entries(durationByItemId).forEach(([itemId, durationField]) => {
+    const effect = getConsumableEffect(itemId);
+    assert.ok(
+      Number(effect[durationField]) > 0,
+      `${itemId} should define positive ${durationField}`,
+    );
   });
 });
 
@@ -862,18 +899,18 @@ test("legacy active consumable durations are clamped to tactical maxima", () => 
     doublePassiveTriggerFightsRemaining: 8,
   });
 
-  assert.equal(effects.expBoostWinsRemaining, 40);
+  assert.equal(effects.expBoostWinsRemaining, 50);
   assert.equal(effects.coinBoostWinsRemaining, 40);
   assert.equal(effects.rerollKeepHigherCharges, 4);
   assert.equal(effects.streakShieldCharges, 6);
   assert.equal(effects.upgradeLowestRarityCharges, 6);
   assert.equal(effects.guaranteeSsrPlusCharges, 6);
-  assert.equal(effects.fightStartShieldCharges, 16);
-  assert.equal(effects.evadeBoostFightsRemaining, 16);
-  assert.equal(effects.firstHitTrueDamageCharges, 4);
-  assert.equal(effects.higherRarityDamageBonusPctCharges, 6);
+  assert.equal(effects.fightStartShieldCharges, 50);
+  assert.equal(effects.evadeBoostFightsRemaining, 50);
+  assert.equal(effects.firstHitTrueDamageCharges, 8);
+  assert.equal(effects.higherRarityDamageBonusPctCharges, 8);
   assert.equal(effects.gateKeyCharges, 4);
-  assert.equal(effects.doublePassiveTriggerFightsRemaining, 6);
+  assert.equal(effects.doublePassiveTriggerFightsRemaining, 8);
 });
 
 test("fight-start passive shields absorb damage before HP is lost", async () => {
@@ -1230,7 +1267,7 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
   assert.equal(response.rewards.coins, 0);
   assert.deepEqual(response.rewards.materialDrops, []);
   assert.equal(response.profile.losses, 1);
-  assert.equal(response.profile.effects.expBoostWinsRemaining, 40);
+  assert.equal(response.profile.effects.expBoostWinsRemaining, 50);
   assert.equal(response.profile.effects.coinBoostWinsRemaining, 40);
 });
 
@@ -1393,32 +1430,32 @@ test("card shop prices cards by rarity", () => {
   assert.equal(getCardShopPrice("UR"), 10000);
 });
 
-test("random card offer is removed at the June 23, 2026 UTC cutoff", async () => {
+test("random card offer follows the configured weekday schedule", async () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", coins: 1000 });
 
-  assert.equal(isRandomCardOfferAvailable("2026-06-22"), true);
-  assert.equal(isRandomCardOfferAvailable("2026-06-23"), false);
-  const before = await getArenaCardShopPayload(db, "u1", {
-    recordedDate: "2026-06-22",
-  });
-  const cutoff = await getArenaCardShopPayload(db, "u1", {
+  assert.equal(isRandomCardOfferAvailable("2026-06-23"), true);
+  assert.equal(isRandomCardOfferAvailable("2026-06-24"), false);
+  const available = await getArenaCardShopPayload(db, "u1", {
     recordedDate: "2026-06-23",
   });
-  assert.equal(before.randomOffer?.price, 500);
-  assert.equal(before.randomOffer?.endsAt, "2026-06-23T00:00:00.000Z");
-  assert.equal(cutoff.randomOffer, null);
+  const unavailable = await getArenaCardShopPayload(db, "u1", {
+    recordedDate: "2026-06-24",
+  });
+  assert.equal(available.randomOffer?.price, 2500);
+  assert.equal(available.randomOffer?.endsAt, "2026-06-24T00:00:00.000Z");
+  assert.equal(unavailable.randomOffer, null);
   await assert.rejects(
     () =>
       buyArenaShopCard(
         db,
         "u1",
         { kind: "random" },
-        { recordedDate: "2026-06-23" },
+        { recordedDate: "2026-06-24" },
       ),
     (error) =>
       error instanceof ArenaHttpError &&
-      error.code === "ARENA_RANDOM_CARD_OFFER_ENDED",
+      error.code === "ARENA_RANDOM_CARD_NOT_TODAY",
   );
   assert.equal(getArenaProfilePayload(db, "u1").coins, 1000);
 });
@@ -1544,9 +1581,9 @@ test("admin reroll replaces today's global card shop offers", async () => {
 
 test("random card purchases remain available and failures never charge coins", async () => {
   const db = createTestDb();
-  insertProfile(db, { userId: "u1", coins: 1250 });
-  insertProfile(db, { userId: "u2", coins: 2000 });
-  insertProfile(db, { userId: "u3", coins: 500 });
+  insertProfile(db, { userId: "u1", coins: 6250 });
+  insertProfile(db, { userId: "u2", coins: 3000 });
+  insertProfile(db, { userId: "u3", coins: 2500 });
 
   const drawCommonCard = async () => ({
     malId: 7,
@@ -1562,19 +1599,20 @@ test("random card purchases remain available and failures never charge coins", a
     db,
     "u1",
     { kind: "random" },
-    { recordedDate: "2026-06-22", drawCard: drawCommonCard },
+    { recordedDate: "2026-06-23", drawCard: drawCommonCard },
   );
   const second = await buyArenaShopCard(
     db,
     "u1",
     { kind: "random" },
-    { recordedDate: "2026-06-22", drawCard: drawCommonCard },
+    { recordedDate: "2026-06-23", drawCard: drawCommonCard },
   );
-  assert.equal(first.card.rarity, "C");
-  assert.equal(first.pricePaid, 500);
-  assert.equal(second.profile.coins, 250);
-  assert.notEqual(first.card.cardInstanceId, second.card.cardInstanceId);
-  assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 2);
+  assert.equal(first.cards.length, 5);
+  assert.ok(first.cards.every((card) => card.rarity === "C"));
+  assert.equal(first.pricePaid, 2500);
+  assert.equal(second.profile.coins, 1250);
+  assert.notEqual(first.cards[0].cardInstanceId, second.cards[0].cardInstanceId);
+  assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 10);
 
   await assert.rejects(
     () =>
@@ -1582,22 +1620,22 @@ test("random card purchases remain available and failures never charge coins", a
         db,
         "u1",
         { kind: "random" },
-        { recordedDate: "2026-06-22" },
+        { recordedDate: "2026-06-23" },
       ),
     (error) =>
       error instanceof ArenaHttpError &&
       error.code === "ARENA_NOT_ENOUGH_COINS" &&
-      error.details.requiredCoins === 500,
+      error.details.requiredCoins === 2500,
   );
-  assert.equal(getArenaProfilePayload(db, "u1").coins, 250);
-  assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 2);
+  assert.equal(getArenaProfilePayload(db, "u1").coins, 1250);
+  assert.equal(getArenaCollectionPayload(db, "u1").cards.length, 10);
 
   const ultraRare = await buyArenaShopCard(
     db,
     "u3",
     { kind: "random" },
     {
-      recordedDate: "2026-06-22",
+      recordedDate: "2026-06-23",
       drawCard: async () => ({
         malId: 1,
         title: "Ultra Rare Character",
@@ -1610,10 +1648,11 @@ test("random card purchases remain available and failures never charge coins", a
       }),
     },
   );
-  assert.equal(ultraRare.card.rarity, "UR");
-  assert.equal(ultraRare.pricePaid, 500);
+  assert.equal(ultraRare.cards.length, 5);
+  assert.ok(ultraRare.cards.every((card) => card.rarity === "UR"));
+  assert.equal(ultraRare.pricePaid, 2500);
   assert.equal(getArenaProfilePayload(db, "u3").coins, 0);
-  assert.equal(getArenaCollectionPayload(db, "u3").cards.length, 1);
+  assert.equal(getArenaCollectionPayload(db, "u3").cards.length, 5);
 
   await assert.rejects(
     () =>
@@ -1622,7 +1661,7 @@ test("random card purchases remain available and failures never charge coins", a
         "u2",
         { kind: "random" },
         {
-          recordedDate: "2026-06-22",
+          recordedDate: "2026-06-23",
           drawCard: async () => {
             throw new Error("source unavailable");
           },
@@ -1630,11 +1669,11 @@ test("random card purchases remain available and failures never charge coins", a
       ),
     /source unavailable/,
   );
-  assert.equal(getArenaProfilePayload(db, "u2").coins, 2000);
+  assert.equal(getArenaProfilePayload(db, "u2").coins, 3000);
   assert.equal(getArenaCollectionPayload(db, "u2").cards.length, 0);
 });
 
-test("crafting gear consumes coins and equips output", () => {
+test("buying rolled gear consumes coins and stores an equipment piece", () => {
   const db = createTestDb();
   insertProfile(db, {
     userId: "u1",
@@ -1643,45 +1682,39 @@ test("crafting gear consumes coins and equips output", () => {
     selectedCard: makeCard(1, "C"),
   });
 
-  const crafted = craftShopRecipe(db, "u1", "rookie_gear_1");
-  assert.equal(crafted.craftedRecipeId, "rookie_gear_1");
-  assert.equal(crafted.outputItemId, "rustblade_weapon");
-  assert.equal(crafted.craftedQuantity, 1);
-  assert.equal(crafted.shop.equipped.weapon?.itemId, "rustblade_weapon");
-  assert.ok(crafted.shop.profile.coins < 3000);
+  const bought = buyShopItem(db, "u1", "weapon_roll");
+  assert.equal(bought.purchasedItemId, "weapon_roll");
+  assert.ok(bought.rolledPieceId);
+  assert.equal(bought.rolledPiece.slot, "weapon");
+  assert.ok(bought.shop.profile.coins < 3000);
+  assert.ok(
+    bought.shop.profile.equipmentPieces.some(
+      (piece) => piece.id === bought.rolledPieceId && piece.slot === "weapon",
+    ),
+  );
 });
 
-test("owned gear can be re-equipped from inventory", () => {
+test("owned rolled gear can be re-equipped from inventory", () => {
   const db = createTestDb();
   insertProfile(db, {
     userId: "u1",
     level: 20,
-    coins: 0,
+    coins: 3000,
     selectedCard: makeCard(1, "C"),
   });
-  const now = new Date().toISOString();
-  db.prepare(
-    `INSERT INTO arena_inventory (id, userId, itemId, quantity, createdAt, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run("inventory-rustblade", "u1", "rustblade_weapon", 1, now, now);
-  db.prepare(
-    `INSERT INTO arena_inventory (id, userId, itemId, quantity, createdAt, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run("inventory-riversteel", "u1", "riversteel_saber", 1, now, now);
-  db.prepare(
-    `INSERT INTO arena_equipment (userId, slot, itemId, equippedAt)
-     VALUES (?, ?, ?, ?)`,
-  ).run("u1", "weapon", "riversteel_saber", now);
 
-  const equipped = equipShopItem(db, "u1", "rustblade_weapon");
-  assert.equal(equipped.equippedItemId, "rustblade_weapon");
+  const first = buyShopItem(db, "u1", "weapon_roll");
+  const second = buyShopItem(db, "u1", "weapon_roll");
+  equipShopItem(db, "u1", second.rolledPieceId);
+
+  const equipped = equipShopItem(db, "u1", first.rolledPieceId);
+  assert.equal(equipped.equippedPieceId, first.rolledPieceId);
   assert.equal(equipped.slot, "weapon");
-  assert.equal(equipped.shop.equipped.weapon?.itemId, "rustblade_weapon");
-  assert.equal(
-    equipped.shop.shop
-      .flatMap((tier) => tier.items)
-      .find((item) => item.id === "riversteel_saber")?.ownedQuantity,
-    1,
+  assert.equal(equipped.shop.equipped.weapon?.id, first.rolledPieceId);
+  assert.ok(
+    equipped.shop.profile.equipmentPieces.some(
+      (piece) => piece.id === second.rolledPieceId && piece.equipped === false,
+    ),
   );
 });
 
@@ -1697,109 +1730,121 @@ test("using consumable applies effect and consumes quantity", () => {
   craftShopRecipe(db, "u1", "rookie_cons_1");
 
   const useResult = useConsumable(db, "u1", "red_tonic");
+  const effect = getConsumableEffect("red_tonic");
   assert.equal(useResult.activatedItemId, "red_tonic");
-  assert.equal(useResult.effects.fightStartShieldCharges, 8);
-  assert.equal(useResult.effects.fightStartShieldAmount, 60);
+  assert.equal(useResult.effects.fightStartShieldCharges, effect.charges);
+  assert.equal(useResult.effects.fightStartShieldAmount, effect.amount);
 
   const profile = getArenaProfilePayload(db, "u1");
-  assert.equal(profile.effects.fightStartShieldCharges, 8);
-  assert.equal(profile.effects.fightStartShieldAmount, 60);
+  assert.equal(profile.effects.fightStartShieldCharges, effect.charges);
+  assert.equal(profile.effects.fightStartShieldAmount, effect.amount);
 });
 
 test("Berserker's Brew applies +20% damage boost", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "rookie_cons_2");
+  const effect = getConsumableEffect("green_draft");
   const result = useConsumable(db, "u1", "green_draft");
-  assert.equal(result.effects.damageBoostPct, 20);
-  assert.equal(result.effects.damageBoostFightsRemaining, 10);
+  assert.equal(result.effects.damageBoostPct, effect.pct);
+  assert.equal(result.effects.damageBoostFightsRemaining, effect.fights);
 });
 
 test("Scout's Whistle applies +12% speed boost", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "rookie_cons_3");
+  const effect = getConsumableEffect("amber_draft");
   const result = useConsumable(db, "u1", "amber_draft");
-  assert.equal(result.effects.speedBoostPct, 12);
-  assert.equal(result.effects.speedBoostFightsRemaining, 10);
+  assert.equal(result.effects.speedBoostPct, effect.pct);
+  assert.equal(result.effects.speedBoostFightsRemaining, effect.fights);
 });
 
 test("Phoenix Feather applies death save charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "silver_cons_1");
+  const effect = getConsumableEffect("sun_elixir");
   const result = useConsumable(db, "u1", "sun_elixir");
-  assert.equal(result.effects.deathSaveCharges, 2);
+  assert.equal(result.effects.deathSaveCharges, effect.charges);
 });
 
 test("Titan Draught applies +15% all stats", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "silver_cons_2");
+  const effect = getConsumableEffect("star_tonic");
   const result = useConsumable(db, "u1", "star_tonic");
-  assert.equal(result.effects.statSteroidPct, 15);
-  assert.equal(result.effects.statSteroidFightsRemaining, 5);
+  assert.equal(result.effects.statSteroidPct, effect.pct);
+  assert.equal(result.effects.statSteroidFightsRemaining, effect.fights);
 });
 
 test("Seeker Lens applies +20% crit chance", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 30, coins: 100000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "gold_cons_1");
+  const effect = getConsumableEffect("seeker_lens");
   const result = useConsumable(db, "u1", "seeker_lens");
-  assert.equal(result.effects.critChanceBoostPct, 20);
-  assert.equal(result.effects.critChanceBoostFightsRemaining, 3);
+  assert.equal(result.effects.critChanceBoostPct, effect.pct);
+  assert.equal(result.effects.critChanceBoostFightsRemaining, effect.fights);
 });
 
 test("Oath Ribbon applies +15% guard boost", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 30, coins: 100000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "gold_cons_2");
+  const effect = getConsumableEffect("oath_ribbon");
   const result = useConsumable(db, "u1", "oath_ribbon");
-  assert.equal(result.effects.guardBoostPct, 15);
-  assert.equal(result.effects.guardBoostFightsRemaining, 5);
+  assert.equal(result.effects.guardBoostPct, effect.pct);
+  assert.equal(result.effects.guardBoostFightsRemaining, effect.fights);
 });
 
 test("Arcane Mirror applies match rarity charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 30, coins: 100000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "gold_cons_3");
+  const effect = getConsumableEffect("treasure_cache");
   const result = useConsumable(db, "u1", "treasure_cache");
-  assert.equal(result.effects.matchRarityCharges, 2);
+  assert.equal(result.effects.matchRarityCharges, effect.charges);
 });
 
 test("Prism Draught applies first attack double charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 100000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "mythic_cons_1");
+  const effect = getConsumableEffect("prism_draught");
   const result = useConsumable(db, "u1", "prism_draught");
-  assert.equal(result.effects.firstAttackDoubleCharges, 2);
+  assert.equal(result.effects.firstAttackDoubleCharges, effect.charges);
 });
 
 test("Vampiric Fang applies 20% lifesteal", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 100000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "mythic_cons_3");
+  const effect = getConsumableEffect("gate_key");
   const result = useConsumable(db, "u1", "gate_key");
-  assert.equal(result.effects.vampiricHealPct, 20);
-  assert.equal(result.effects.vampiricHealFightsRemaining, 3);
+  assert.equal(result.effects.vampiricHealPct, effect.pct);
+  assert.equal(result.effects.vampiricHealFightsRemaining, effect.fights);
 });
 
 test("Fuse Bomb deals +100 true damage", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "bronze_cons_3");
+  const effect = getConsumableEffect("fuse_bomb");
   const result = useConsumable(db, "u1", "fuse_bomb");
-  assert.equal(result.effects.firstHitTrueDamageValue, 100);
-  assert.equal(result.effects.firstHitTrueDamageCharges, 2);
+  assert.equal(result.effects.firstHitTrueDamageValue, effect.value);
+  assert.equal(result.effects.firstHitTrueDamageCharges, effect.charges);
 });
 
 test("Lantern Oil applies +50% damage vs higher rarity", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "silver_cons_3");
+  const effect = getConsumableEffect("lantern_oil");
   const result = useConsumable(db, "u1", "lantern_oil");
-  assert.equal(result.effects.higherRarityDamageBonusPct, 50);
-  assert.equal(result.effects.higherRarityDamageBonusPctCharges, 3);
+  assert.equal(result.effects.higherRarityDamageBonusPct, effect.pct);
+  assert.equal(result.effects.higherRarityDamageBonusPctCharges, effect.charges);
 });
 
 test("Phoenix Feather prevents KO in combat", async () => {
@@ -2464,8 +2509,8 @@ test("arena archive searches character names", () => {
 test("arena archive searches all appearance titles", () => {
   const db = createTestDb();
   const payload = getArenaArchivePayload(db, "u1", {
-    search: "Tengoku no Tobira",
-    perPage: 20,
+    search: "The Movie",
+    perPage: 100,
   });
 
   assert.ok(payload.cards.some((card) => card.title === "Valentine, Faye"));
@@ -2526,6 +2571,97 @@ test("arena archive route requires authentication", async () => {
 
     assert.equal(response.status, 401);
     assert.equal(body.code, "ARENA_UNAUTHENTICATED");
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
+
+test("arena routes remain registered through compatibility entry", async () => {
+  const db = createTestDb();
+  const app = express();
+  app.use(express.json());
+  registerArenaRoutes(app, { db, authFromReq: () => null });
+  const server = app.listen(0);
+  const routeChecks = [
+    ["GET", "/arena/profile"],
+    ["GET", "/arena/updates"],
+    ["POST", "/arena/updates"],
+    ["DELETE", "/arena/updates/update-1"],
+    ["POST", "/arena/verify"],
+    ["GET", "/arena/collection"],
+    ["GET", "/arena/archive"],
+    ["GET", "/arena/skill-tree"],
+    ["POST", "/arena/skill-tree/activate"],
+    ["POST", "/arena/skill-tree/reset"],
+    ["POST", "/arena/collection/select-card"],
+    ["POST", "/arena/collection/toggle-favorite"],
+    ["GET", "/arena/market/listings"],
+    ["GET", "/arena/market/price"],
+    ["GET", "/arena/market/listings/mine"],
+    ["POST", "/arena/market/listings"],
+    ["POST", "/arena/market/listings/listing-1/buy"],
+    ["POST", "/arena/market/listings/listing-1/cancel"],
+    ["POST", "/arena/fight"],
+    ["POST", "/arena/fight/start"],
+    ["GET", "/arena/fight/state"],
+    ["POST", "/arena/fight/advance"],
+    ["POST", "/arena/fight/skip"],
+    ["POST", "/arena/draw-card"],
+    ["POST", "/arena/draw-pack"],
+    ["GET", "/arena/shop"],
+    ["GET", "/arena/shop/cards"],
+    ["POST", "/arena/shop/cards/buy"],
+    ["POST", "/arena/shop/buy"],
+    ["POST", "/arena/shop/use-consumable"],
+    ["POST", "/arena/shop/equip"],
+    ["POST", "/arena/shop/unequip"],
+    ["POST", "/arena/shop/fodder"],
+    ["POST", "/arena/shop/craft"],
+    ["GET", "/arena/leaderboard"],
+    ["GET", "/arena/trade/users"],
+    ["GET", "/arena/trade/cards"],
+    ["GET", "/arena/trade/listings"],
+    ["GET", "/arena/trade/listings/mine"],
+    ["POST", "/arena/trade/listings"],
+    ["POST", "/arena/trade/listings/listing-1/cancel"],
+    ["POST", "/arena/trade/request"],
+    ["GET", "/arena/trade/request/request-1"],
+    ["GET", "/arena/trade/requests/incoming"],
+    ["POST", "/arena/trade/requests/request-1/accept"],
+    ["POST", "/arena/trade/requests/request-1/deny"],
+    ["POST", "/arena/trade/requests/request-1/cancel"],
+    ["GET", "/arena/trade/session/session-1"],
+    ["POST", "/arena/trade/session/session-1/offer-card"],
+    ["POST", "/arena/trade/session/session-1/remove-card"],
+    ["POST", "/arena/trade/session/session-1/offer-coins"],
+    ["POST", "/arena/trade/session/session-1/remove-coins"],
+    ["POST", "/arena/trade/session/session-1/confirm"],
+    ["POST", "/arena/trade/session/session-1/unconfirm"],
+    ["POST", "/arena/trade/session/session-1/cancel"],
+    ["GET", "/arena/notifications"],
+    ["GET", "/arena/notifications/unread-count"],
+    ["POST", "/arena/notifications/notification-1/read"],
+    ["GET", "/arena/mint/duplicates"],
+    ["POST", "/arena/mint"],
+    ["POST", "/arena/notifications/read-all"],
+    ["GET", "/ar/archive"],
+  ];
+
+  try {
+    await new Promise((resolve) => server.once("listening", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+
+    for (const [method, path] of routeChecks) {
+      const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+        method,
+        headers: method === "GET" ? undefined : { "Content-Type": "application/json" },
+        body: method === "GET" ? undefined : "{}",
+      });
+      assert.notEqual(response.status, 404, `${method} ${path} should be registered`);
+    }
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
