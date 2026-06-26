@@ -32,6 +32,7 @@ const {
   getArenaUpdates,
   getLeaderboard,
   getPlaybackFightState,
+  acceptTradeRequest,
   confirmTrade,
   normalizeArenaEffects,
   offerCardInTrade,
@@ -2340,6 +2341,56 @@ test("trade listings can request a specific card", () => {
     .get(request.requestId);
   assert.equal(row.listingId, created.listing.id);
   assert.equal(row.askerCardInstanceId, matchingOffer.cardInstanceId);
+});
+
+test("accepting a listing trade with both cards opens an active session", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 1000 });
+  insertProfile(db, { userId: "u2", coins: 1000 });
+
+  const listedCard = makeCard(21, "SR");
+  const offeredCard = { ...makeCard(1, "R"), cardInstanceId: "card-1-u2" };
+  insertCollectionCardFixture(db, "u1", listedCard);
+  insertCollectionCardFixture(db, "u2", offeredCard);
+
+  const listing = createArenaTradeListing(db, "u1", {
+    cardInstanceId: listedCard.cardInstanceId,
+    wantedCardMalId: offeredCard.malId,
+  });
+  const request = sendTradeRequest(
+    db,
+    "u2",
+    "u1",
+    offeredCard.cardInstanceId,
+    { listingId: listing.listing.id },
+  );
+
+  const accepted = acceptTradeRequest(db, "u1", request.requestId);
+  assert.ok(accepted.sessionId);
+
+  const session = db
+    .prepare("SELECT * FROM arena_trade_sessions WHERE id = ?")
+    .get(accepted.sessionId);
+  assert.equal(session.status, "active");
+  assert.equal(session.askerId, "u2");
+  assert.equal(session.responderId, "u1");
+  assert.deepEqual(JSON.parse(session.askerCardInstanceIdsJson), [
+    offeredCard.cardInstanceId,
+  ]);
+  assert.deepEqual(JSON.parse(session.responderCardInstanceIdsJson), [
+    listedCard.cardInstanceId,
+  ]);
+  assert.ok(
+    db
+      .prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
+      .get("u1", listedCard.cardInstanceId),
+  );
+  assert.equal(
+    db
+      .prepare("SELECT status FROM arena_trade_listings WHERE id = ?")
+      .get(listing.listing.id).status,
+    "cancelled",
+  );
 });
 
 test("trade session offer changes reset both confirmations", () => {
