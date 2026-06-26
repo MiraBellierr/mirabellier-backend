@@ -9,6 +9,8 @@ const PAGE_SIZE = 50;
 const DEFAULT_DELAY_MS = 1000;
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_MAX_RETRIES = 4;
+const REMOTE_JIKAN_BASE = "https://api.jikan.moe/v4";
+const LOCAL_JIKAN_BASE = "http://localhost:8080/v4";
 const DEFAULT_OUT_FILE = path.resolve(
   __dirname,
   "..",
@@ -43,6 +45,7 @@ function parseArgs(argv) {
     englishTitles: false,
     englishOnly: false,
     englishConcurrency: 3,
+    jikanBase: null,
   };
 
   for (const arg of argv) {
@@ -85,6 +88,9 @@ function parseArgs(argv) {
     if (key === "english-concurrency") {
       options.englishConcurrency = parsePositiveInt(rawValue, options.englishConcurrency);
     }
+    if (key === "jikan-base") {
+      options.jikanBase = rawValue.trim();
+    }
     if (key === "retries") {
       options.maxRetries = parsePositiveInt(rawValue, options.maxRetries);
     }
@@ -97,7 +103,17 @@ function parseArgs(argv) {
     throw new Error(`--start must be a multiple of ${PAGE_SIZE}.`);
   }
 
+  options.jikanBase = normalizeBaseUrl(
+    options.jikanBase ||
+      process.env.JIKAN_BASE_URL ||
+      (options.englishOnly ? LOCAL_JIKAN_BASE : REMOTE_JIKAN_BASE),
+  );
+
   return options;
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
 }
 
 function printHelp() {
@@ -116,8 +132,9 @@ Options:
   --resume                  Continue from an existing output file (default)
   --no-resume               Start fresh and overwrite the output file
   --english-titles          After scraping, fetch English titles from Jikan API and replace appearance names
-  --english-only            Only enrich existing file with English titles (skip scraping)
+  --english-only            Only enrich existing file with English titles (skip scraping; defaults to local Docker Jikan)
   --english-concurrency=<n> Concurrent Jikan requests per second (default: 3)
+  --jikan-base=<url>        Override Jikan API base URL (default for --english-only: ${LOCAL_JIKAN_BASE})
   --help, -h                Show this help
 
 Examples:
@@ -381,7 +398,6 @@ function saveOutput(filePath, output) {
 
 // ---------- English title enrichment via Jikan API ----------
 
-const JIKAN_BASE = "https://api.jikan.moe/v4";
 const TITLES_PROGRESS_FILE = path.resolve(__dirname, "..", "data", "mal-english-titles.json");
 
 function extractUniqueMalIds(output) {
@@ -414,9 +430,9 @@ function saveTitlesProgress(map) {
   fs.writeFileSync(TITLES_PROGRESS_FILE, JSON.stringify(map, null, 2));
 }
 
-async function fetchEnglishTitle(type, id, retries = 3) {
+async function fetchEnglishTitle(type, id, options, retries = 3) {
   for (let attempt = 0; attempt < retries; attempt++) {
-    const res = await fetch(`${JIKAN_BASE}/${type}/${id}`);
+    const res = await fetch(`${options.jikanBase}/${type}/${id}`);
     if (res.status === 429) {
       const wait = Number(res.headers.get("Retry-After") || 3);
       console.warn(`  Rate limited on ${type}/${id}, sleeping ${wait}s...`);
@@ -451,6 +467,7 @@ async function enrichWithEnglishTitles(options) {
   const concurrency = options.englishConcurrency;
 
   console.log(`\nEnriching with English titles via Jikan API...`);
+  console.log(`Jikan base: ${options.jikanBase}`);
   console.log(`Unique entries: ${total}, already fetched: ${done}, remaining: ${total - done}`);
   console.log(`Concurrency: ${concurrency} req/s`);
   console.log("");
@@ -463,7 +480,7 @@ async function enrichWithEnglishTitles(options) {
 
     const results = await Promise.all(
       batch.map(async ([key, { type, numericId, name }]) => {
-        const en = await fetchEnglishTitle(type, numericId);
+        const en = await fetchEnglishTitle(type, numericId, options);
         return { key, en, name };
       }),
     );
