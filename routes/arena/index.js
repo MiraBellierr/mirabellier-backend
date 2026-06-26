@@ -61,6 +61,10 @@ const {
   unconfirmTrade,
   unequipEquipmentSlot,
   fodderEquipmentPiece,
+  getEquipmentLoadouts,
+  saveEquipmentLoadout,
+  restoreEquipmentLoadout,
+  deleteEquipmentLoadout,
   useConsumable,
 } = require("../../lib/arena-service");
 const { isOwner } = require("../../lib/authz");
@@ -564,6 +568,51 @@ module.exports = function registerArenaRoutes(app, deps) {
       const payload = fodderEquipmentPiece(db, user.id, pieceId, refundAmount);
       setNoStoreHeaders(res);
       res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/loadout/save", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const name = String(req.body?.name || "").trim();
+      const payload = saveEquipmentLoadout(db, user.id, name);
+      const shop = getArenaShopPayload(db, user.id);
+      setNoStoreHeaders(res);
+      res.json({ loadout: payload, shop });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/loadout/restore", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const loadoutId = String(req.body?.loadoutId || "").trim();
+      if (!loadoutId) {
+        throw new ArenaHttpError(400, "loadoutId is required.", "ARENA_LOADOUT_REQUIRED");
+      }
+      const result = restoreEquipmentLoadout(db, user.id, loadoutId);
+      const shop = getArenaShopPayload(db, user.id);
+      setNoStoreHeaders(res);
+      res.json({ ...result, shop });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/loadout/delete", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const loadoutId = String(req.body?.loadoutId || "").trim();
+      if (!loadoutId) {
+        throw new ArenaHttpError(400, "loadoutId is required.", "ARENA_LOADOUT_REQUIRED");
+      }
+      const result = deleteEquipmentLoadout(db, user.id, loadoutId);
+      const shop = getArenaShopPayload(db, user.id);
+      setNoStoreHeaders(res);
+      res.json({ ...result, shop });
     } catch (error) {
       handleArenaError(error, res);
     }
