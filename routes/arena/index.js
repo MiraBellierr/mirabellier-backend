@@ -1,72 +1,33 @@
 const express = require("express");
-const {
-  acceptTradeRequest,
-  advancePlaybackFightTurn,
-  activateArenaSkill,
-  ArenaHttpError,
-  buyArenaMarketListing,
-  buyArenaShopCard,
-  buyShopItem,
-  cancelArenaMarketListing,
-  cancelArenaTradeListing,
-  cancelTradeRequest,
-  cancelTradeSession,
-  confirmTrade,
-  craftShopRecipe,
-  createArenaMarketListing,
-  createArenaTradeListing,
-  createArenaUpdate,
-  deleteArenaUpdate,
-  denyTradeRequest,
-  drawDailyCard,
-  drawArenaPack,
-  equipShopItem,
-  getArenaArchivePayload,
-  getArenaCardShopPayload,
-  getArenaCollectionPayload,
-  getArenaMarketListings,
-  getArenaMarketPriceGuide,
-  getMintDuplicates,
-  getArenaNotifications,
-  getArenaNotificationUnreadCount,
-  getArenaProfilePayload,
-  getArenaSkillTreePayload,
-  getArenaShopPayload,
-  getArenaTradeListings,
-  getArenaUpdates,
-  getHallOfFame,
-  getIncomingTradeRequests,
-  getLeaderboard,
-  getMyArenaMarketListings,
-  getMyArenaTradeListings,
-  getPlaybackFightState,
-  getTradeSession,
-  hasActiveFight,
-  markAllArenaNotificationsRead,
-  markArenaNotificationRead,
-  mintRainbowCard,
-  offerCardInTrade,
-  removeCardFromTrade,
-  offerCoinInTrade,
-  removeCoinFromTrade,
-  runFight,
-  resetArenaSkills,
-  searchArenaTradeCards,
-  searchArenaUsers,
-  selectCollectionCard,
-  toggleCollectionCardFavorite,
-  sendTradeRequest,
-  skipPlaybackFightToEnd,
-  startPlaybackFight,
-  unconfirmTrade,
-  unequipEquipmentSlot,
-  fodderEquipmentPiece,
-  getEquipmentLoadouts,
-  saveEquipmentLoadout,
-  restoreEquipmentLoadout,
-  deleteEquipmentLoadout,
-  useConsumable,
-} = require("../../lib/arena-service");
+const { ArenaHttpError } = require("../../lib/arena/utils");
+const { acceptTradeRequest, cancelTradeRequest, cancelTradeSession, confirmTrade,
+  createArenaTradeListing, cancelArenaTradeListing, denyTradeRequest,
+  getArenaTradeListings, getIncomingTradeRequests, getMyArenaTradeListings,
+  getTradeSession, offerCardInTrade, removeCardFromTrade, offerCoinInTrade,
+  removeCoinFromTrade, searchArenaTradeCards, searchArenaUsers,
+  sendTradeRequest, unconfirmTrade } = require("../../lib/arena/trade");
+const { advancePlaybackFightTurn, getPlaybackFightState, hasActiveFight,
+  skipPlaybackFightToEnd, startPlaybackFight } = require("../../lib/arena/playback");
+const { activateArenaSkill, getArenaSkillTreePayload, resetArenaSkills } = require("../../lib/arena/skill-tree");
+const { buyArenaMarketListing, cancelArenaMarketListing, createArenaMarketListing,
+  getArenaMarketListings, getArenaMarketPriceGuide, getMyArenaMarketListings } = require("../../lib/arena/market");
+const { buyArenaShopCard, getArenaCardShopPayload } = require("../../lib/arena/card-shop");
+const { buyShopItem, craftShopRecipe, equipShopItem, getArenaShopPayload,
+  useConsumable } = require("../../lib/arena/shop");
+const { unequipEquipmentSlot, fodderEquipmentPiece,
+  getEquipmentLoadouts, saveEquipmentLoadout, restoreEquipmentLoadout,
+  deleteEquipmentLoadout } = require("../../lib/arena/equipment");
+const { createArenaUpdate, deleteArenaUpdate, getArenaUpdates } = require("../../lib/arena/updates");
+const { drawDailyCard, drawArenaPack, getArenaCollectionPayload,
+  selectCollectionCard, toggleCollectionCardFavorite } = require("../../lib/arena/collection");
+const { getArenaArchivePayload } = require("../../lib/arena/archive");
+const { getMintDuplicates, mintRainbowCard } = require("../../lib/arena/mint");
+const { getArenaNotifications, getArenaNotificationUnreadCount,
+  markAllArenaNotificationsRead, markArenaNotificationRead } = require("../../lib/arena/notifications");
+const { getArenaProfilePayload } = require("../../lib/arena/profile");
+const { getHallOfFame } = require("../../lib/arena/hall-of-fame");
+const { getLeaderboard } = require("../../lib/arena/leaderboard");
+const { runFight } = require("../../lib/arena/combat");
 const { isOwner } = require("../../lib/authz");
 const { verifyTurnstileToken } = require("../../lib/turnstile");
 const { checkArenaFightRateLimit } = require("../../lib/arena-fight-guard");
