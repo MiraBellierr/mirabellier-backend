@@ -1,5 +1,5 @@
 const express = require("express");
-const { ArenaHttpError } = require("../lib/arena-service");
+const { ArenaHttpError } = require("../lib/arena/utils");
 const {
   getEligibleCards,
   joinMatchmaking,

@@ -6,7 +6,7 @@ const {
   getArenaCharacterCatalog,
   rarityFromCharacterRank,
 } = require("../lib/arena-characters");
-const { rerollArenaCardShopOffers } = require("../lib/arena-service");
+const { rerollArenaCardShopOffers } = require("../lib/arena/card-shop");
 
 const CARD_IV_MIN = 0;
 const CARD_IV_MAX = 31;

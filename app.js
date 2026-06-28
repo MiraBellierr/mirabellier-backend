@@ -289,7 +289,7 @@ app.use("/images", createStaticMiddleware(uploads.IMAGES_DIR));
 
 const WebSocketEvents = require("./lib/websocket-events");
 const { initWebSocketServer } = require("./lib/websocket-server");
-const arenaService = require("./lib/arena-service");
+const { startPlaybackFight, advancePlaybackFightTurn, skipPlaybackFightToEnd } = require("./lib/arena/playback");
 const { getCurrentlyWatchingAnimeFeed } = require("./lib/mal-anime");
 
 // WS auth token endpoint — returns a short-lived token for WebSocket connection
@@ -313,7 +313,7 @@ initWebSocketServer(httpServer, {
   handleMessage(userId, msg, reply) {
     switch (msg.type) {
       case WebSocketEvents.C2S.ARENA_FIGHT_START: {
-        arenaService.startPlaybackFight(db, userId).then(
+        startPlaybackFight(db, userId).then(
           (state) => reply({ type: WebSocketEvents.S2C.ARENA_FIGHT_TURN, data: state }),
           (err) => reply({
             type: WebSocketEvents.S2C.ARENA_FIGHT_ERROR,
@@ -324,7 +324,7 @@ initWebSocketServer(httpServer, {
       }
       case WebSocketEvents.C2S.ARENA_FIGHT_ADVANCE: {
         try {
-          const state = arenaService.advancePlaybackFightTurn(db, userId);
+          const state = advancePlaybackFightTurn(db, userId);
           if (state.isFinished) {
             reply({ type: WebSocketEvents.S2C.ARENA_FIGHT_FINISHED, data: state });
           } else {
@@ -340,7 +340,7 @@ initWebSocketServer(httpServer, {
       }
       case WebSocketEvents.C2S.ARENA_FIGHT_SKIP: {
         try {
-          const state = arenaService.skipPlaybackFightToEnd(db, userId);
+            const state = skipPlaybackFightToEnd(db, userId);
           reply({ type: WebSocketEvents.S2C.ARENA_FIGHT_FINISHED, data: state });
         } catch (err) {
           reply({
