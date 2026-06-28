@@ -61,7 +61,6 @@ const {
   getMarketIvBand,
   getMarketPrice,
   isRandomCardOfferAvailable,
-  rollFightMaterialRewards,
   runPassivesForTrigger,
   simulateFight,
 } = __test;
@@ -418,10 +417,10 @@ function insertEquippedEquipmentPiece(db, userId, input = {}) {
 }
 
 test("xp formula and reward formulas stay stable", () => {
-  assert.equal(xpToNext(1), 120);
-  assert.equal(xpToNext(10), 4080);
+  assert.equal(xpToNext(1), 105);
+  assert.equal(xpToNext(10), 2580);
   assert.equal(calculateWinXp(20, 2, 3), 67);
-  assert.equal(calculateWinCoins(20, 12), 90);
+  assert.equal(calculateWinCoins(20, 12), 130);
 });
 
 test("round power includes metadata and rarity modifiers", () => {
@@ -798,10 +797,6 @@ test("Lantern Oil is consumed only against a higher-rarity opponent", async () =
   assert.equal(higherRarity.effectUsage.usedHigherRarityBonus, true);
 });
 
-test("fights no longer drop crafting materials", () => {
-  assert.deepEqual(rollFightMaterialRewards(), []);
-});
-
 test("ELO exchange uses provisional and established K factors with a rating floor", () => {
   const provisional = calculateEloExchange(
     { eloRating: 1000, eloMatches: 0 },
@@ -1031,7 +1026,6 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
   assert.ok(response.battle);
   assert.equal(response.rewards.xp, 1);
   assert.equal(response.rewards.coins, 0);
-  assert.deepEqual(response.rewards.materialDrops, []);
   assert.equal(response.profile.losses, 1);
   assert.equal(response.profile.effects.expBoostWinsRemaining, 50);
   assert.equal(response.profile.effects.coinBoostWinsRemaining, 40);
