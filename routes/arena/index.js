@@ -19,7 +19,7 @@ const { unequipEquipmentSlot, fodderEquipmentPiece,
   deleteEquipmentLoadout } = require("../../lib/arena/equipment");
 const { createArenaUpdate, deleteArenaUpdate, getArenaUpdates } = require("../../lib/arena/updates");
 const { drawDailyCard, drawArenaPack, getArenaCollectionPayload,
-  selectCollectionCard, toggleCollectionCardFavorite } = require("../../lib/arena/collection");
+  sacrificeCollectionCards, selectCollectionCard, toggleCollectionCardFavorite } = require("../../lib/arena/collection");
 const { getArenaArchivePayload } = require("../../lib/arena/archive");
 const { getMintDuplicates, mintRainbowCard } = require("../../lib/arena/mint");
 const { getArenaNotifications, getArenaNotificationUnreadCount,
@@ -216,6 +216,20 @@ module.exports = function registerArenaRoutes(app, deps) {
       }
 
       const payload = toggleCollectionCardFavorite(db, user.id, cardInstanceId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/collection/sacrifice", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = sacrificeCollectionCards(db, user.id, {
+        cardInstanceIds: req.body?.cardInstanceIds,
+        confirm: req.body?.confirm === true,
+      });
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
