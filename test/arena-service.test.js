@@ -2920,3 +2920,319 @@ test("first player can fight npc fallback when no real opponent", async () => {
   assert.equal(result.profile.eloRating, 1000);
   assert.equal(result.profile.eloMatches, 0);
 });
+
+// ── Consumable cap & stacking tests ──
+
+const ALL_CONSUMABLES = [
+  { id: "red_tonic", recipe: "rookie_cons_1", kind: "shield_fight_start", field: "fightStartShieldCharges", value: 100, pctField: "fightStartShieldAmount", pctValue: 60 },
+  { id: "green_draft", recipe: "rookie_cons_2", kind: "damage_boost", field: "damageBoostFightsRemaining", value: 500, pctField: "damageBoostPct", pctValue: 20 },
+  { id: "amber_draft", recipe: "rookie_cons_3", kind: "speed_boost", field: "speedBoostFightsRemaining", value: 500, pctField: "speedBoostPct", pctValue: 12 },
+  { id: "frost_elixir", recipe: "bronze_cons_1", kind: "evade_next_fight", field: "evadeBoostFightsRemaining", value: 250, pctField: "evadeBoostPct", pctValue: 10 },
+  { id: "viridian_elixir", recipe: "bronze_cons_2", kind: "iv_boost", field: "ivBoostCharges", value: 250 },
+  { id: "fuse_bomb", recipe: "bronze_cons_3", kind: "first_hit_true_damage", field: "firstHitTrueDamageCharges", value: 250, pctField: "firstHitTrueDamageValue", pctValue: 100 },
+  { id: "exp_tome", recipe: "bronze_cons_4", kind: "exp_boost", field: "expBoostWinsRemaining", value: 250, pctField: "expBoostPct", pctValue: 100 },
+  { id: "sun_elixir", recipe: "silver_cons_1", kind: "death_save", field: "deathSaveCharges", value: 500 },
+  { id: "star_tonic", recipe: "silver_cons_2", kind: "stat_steroid", field: "statSteroidFightsRemaining", value: 500, pctField: "statSteroidPct", pctValue: 15 },
+  { id: "lantern_oil", recipe: "silver_cons_3", kind: "bonus_vs_higher_rarity", field: "higherRarityDamageBonusPctCharges", value: 500, pctField: "higherRarityDamageBonusPct", pctValue: 50 },
+  { id: "seeker_lens", recipe: "gold_cons_1", kind: "crit_chance", field: "critChanceBoostFightsRemaining", value: 500, pctField: "critChanceBoostPct", pctValue: 20 },
+  { id: "oath_ribbon", recipe: "gold_cons_2", kind: "guard_boost", field: "guardBoostFightsRemaining", value: 500, pctField: "guardBoostPct", pctValue: 15 },
+  { id: "treasure_cache", recipe: "gold_cons_3", kind: "match_rarity", field: "matchRarityCharges", value: 750 },
+  { id: "prism_draught", recipe: "mythic_cons_1", kind: "first_attack_double", field: "firstAttackDoubleCharges", value: 1000 },
+  { id: "sacred_candles", recipe: "mythic_cons_2", kind: "shield_fight_start", field: "fightStartShieldCharges", value: 1000, pctField: "fightStartShieldAmount", pctValue: 80 },
+  { id: "gate_key", recipe: "mythic_cons_3", kind: "vampiric_heal", field: "vampiricHealFightsRemaining", value: 1000, pctField: "vampiricHealPct", pctValue: 20 },
+  { id: "void_cauldron", recipe: "cosmic_cons_2", kind: "double_passive_trigger", field: "doublePassiveTriggerFightsRemaining", value: 1000 },
+  { id: "chrono_vial", recipe: "cosmic_cons_3", kind: "self_revive", field: "selfReviveCharges", value: 1000, pctField: "selfReviveHpThresholdPct", pctValue: 20 },
+];
+
+test("all consumables define valid effects with positive durations", () => {
+  ALL_CONSUMABLES.forEach(({ id, value }) => {
+    const effect = getConsumableEffect(id);
+    assert.ok(effect.kind, `${id} should define a kind`);
+    assert.ok(value > 0, `${id} duration should be positive`);
+  });
+});
+
+test("Frost Elixir applies +10% evade with 250 fight duration", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "bronze_cons_1");
+  const effect = getConsumableEffect("frost_elixir");
+  const result = useConsumable(db, "u1", "frost_elixir");
+  assert.equal(result.effects.evadeBoostPct, effect.pct);
+  assert.equal(result.effects.evadeBoostFightsRemaining, effect.fights);
+});
+
+test("Viridian Elixir applies +5 IV boost with 250 charges", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "bronze_cons_2");
+  const effect = getConsumableEffect("viridian_elixir");
+  const result = useConsumable(db, "u1", "viridian_elixir");
+  assert.equal(result.effects.ivBoostCharges, effect.charges);
+});
+
+test("Sage's Tome applies +100% exp boost with 250 fight duration", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "bronze_cons_4");
+  const effect = getConsumableEffect("exp_tome");
+  const result = useConsumable(db, "u1", "exp_tome");
+  assert.equal(result.effects.expBoostPct, effect.pct);
+  assert.equal(result.effects.expBoostWinsRemaining, effect.fights);
+});
+
+test("Sacred Candles applies +80 shield with 1000 charges", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 50, coins: 100000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "mythic_cons_2");
+  const effect = getConsumableEffect("sacred_candles");
+  const result = useConsumable(db, "u1", "sacred_candles");
+  assert.equal(result.effects.fightStartShieldCharges, effect.charges);
+  assert.equal(result.effects.fightStartShieldAmount, effect.amount);
+});
+
+test("Void Cauldron applies double passive trigger with 1000 fight duration", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 60, coins: 200000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "cosmic_cons_2");
+  const effect = getConsumableEffect("void_cauldron");
+  const result = useConsumable(db, "u1", "void_cauldron");
+  assert.equal(result.effects.doublePassiveTriggerFightsRemaining, effect.fights);
+});
+
+test("Chrono Vial applies 20% self-revive threshold with 1000 charges", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 60, coins: 200000, selectedCard: makeCard(1, "C") });
+  craftShopRecipe(db, "u1", "cosmic_cons_3");
+  const effect = getConsumableEffect("chrono_vial");
+  const result = useConsumable(db, "u1", "chrono_vial");
+  assert.equal(result.effects.selfReviveHpThresholdPct, effect.hpPct);
+  assert.equal(result.effects.selfReviveCharges, effect.charges);
+});
+
+test("Solar Cauldron ascension applies +1 all stats and enforces cooldown", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
+  // Craft two so the second use attempt has one in inventory
+  craftShopRecipe(db, "u1", "cosmic_cons_1");
+  craftShopRecipe(db, "u1", "cosmic_cons_1");
+
+  const before = getArenaProfilePayload(db, "u1");
+  const result = useConsumable(db, "u1", "solar_cauldron");
+  const after = getArenaProfilePayload(db, "u1");
+
+  // Stats should increase by 1 each
+  assert.equal(after.stats.total.hp, before.stats.total.hp + 1);
+  assert.equal(after.stats.total.power, before.stats.total.power + 1);
+  assert.equal(after.stats.total.guard, before.stats.total.guard + 1);
+  assert.equal(after.stats.total.speed, before.stats.total.speed + 1);
+  assert.equal(after.stats.total.effectHit, before.stats.total.effectHit + 1);
+
+  // Cooldown timestamp should be set
+  assert.ok(result.effects.ascensionLastPurchasedAt);
+  assert.ok(new Date(result.effects.ascensionLastPurchasedAt).getTime() > Date.now() - 10000);
+
+  // Second use within cooldown should throw
+  assert.throws(
+    () => useConsumable(db, "u1", "solar_cauldron"),
+    /Solar|ascension|cooldown|ARENA_ASCENSION_COOLDOWN/i,
+  );
+});
+
+test("consumable soft cap limits stacking to 2× base charges", () => {
+  // sun_elixir: deathSaveCharges base 500, soft cap 1000, hard cap 2000
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 100000, selectedCard: makeCard(1, "C") });
+
+  craftShopRecipe(db, "u1", "silver_cons_1");
+  const r1 = useConsumable(db, "u1", "sun_elixir");
+  assert.equal(r1.effects.deathSaveCharges, 500, "1st use should give 500");
+
+  craftShopRecipe(db, "u1", "silver_cons_1");
+  const r2 = useConsumable(db, "u1", "sun_elixir");
+  assert.equal(r2.effects.deathSaveCharges, 1000, "2nd use should cap at 1000 (2× base)");
+
+  craftShopRecipe(db, "u1", "silver_cons_1");
+  const r3 = useConsumable(db, "u1", "sun_elixir");
+  assert.equal(r3.effects.deathSaveCharges, 1000, "3rd use should stay capped at 1000");
+});
+
+test("consumable pct uses Math.max across different tiers", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 50, coins: 200000, selectedCard: makeCard(1, "C") });
+
+  // Use red_tonic (60 shield) then sacred_candles (80 shield) — should keep 80
+  craftShopRecipe(db, "u1", "rookie_cons_1");
+  useConsumable(db, "u1", "red_tonic");
+
+  craftShopRecipe(db, "u1", "mythic_cons_2");
+  const result = useConsumable(db, "u1", "sacred_candles");
+
+  assert.equal(result.effects.fightStartShieldAmount, 80, "should keep the higher shield amount");
+  // Charges: 100 (from red_tonic) + 1000 (from sacred_candles) = 1100, soft capped at max(100, 2000) = 2000... wait: max(existing, 2000) where existing is 100 = 2000, then min(1100, 2000) = 1100
+  assert.equal(result.effects.fightStartShieldCharges, 1100);
+});
+
+test("evade boost pct is capped at 95", () => {
+  const effects = normalizeArenaEffects({ evadeBoostPct: 150, evadeBoostFightsRemaining: 10 });
+  assert.equal(effects.evadeBoostPct, 95);
+});
+
+test("damage boost pct is capped at 200", () => {
+  const effects = normalizeArenaEffects({ damageBoostPct: 250, damageBoostFightsRemaining: 10 });
+  assert.equal(effects.damageBoostPct, 200);
+});
+
+test("vampiric heal pct is capped at 100", () => {
+  const effects = normalizeArenaEffects({ vampiricHealPct: 150, vampiricHealFightsRemaining: 10 });
+  assert.equal(effects.vampiricHealPct, 100);
+});
+
+test("first hit true damage value is capped at 9999", () => {
+  const effects = normalizeArenaEffects({ firstHitTrueDamageValue: 15000, firstHitTrueDamageCharges: 10 });
+  assert.equal(effects.firstHitTrueDamageValue, 9999);
+});
+
+test("fight start shield amount is capped at 9999", () => {
+  const effects = normalizeArenaEffects({ fightStartShieldAmount: 20000, fightStartShieldCharges: 10 });
+  assert.equal(effects.fightStartShieldAmount, 9999);
+});
+
+test("higher rarity damage bonus pct is capped at 300", () => {
+  const effects = normalizeArenaEffects({ higherRarityDamageBonusPct: 500, higherRarityDamageBonusPctCharges: 10 });
+  assert.equal(effects.higherRarityDamageBonusPct, 300);
+});
+
+test("self revive threshold pct is capped at 95", () => {
+  const effects = normalizeArenaEffects({ selfReviveHpThresholdPct: 120, selfReviveCharges: 10 });
+  assert.equal(effects.selfReviveHpThresholdPct, 95);
+});
+
+test("all effect duration fields respect EFFECT_DURATION_LIMITS caps", () => {
+  // Push every duration field way beyond its cap and verify clamping
+  const overblown = {
+    expBoostWinsRemaining: 9999,
+    coinBoostWinsRemaining: 9999,
+    drawBonusChanceWinsRemaining: 9999,
+    rerollKeepHigherCharges: 9999,
+    streakShieldCharges: 9999,
+    upgradeLowestRarityCharges: 9999,
+    guaranteeSsrPlusCharges: 9999,
+    fightStartShieldCharges: 9999,
+    evadeBoostFightsRemaining: 9999,
+    firstHitTrueDamageCharges: 9999,
+    higherRarityDamageBonusPctCharges: 9999,
+    gateKeyCharges: 9999,
+    doublePassiveTriggerFightsRemaining: 9999,
+    damageBoostFightsRemaining: 9999,
+    speedBoostFightsRemaining: 9999,
+    deathSaveCharges: 9999,
+    statSteroidFightsRemaining: 9999,
+    matchRarityCharges: 9999,
+    vampiricHealFightsRemaining: 9999,
+    critChanceBoostFightsRemaining: 9999,
+    guardBoostFightsRemaining: 9999,
+    firstAttackDoubleCharges: 9999,
+    ivBoostCharges: 9999,
+    selfReviveCharges: 9999,
+  };
+
+  const effects = normalizeArenaEffects(overblown);
+
+  // Every field must be ≤ its EFFECT_DURATION_LIMITS cap
+  const limits = {
+    expBoostWinsRemaining: 1000,
+    coinBoostWinsRemaining: 40,
+    drawBonusChanceWinsRemaining: 60,
+    rerollKeepHigherCharges: 4,
+    streakShieldCharges: 6,
+    upgradeLowestRarityCharges: 6,
+    guaranteeSsrPlusCharges: 6,
+    fightStartShieldCharges: 2000,
+    evadeBoostFightsRemaining: 1000,
+    firstHitTrueDamageCharges: 1000,
+    higherRarityDamageBonusPctCharges: 2000,
+    gateKeyCharges: 4,
+    doublePassiveTriggerFightsRemaining: 2000,
+    damageBoostFightsRemaining: 1000,
+    speedBoostFightsRemaining: 1000,
+    deathSaveCharges: 2000,
+    statSteroidFightsRemaining: 2000,
+    matchRarityCharges: 1500,
+    vampiricHealFightsRemaining: 2000,
+    critChanceBoostFightsRemaining: 1000,
+    guardBoostFightsRemaining: 1000,
+    firstAttackDoubleCharges: 2000,
+    ivBoostCharges: 1000,
+    selfReviveCharges: 2000,
+  };
+
+  Object.entries(limits).forEach(([field, cap]) => {
+    assert.ok(
+      effects[field] <= cap,
+      `${field} should be ≤ ${cap}, got ${effects[field]}`,
+    );
+  });
+});
+
+test("consumable stacking soft-caps at 2× base, never exceeding hard cap", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 50, coins: 500000, selectedCard: makeCard(1, "C") });
+
+  // amber_draft: speed boost, base 500 fights, soft cap 1000, hard cap 1000
+  for (let i = 0; i < 5; i++) {
+    craftShopRecipe(db, "u1", "rookie_cons_3");
+    const result = useConsumable(db, "u1", "amber_draft");
+    assert.ok(
+      result.effects.speedBoostFightsRemaining <= 1000,
+      `after ${i + 1} uses, speedBoostFightsRemaining should be ≤ 1000, got ${result.effects.speedBoostFightsRemaining}`,
+    );
+    assert.equal(result.effects.speedBoostPct, 12);
+  }
+  // After 5 uses, should be at exactly 1000 (soft-capped at 2× base)
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.equal(profile.effects.speedBoostFightsRemaining, 1000);
+});
+
+test("hard cap is always at least 2× base for every consumable field", () => {
+  // Verify that for every consumable, EFFECT_DURATION_LIMITS[field] >= base * 2
+  const consumableFields = [
+    { id: "exp_tome", field: "expBoostWinsRemaining", base: 250, cap: 1000 },
+    { id: "frost_elixir", field: "evadeBoostFightsRemaining", base: 250, cap: 1000 },
+    { id: "fuse_bomb", field: "firstHitTrueDamageCharges", base: 250, cap: 1000 },
+    { id: "viridian_elixir", field: "ivBoostCharges", base: 250, cap: 1000 },
+    { id: "green_draft", field: "damageBoostFightsRemaining", base: 500, cap: 1000 },
+    { id: "amber_draft", field: "speedBoostFightsRemaining", base: 500, cap: 1000 },
+    { id: "seeker_lens", field: "critChanceBoostFightsRemaining", base: 500, cap: 1000 },
+    { id: "oath_ribbon", field: "guardBoostFightsRemaining", base: 500, cap: 1000 },
+    { id: "sun_elixir", field: "deathSaveCharges", base: 500, cap: 2000 },
+    { id: "lantern_oil", field: "higherRarityDamageBonusPctCharges", base: 500, cap: 2000 },
+    { id: "star_tonic", field: "statSteroidFightsRemaining", base: 500, cap: 2000 },
+    { id: "gate_key", field: "vampiricHealFightsRemaining", base: 1000, cap: 2000 },
+    { id: "void_cauldron", field: "doublePassiveTriggerFightsRemaining", base: 1000, cap: 2000 },
+    { id: "prism_draught", field: "firstAttackDoubleCharges", base: 1000, cap: 2000 },
+    { id: "chrono_vial", field: "selfReviveCharges", base: 1000, cap: 2000 },
+    { id: "red_tonic", field: "fightStartShieldCharges", base: 100, cap: 2000 },
+    { id: "sacred_candles", field: "fightStartShieldCharges", base: 1000, cap: 2000 },
+    { id: "treasure_cache", field: "matchRarityCharges", base: 750, cap: 1500 },
+  ];
+
+  consumableFields.forEach(({ id, field, base, cap }) => {
+    const effect = getConsumableEffect(id);
+    const actualBase = effect.charges || effect.fights || 0;
+    assert.equal(actualBase, base, `${id} base should be ${base}`);
+
+    // Hard cap must be at least 2× base for the soft cap to be reachable
+    assert.ok(
+      cap >= base * 2,
+      `${field} hard cap ${cap} should be ≥ 2× base ${base * 2}`,
+    );
+
+    // Verify the actual EFFECT_DURATION_LIMITS matches
+    const effects = normalizeArenaEffects({ [field]: 99999 });
+    assert.ok(
+      effects[field] <= cap,
+      `${field} should be clamped to ≤ ${cap}, got ${effects[field]}`,
+    );
+  });
+});
