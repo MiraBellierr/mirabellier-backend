@@ -12,6 +12,7 @@ const {
   buyArenaShopCard,
   buyShopItem,
   cancelArenaMarketListing,
+  calculateCardSacrificePayout,
   craftShopRecipe,
   calculateRoundPower,
   calculateWinCoins,
@@ -22,6 +23,7 @@ const {
   deleteArenaUpdate,
   drawDailyCard,
   equipShopItem,
+  ensureArenaProfile,
   getArenaCardShopPayload,
   getArenaArchivePayload,
   getArenaCollectionPayload,
@@ -30,8 +32,11 @@ const {
   getArenaSkillTreePayload,
   getArenaTradeListings,
   getArenaUpdates,
+  getCardAffinity,
   getLeaderboard,
   getPlaybackFightState,
+  finalizePlaybackFightRewards,
+  loadCombatSnapshot,
   acceptTradeRequest,
   confirmTrade,
   normalizeArenaEffects,
@@ -41,8 +46,10 @@ const {
   resetArenaSkills,
   rerollArenaCardShopOffers,
   runFight,
+  sacrificeCollectionCards,
   selectCollectionCard,
   sendTradeRequest,
+  skipPlaybackFightToEnd,
   startPlaybackFight,
   useConsumable,
   xpToNext,
@@ -419,7 +426,7 @@ function insertEquippedEquipmentPiece(db, userId, input = {}) {
 test("xp formula and reward formulas stay stable", () => {
   assert.equal(xpToNext(1), 105);
   assert.equal(xpToNext(10), 2580);
-  assert.equal(calculateWinXp(20, 2, 3), 67);
+  assert.equal(calculateWinXp(20, 2, 3), 70);
   assert.equal(calculateWinCoins(20, 12), 130);
 });
 
@@ -439,7 +446,7 @@ test("round power includes metadata and rarity modifiers", () => {
   });
 
   assert.equal(typeof result.value, "number");
-  assert.equal(result.breakdown.rarityPower, 12);
+  assert.equal(result.breakdown.rarityPower, 12.24);
   assert.ok(result.breakdown.malScoreBonus >= 0);
   assert.ok(result.breakdown.popularityBonus >= 0);
 });
@@ -513,6 +520,180 @@ test("profile totals expose and include selected card IV combat bonuses", () => 
     speed: 16,
     effectHit: 12,
   });
+});
+
+test("card sacrifice pays balanced coins and removes only confirmed cards", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 100 });
+  const common = { ...makeCard(1, "C"), cardInstanceId: "sac-c", iv: { power: 0, guard: 0, speed: 0, effectHit: 0, total: 0 } };
+  const rainbow = { ...makeCard(2, "UR"), cardInstanceId: "sac-ur", rainbow: true, iv: { power: 31, guard: 31, speed: 31, effectHit: 31, total: 124 } };
+  insertCollectionCardFixture(db, "u1", common);
+  insertCollectionCardFixture(db, "u1", rainbow);
+
+  assert.equal(calculateCardSacrificePayout(common), 10);
+  assert.equal(calculateCardSacrificePayout(rainbow), Math.floor(1800 * 1.4));
+
+  const preview = sacrificeCollectionCards(db, "u1", {
+    cardInstanceIds: ["sac-c", "sac-ur"],
+    confirm: false,
+  });
+  assert.equal(preview.coinsGained, 0);
+  assert.equal(preview.preview.totalCoins, 2530);
+  assert.equal(preview.collectionTotal, 2);
+
+  const result = sacrificeCollectionCards(db, "u1", {
+    cardInstanceIds: ["sac-c", "sac-ur"],
+    confirm: true,
+  });
+  assert.deepEqual(result.sacrificedCardInstanceIds, ["sac-c", "sac-ur"]);
+  assert.equal(result.coinsGained, 2530);
+  assert.equal(result.profile.coins, 2630);
+  assert.equal(result.collectionTotal, 0);
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM arena_card_collection WHERE userId = ?").get("u1").count,
+    0,
+  );
+});
+
+test("card sacrifice blocks protected, traded, duplicate, and unowned cards", () => {
+  const db = createTestDb();
+  const selected = { ...makeCard(1, "R"), cardInstanceId: "sac-selected" };
+  const favorite = { ...makeCard(2, "R"), cardInstanceId: "sac-favorite" };
+  const market = { ...makeCard(3, "R"), cardInstanceId: "sac-market" };
+  const tradeListing = { ...makeCard(4, "R"), cardInstanceId: "sac-trade-listing" };
+  const tradeSession = { ...makeCard(5, "R"), cardInstanceId: "sac-trade-session" };
+  const safe = { ...makeCard(6, "R"), cardInstanceId: "sac-safe" };
+  const otherUser = { ...makeCard(7, "R"), cardInstanceId: "sac-other-user" };
+  insertProfile(db, { userId: "u1", selectedCard: selected });
+  for (const card of [selected, favorite, market, tradeListing, tradeSession, safe]) {
+    insertCollectionCardFixture(db, "u1", card);
+  }
+  insertCollectionCardFixture(db, "u2", otherUser);
+  db.prepare(
+    "UPDATE arena_card_collection SET isFavorite = 1 WHERE userId = ? AND cardInstanceId = ?",
+  ).run("u1", favorite.cardInstanceId);
+  insertMarketListingFixture(db, {
+    id: "market-sacrifice-block",
+    sellerUserId: "u1",
+    card: market,
+    price: 50,
+    status: "active",
+  });
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_trade_listings (
+      id, userId, cardInstanceId, cardJson, cardTitle, malId, rarity, ivTotal,
+      element, wantedRarity, wantedElement, wantedCardJson, note, status, createdAt, updatedAt, cancelledAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 'active', ?, ?, NULL)`,
+  ).run(
+    "trade-sacrifice-block",
+    "u1",
+    tradeListing.cardInstanceId,
+    JSON.stringify(tradeListing),
+    tradeListing.title,
+    tradeListing.malId,
+    tradeListing.rarity,
+    tradeListing.iv.total,
+    tradeListing.element || null,
+    now,
+    now,
+  );
+  db.prepare(
+    `INSERT INTO arena_trade_sessions (
+      id, requestId, askerId, responderId, askerCardInstanceId, responderCardInstanceId,
+      askerCardInstanceIdsJson, responderCardInstanceIdsJson, askerCoins, responderCoins,
+      askerConfirmed, responderConfirmed, status, createdAt, updatedAt, completedAt
+    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 0, 0, 0, 0, 'active', ?, ?, NULL)`,
+  ).run(
+    "session-sacrifice-block",
+    "request-sacrifice-block",
+    "u1",
+    "u2",
+    tradeSession.cardInstanceId,
+    JSON.stringify([tradeSession.cardInstanceId]),
+    JSON.stringify([]),
+    now,
+    now,
+  );
+
+  assert.throws(
+    () => sacrificeCollectionCards(db, "u1", { cardInstanceIds: ["sac-safe", "sac-safe"], confirm: false }),
+    /Duplicate card IDs/,
+  );
+
+  const preview = sacrificeCollectionCards(db, "u1", {
+    cardInstanceIds: [
+      selected.cardInstanceId,
+      favorite.cardInstanceId,
+      market.cardInstanceId,
+      tradeListing.cardInstanceId,
+      tradeSession.cardInstanceId,
+      otherUser.cardInstanceId,
+      safe.cardInstanceId,
+    ],
+    confirm: false,
+  }).preview;
+
+  const reasons = new Map(preview.items.map((item) => [item.cardInstanceId, item.blockedReason]));
+  assert.equal(reasons.get(selected.cardInstanceId), "selected");
+  assert.equal(reasons.get(favorite.cardInstanceId), "favorite");
+  assert.equal(reasons.get(market.cardInstanceId), "market_listed");
+  assert.equal(reasons.get(tradeListing.cardInstanceId), "trade_listed");
+  assert.equal(reasons.get(tradeSession.cardInstanceId), "trade_session");
+  assert.equal(reasons.get(otherUser.cardInstanceId), "not_found");
+  assert.equal(reasons.get(safe.cardInstanceId), null);
+
+  assert.throws(
+    () => sacrificeCollectionCards(db, "u1", {
+      cardInstanceIds: [selected.cardInstanceId, safe.cardInstanceId],
+      confirm: true,
+    }),
+    /cannot be sacrificed/,
+  );
+  assert.ok(
+    db.prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
+      .get("u1", safe.cardInstanceId),
+  );
+});
+
+test("card affinity is exposed and contributes a capped tiny combat stat bonus", () => {
+  const db = createTestDb();
+  const card = makeCard(1, "R");
+  insertProfile(db, {
+    userId: "u1",
+    hp: 120,
+    power: 12,
+    guard: 12,
+    speed: 10,
+    effectHit: 6,
+    selectedCard: card,
+  });
+  insertCollectionCardFixture(db, "u1", card);
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_card_affinity (
+      userId, malId, fights, wins, affinityLevel, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run("u1", card.malId, 250, 200, 5, now, now);
+
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.equal(profile.selectedCard.affinity.level, 5);
+  assert.deepEqual(profile.stats.affinity, {
+    hp: 0,
+    power: 2,
+    guard: 1,
+    speed: 1,
+    effectHit: 1,
+  });
+  assert.equal(profile.stats.total.power, 20);
+  assert.equal(profile.stats.total.effectHit, 13);
+
+  const collection = getArenaCollectionPayload(db, "u1");
+  assert.equal(collection.cards[0].affinity.level, 5);
+
+  const snapshot = loadCombatSnapshot(db, ensureArenaProfile(db, "u1"));
+  assert.equal(snapshot.totalStats.power, profile.stats.total.power);
+  assert.equal(snapshot.totalStats.effectHit, profile.stats.total.effectHit);
 });
 
 test("Riversteel applies its critical bonus before attack resolution", () => {
@@ -1126,11 +1307,19 @@ test("playback fight state finalizes interrupted finished rows", async () => {
   assert.ok(resumed.rewards.xp >= 1);
   assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
   assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
+  assert.equal(getCardAffinity(db, "u1", 1).fights, 1);
 
   const repeated = getPlaybackFightState(db, "u1");
   assert.deepEqual(repeated?.rewards, resumed.rewards);
   assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
   assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
+  assert.equal(getCardAffinity(db, "u1", 1).fights, 1);
+
+  const skippedAgain = skipPlaybackFightToEnd(db, "u1");
+  assert.deepEqual(skippedAgain?.rewards, resumed.rewards);
+  const finalizedAgain = finalizePlaybackFightRewards(db, "u1");
+  assert.deepEqual(finalizedAgain?.rewards, resumed.rewards);
+  assert.equal(getCardAffinity(db, "u1", 1).fights, 1);
 });
 
 test("playback fight state recovers active rows already at the final cursor", async () => {
@@ -1160,11 +1349,13 @@ test("playback fight state recovers active rows already at the final cursor", as
   assert.ok(resumed.rewards);
   assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
   assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
+  assert.equal(getCardAffinity(db, "u1", 1).fights, 1);
 
   const repeatedAdvance = advancePlaybackFightTurn(db, "u1");
   assert.deepEqual(repeatedAdvance.rewards, resumed.rewards);
   assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
   assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
+  assert.equal(getCardAffinity(db, "u1", 1).fights, 1);
 });
 
 test("playback fight opponent snapshot includes defender stats, equipment, and effects", async () => {
@@ -2642,6 +2833,7 @@ test("arena routes remain registered through compatibility entry", async () => {
     ["POST", "/arena/skill-tree/reset"],
     ["POST", "/arena/collection/select-card"],
     ["POST", "/arena/collection/toggle-favorite"],
+    ["POST", "/arena/collection/sacrifice"],
     ["GET", "/arena/market/listings"],
     ["GET", "/arena/market/price"],
     ["GET", "/arena/market/listings/mine"],
