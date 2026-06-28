@@ -48,7 +48,8 @@ const {
   xpToNext,
 } = require("../lib/arena-service");
 const registerArenaRoutes = require("../routes/arena");
-const { SHOP_ITEMS } = require("../lib/arena-constants");
+const { initializeSchema } = require("../lib/db");
+const { CATALOG_VERSION, SHOP_ITEMS } = require("../lib/arena-constants");
 
 const {
   buildPassiveRuntime,
@@ -68,274 +69,7 @@ const {
 function createTestDb() {
   const db = new Database(":memory:");
 
-  db.prepare(
-    `CREATE TABLE users (
-      id TEXT PRIMARY KEY,
-      username TEXT UNIQUE,
-      avatar TEXT
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_profiles (
-      userId TEXT PRIMARY KEY,
-      level INTEGER NOT NULL DEFAULT 1,
-      xp INTEGER NOT NULL DEFAULT 0,
-      coins INTEGER NOT NULL DEFAULT 0,
-      wins INTEGER NOT NULL DEFAULT 0,
-      losses INTEGER NOT NULL DEFAULT 0,
-      winStreak INTEGER NOT NULL DEFAULT 0,
-      hp INTEGER NOT NULL DEFAULT 120,
-      power INTEGER NOT NULL DEFAULT 12,
-      guard INTEGER NOT NULL DEFAULT 12,
-      speed INTEGER NOT NULL DEFAULT 10,
-      effectHit INTEGER NOT NULL DEFAULT 3,
-      lifetimeCoinsEarned INTEGER NOT NULL DEFAULT 0,
-      eloRating INTEGER NOT NULL DEFAULT 1000,
-      eloMatches INTEGER NOT NULL DEFAULT 0,
-      peakElo INTEGER NOT NULL DEFAULT 1000,
-      selectedCardJson TEXT,
-      lastCardDrawDate TEXT,
-      dailyCardDrawCount INTEGER NOT NULL DEFAULT 0,
-      catalogVersion TEXT NOT NULL DEFAULT 'v2',
-      effectsJson TEXT,
-      lastFightAt TEXT,
-      dailyOpponentCount INTEGER NOT NULL DEFAULT 0,
-      lastOpponentDate TEXT,
-      tutorialComplete INTEGER NOT NULL DEFAULT 0,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_inventory (
-      id TEXT PRIMARY KEY,
-      userId TEXT NOT NULL,
-      itemId TEXT NOT NULL,
-      quantity INTEGER NOT NULL DEFAULT 0,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_equipment_pieces (
-      id TEXT PRIMARY KEY,
-      userId TEXT NOT NULL,
-      slot TEXT NOT NULL,
-      mainStatType TEXT NOT NULL,
-      mainStatValue REAL NOT NULL,
-      subStats TEXT NOT NULL,
-      equipped INTEGER NOT NULL DEFAULT 0,
-      createdAt TEXT NOT NULL
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_equipment (
-      userId TEXT NOT NULL,
-      slot TEXT NOT NULL,
-      itemId TEXT NOT NULL,
-      equippedAt TEXT NOT NULL,
-      PRIMARY KEY (userId, slot)
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_fights (
-      id TEXT PRIMARY KEY,
-      userId TEXT NOT NULL,
-      opponentUserId TEXT,
-      result TEXT NOT NULL,
-      roundsJson TEXT NOT NULL,
-      xpDelta INTEGER NOT NULL DEFAULT 0,
-      coinDelta INTEGER NOT NULL DEFAULT 0,
-      createdAt TEXT NOT NULL
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_card_collection (
-      id TEXT PRIMARY KEY,
-      userId TEXT NOT NULL,
-      cardInstanceId TEXT NOT NULL,
-      cardJson TEXT NOT NULL,
-      isFavorite INTEGER NOT NULL DEFAULT 0,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_mal_card_pool (
-      malId INTEGER PRIMARY KEY,
-      title TEXT NOT NULL,
-      url TEXT NOT NULL,
-      imageUrl TEXT NOT NULL,
-      meanScore REAL,
-      popularity INTEGER,
-      favorites INTEGER,
-      nsfw TEXT,
-      fetchedAt TEXT NOT NULL,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_daily_card_offers (
-      offerId TEXT PRIMARY KEY,
-      offerDate TEXT NOT NULL,
-      slot INTEGER NOT NULL,
-      malId INTEGER NOT NULL,
-      cardJson TEXT NOT NULL,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      UNIQUE (offerDate, slot),
-      UNIQUE (offerDate, malId)
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_daily_card_purchases (
-      id TEXT PRIMARY KEY,
-      userId TEXT NOT NULL,
-      offerId TEXT NOT NULL,
-      offerDate TEXT NOT NULL,
-      purchasedAt TEXT NOT NULL,
-      UNIQUE (userId, offerId)
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_market_listings (
-      id TEXT PRIMARY KEY,
-      sellerUserId TEXT NOT NULL,
-      buyerUserId TEXT,
-      cardInstanceId TEXT NOT NULL,
-      cardJson TEXT NOT NULL,
-      cardTitle TEXT NOT NULL,
-      malId INTEGER NOT NULL,
-      rarity TEXT NOT NULL,
-      ivTotal INTEGER NOT NULL,
-      ivBand TEXT NOT NULL,
-      price INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'active',
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      soldAt TEXT,
-      cancelledAt TEXT
-    )`,
-  ).run();
-  db.prepare(
-    `CREATE UNIQUE INDEX idx_arena_market_active_card
-     ON arena_market_listings(cardInstanceId)
-     WHERE status = 'active'`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_updates (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      body TEXT NOT NULL,
-      createdByUserId TEXT NOT NULL,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_trade_listings (
-      id TEXT PRIMARY KEY,
-      userId TEXT NOT NULL,
-      cardInstanceId TEXT NOT NULL,
-      cardJson TEXT NOT NULL,
-      cardTitle TEXT NOT NULL,
-      malId INTEGER NOT NULL,
-      rarity TEXT NOT NULL,
-      ivTotal INTEGER NOT NULL,
-      element TEXT,
-      wantedRarity TEXT,
-      wantedElement TEXT,
-      wantedCardJson TEXT,
-      note TEXT,
-      status TEXT NOT NULL DEFAULT 'active',
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      cancelledAt TEXT
-    )`,
-  ).run();
-  db.prepare(
-    `CREATE TABLE arena_trade_requests (
-      id TEXT PRIMARY KEY,
-      askerId TEXT NOT NULL,
-      responderId TEXT NOT NULL,
-      listingId TEXT,
-      askerCardInstanceId TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      respondedAt TEXT,
-      cancelledAt TEXT
-    )`,
-  ).run();
-  db.prepare(
-    `CREATE TABLE arena_trade_sessions (
-      id TEXT PRIMARY KEY,
-      requestId TEXT NOT NULL,
-      askerId TEXT NOT NULL,
-      responderId TEXT NOT NULL,
-      askerCardInstanceId TEXT,
-      responderCardInstanceId TEXT,
-      askerCardInstanceIdsJson TEXT,
-      responderCardInstanceIdsJson TEXT,
-      askerCoins INTEGER NOT NULL DEFAULT 0,
-      responderCoins INTEGER NOT NULL DEFAULT 0,
-      askerConfirmed INTEGER NOT NULL DEFAULT 0,
-      responderConfirmed INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'active',
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      completedAt TEXT
-    )`,
-  ).run();
-  db.prepare(
-    `CREATE TABLE arena_notifications (
-      id TEXT PRIMARY KEY,
-      userId TEXT NOT NULL,
-      type TEXT NOT NULL,
-      title TEXT NOT NULL,
-      body TEXT,
-      link TEXT,
-      metadata TEXT,
-      isRead INTEGER NOT NULL DEFAULT 0,
-      createdAt TEXT NOT NULL
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_skill_allocations (
-      userId TEXT NOT NULL,
-      nodeId TEXT NOT NULL,
-      activatedAt TEXT NOT NULL,
-      PRIMARY KEY (userId, nodeId)
-    )`,
-  ).run();
-
-  db.prepare(
-    `CREATE TABLE arena_active_fights (
-      userId TEXT PRIMARY KEY,
-      fightId TEXT NOT NULL,
-      cursor INTEGER NOT NULL DEFAULT 0,
-      state TEXT NOT NULL DEFAULT 'active',
-      simulationJson TEXT NOT NULL,
-      opponentJson TEXT NOT NULL,
-      playerEffectsJson TEXT NOT NULL,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    )`,
-  ).run();
+  initializeSchema(db);
 
   const now = new Date().toISOString();
   db.prepare("INSERT INTO users (id, username, avatar) VALUES (?, ?, ?)").run(
@@ -441,7 +175,7 @@ function insertProfile(db, input) {
     input.selectedCard ? JSON.stringify(input.selectedCard) : null,
     input.lastCardDrawDate ?? null,
     input.dailyCardDrawCount ?? 0,
-    input.catalogVersion ?? "v2",
+    input.catalogVersion ?? CATALOG_VERSION,
     JSON.stringify(
       input.effects ?? {
         expBoostPct: 0,
@@ -653,6 +387,34 @@ function makeEffects(overrides = {}) {
     doublePassiveTriggerFightsRemaining: 0,
     ...overrides,
   };
+}
+
+function insertEquippedEquipmentPiece(db, userId, input = {}) {
+  const now = new Date().toISOString();
+  const piece = {
+    id: input.id ?? `${userId}-${input.slot ?? "weapon"}-piece`,
+    slot: input.slot ?? "weapon",
+    mainStatType: input.mainStatType ?? "power",
+    mainStatValue: input.mainStatValue ?? 10,
+    subStats: input.subStats ?? [],
+    createdAt: input.createdAt ?? now,
+  };
+
+  db.prepare(
+    `INSERT INTO arena_equipment_pieces (
+      id, userId, slot, mainStatType, mainStatValue, subStats, equipped, createdAt
+    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+  ).run(
+    piece.id,
+    userId,
+    piece.slot,
+    piece.mainStatType,
+    piece.mainStatValue,
+    JSON.stringify(piece.subStats),
+    piece.createdAt,
+  );
+
+  return piece;
 }
 
 test("xp formula and reward formulas stay stable", () => {
@@ -1338,6 +1100,240 @@ test("playback fight state keeps finalized exp and coin rewards", async () => {
   assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
 });
 
+test("playback fight state finalizes interrupted finished rows", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 5,
+    selectedCard: makeCard(1, "R"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 5,
+    selectedCard: makeCard(2, "R"),
+  });
+
+  const started = await startPlaybackFight(db, "u1");
+  const row = db
+    .prepare("SELECT simulationJson FROM arena_active_fights WHERE userId = ?")
+    .get("u1");
+  const simulation = JSON.parse(row.simulationJson);
+  delete simulation.rewards;
+  db.prepare(
+    `UPDATE arena_active_fights
+     SET cursor = ?, state = 'finished', simulationJson = ?
+     WHERE userId = ?`,
+  ).run(started.totalTurns, JSON.stringify(simulation), "u1");
+
+  const resumed = getPlaybackFightState(db, "u1");
+
+  assert.equal(resumed?.isFinished, true);
+  assert.ok(resumed?.rewards);
+  assert.ok(resumed.rewards.xp >= 1);
+  assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
+  assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
+
+  const repeated = getPlaybackFightState(db, "u1");
+  assert.deepEqual(repeated?.rewards, resumed.rewards);
+  assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
+  assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
+});
+
+test("playback fight state recovers active rows already at the final cursor", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 5,
+    selectedCard: makeCard(1, "R"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 5,
+    selectedCard: makeCard(2, "R"),
+  });
+
+  const started = await startPlaybackFight(db, "u1");
+  db.prepare(
+    `UPDATE arena_active_fights
+     SET cursor = ?, state = 'active'
+     WHERE userId = ?`,
+  ).run(started.totalTurns, "u1");
+
+  const resumed = getPlaybackFightState(db, "u1");
+
+  assert.equal(resumed?.isFinished, true);
+  assert.equal(resumed.cursor, started.totalTurns);
+  assert.ok(resumed.rewards);
+  assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
+  assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
+
+  const repeatedAdvance = advancePlaybackFightTurn(db, "u1");
+  assert.deepEqual(repeatedAdvance.rewards, resumed.rewards);
+  assert.equal(getArenaProfilePayload(db, "u1").eloMatches, 1);
+  assert.equal(getArenaProfilePayload(db, "u2").eloMatches, 1);
+});
+
+test("playback fight opponent snapshot includes defender stats, equipment, and effects", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 5,
+    selectedCard: makeCard(1, "R"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 5,
+    hp: 150,
+    power: 40,
+    guard: 20,
+    speed: 15,
+    effectHit: 9,
+    effects: makeEffects({
+      fightStartShieldCharges: 3,
+      fightStartShieldAmount: 40,
+      damageBoostPct: 20,
+      damageBoostFightsRemaining: 2,
+    }),
+    selectedCard: makeCard(2, "SR"),
+  });
+  const piece = insertEquippedEquipmentPiece(db, "u2", {
+    id: "u2-live-weapon",
+    mainStatType: "power",
+    mainStatValue: 17,
+    subStats: [
+      { type: "speed", value: 5 },
+      { type: "defendPct", value: 9 },
+    ],
+  });
+
+  const fight = await startPlaybackFight(db, "u1");
+
+  assert.equal(fight.opponent.userId, "u2");
+  assert.equal(fight.opponent.stats.power, 63);
+  assert.equal(fight.opponent.statBreakdown.base.power, 40);
+  assert.equal(fight.opponent.statBreakdown.equipment.power, 17);
+  assert.equal(fight.opponent.statBreakdown.equipment.speed, 5);
+  assert.equal(fight.opponent.statBreakdown.card.power, 6);
+  assert.deepEqual(fight.opponent.statBreakdown.total, fight.opponent.stats);
+  assert.equal(fight.opponent.equipment.weapon?.id, piece.id);
+  assert.equal(fight.opponent.equipmentPct.defendPct, 9);
+  assert.equal(fight.opponent.effects.fightStartShieldCharges, 3);
+  assert.equal(fight.opponent.effects.damageBoostPct, 20);
+  assert.ok(Array.isArray(fight.opponent.activePassives));
+});
+
+test("direct fight response exposes the real-time defender snapshot", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 5,
+    selectedCard: makeCard(1, "R"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 5,
+    power: 32,
+    effects: makeEffects({
+      speedBoostPct: 12,
+      speedBoostFightsRemaining: 1,
+    }),
+    selectedCard: makeCard(2, "R"),
+  });
+  insertEquippedEquipmentPiece(db, "u2", {
+    id: "u2-direct-armor",
+    slot: "armor",
+    mainStatType: "guard",
+    mainStatValue: 11,
+    subStats: [{ type: "hpPct", value: 6 }],
+  });
+
+  const result = await runFight(db, "u1");
+
+  assert.equal(result.opponent.userId, "u2");
+  assert.equal(result.opponent.stats.power, 38);
+  assert.equal(result.opponent.statBreakdown.base.power, 32);
+  assert.equal(result.opponent.statBreakdown.equipment.guard, 11);
+  assert.equal(result.opponent.equipment.armor?.id, "u2-direct-armor");
+  assert.equal(result.opponent.equipmentPct.hpPct, 6);
+  assert.equal(result.opponent.effects.speedBoostPct, 12);
+  assert.ok(Array.isArray(result.opponent.activePassives));
+});
+
+test("defender snapshot reflects changes made before starting a fight", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 5,
+    selectedCard: makeCard(1, "R"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 5,
+    power: 12,
+    effects: makeEffects(),
+    selectedCard: makeCard(2, "R"),
+  });
+
+  db.prepare(
+    `UPDATE arena_profiles
+     SET power = ?, effectsJson = ?, updatedAt = ?
+     WHERE userId = ?`,
+  ).run(
+    55,
+    JSON.stringify(makeEffects({
+      fightStartShieldCharges: 2,
+      fightStartShieldAmount: 25,
+    })),
+    new Date().toISOString(),
+    "u2",
+  );
+  insertEquippedEquipmentPiece(db, "u2", {
+    id: "u2-updated-charm",
+    slot: "charm",
+    mainStatType: "critRate",
+    mainStatValue: 8,
+    subStats: [{ type: "effectHit", value: 4 }],
+  });
+
+  const fight = await startPlaybackFight(db, "u1");
+
+  assert.equal(fight.opponent.statBreakdown.base.power, 55);
+  assert.equal(fight.opponent.stats.power, 61);
+  assert.equal(fight.opponent.statBreakdown.equipment.effectHit, 4);
+  assert.equal(fight.opponent.equipment.charm?.id, "u2-updated-charm");
+  assert.equal(fight.opponent.equipmentPct.critChancePct, 8);
+  assert.equal(fight.opponent.effects.fightStartShieldAmount, 25);
+});
+
+test("defender consumable effects are not consumed by defensive fights", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 5,
+    selectedCard: makeCard(1, "R"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 5,
+    effects: makeEffects({
+      fightStartShieldCharges: 4,
+      fightStartShieldAmount: 50,
+      deathSaveCharges: 1,
+    }),
+    selectedCard: makeCard(2, "R"),
+  });
+
+  let fight = await startPlaybackFight(db, "u1");
+  while (!fight.isFinished) {
+    fight = advancePlaybackFightTurn(db, "u1");
+  }
+
+  const defender = getArenaProfilePayload(db, "u2");
+  assert.equal(defender.effects.fightStartShieldCharges, 4);
+  assert.equal(defender.effects.fightStartShieldAmount, 50);
+  assert.equal(defender.effects.deathSaveCharges, 1);
+});
+
 test("fight cooldown blocks rapid repeat fights", async () => {
   const db = createTestDb();
   insertProfile(db, {
@@ -1362,10 +1358,11 @@ test("fight cooldown blocks rapid repeat fights", async () => {
 
 test("buying card shop card consumes coins", async () => {
   const db = createTestDb();
+  const startingCoins = 20000;
   insertProfile(db, {
     userId: "u1",
     level: 10,
-    coins: 1000,
+    coins: startingCoins,
     selectedCard: makeCard(1, "C"),
   });
 
@@ -1377,7 +1374,7 @@ test("buying card shop card consumes coins", async () => {
 
   const buyResult = await buyArenaShopCard(db, "u1", { kind: "daily", offerId: offer.offerId }, { recordedDate: "2099-01-01" });
   assert.equal(buyResult.purchasedOfferId, offer.offerId);
-  assert.ok(buyResult.profile.coins < 1000);
+  assert.ok(buyResult.profile.coins < startingCoins);
 });
 
 test("card shop shares five unique daily offers and refreshes by UTC date", async () => {
