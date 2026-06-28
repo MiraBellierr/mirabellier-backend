@@ -46,8 +46,8 @@ function parseArgs(argv) {
         [
           "Usage: node scripts/migrate-tutorial-coins.cjs [flags]",
           "",
-          "Sets tutorialComplete = 20 for users who already received the old 10K bonus",
-          "(tutorialComplete = 1). This prevents double-dipping after the P12 spread change.",
+          "Sets tutorialComplete = 20 for all users below milestone 20",
+          "(NULL, 0, or 1). This permanently disables tutorial coin rewards.",
           "",
           "Flags:",
           "  --apply         Apply changes (default: dry-run only)",
@@ -89,27 +89,31 @@ function main() {
   const db = new Database(options.dbFile);
   db.pragma("journal_mode = WAL");
 
+  // All users who haven't completed the tutorial spread (milestones 5/8/12/16/20).
+  // Covers: tutorialComplete = 0, NULL, or 1 (old single-bonus users).
   const rows = db
-    .prepare("SELECT userId, level, tutorialComplete FROM arena_profiles WHERE tutorialComplete = 1")
+    .prepare(
+      "SELECT userId, level, tutorialComplete FROM arena_profiles WHERE tutorialComplete < 20 OR tutorialComplete IS NULL"
+    )
     .all();
 
-  console.log(`Found ${rows.length} users with tutorialComplete = 1.`);
+  console.log(`Found ${rows.length} users with tutorialComplete < 20 or NULL.`);
 
   if (rows.length > 0) {
     for (const row of rows) {
-      console.log(`  userId=${row.userId} level=${row.level} tutorialComplete=${row.tutorialComplete}`);
+      console.log(`  userId=${row.userId} level=${row.level} tutorialComplete=${row.tutorialComplete ?? "NULL"}`);
     }
 
     if (options.apply) {
       db.prepare(
-        "UPDATE arena_profiles SET tutorialComplete = 20 WHERE tutorialComplete = 1"
+        "UPDATE arena_profiles SET tutorialComplete = 20 WHERE tutorialComplete < 20 OR tutorialComplete IS NULL"
       ).run();
       console.log(`\n✅ Set tutorialComplete = 20 for ${rows.length} user(s).`);
     } else {
       console.log("\n(DRY RUN — no changes were written. Re-run with --apply to write.)");
     }
   } else {
-    console.log("No migration needed.");
+    console.log("All users already at tutorialComplete >= 20 — no migration needed.");
   }
 
   db.close();
