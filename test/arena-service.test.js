@@ -28,6 +28,7 @@ const {
   getArenaArchivePayload,
   getArenaCollectionPayload,
   getArenaMarketListings,
+  getArenaShopPayload,
   getArenaProfilePayload,
   getArenaSkillTreePayload,
   getArenaTradeListings,
@@ -656,7 +657,7 @@ test("card sacrifice blocks protected, traded, duplicate, and unowned cards", ()
   );
 });
 
-test("card affinity is exposed and contributes a capped tiny combat stat bonus", () => {
+test("card affinity is exposed and contributes as card IV bonus", () => {
   const db = createTestDb();
   const card = makeCard(1, "R");
   insertProfile(db, {
@@ -685,7 +686,7 @@ test("card affinity is exposed and contributes a capped tiny combat stat bonus",
     speed: 1,
     effectHit: 1,
   });
-  assert.equal(profile.stats.total.power, 20);
+  assert.equal(profile.stats.total.power, 19);
   assert.equal(profile.stats.total.effectHit, 13);
 
   const collection = getArenaCollectionPayload(db, "u1");
@@ -694,6 +695,40 @@ test("card affinity is exposed and contributes a capped tiny combat stat bonus",
   const snapshot = loadCombatSnapshot(db, ensureArenaProfile(db, "u1"));
   assert.equal(snapshot.totalStats.power, profile.stats.total.power);
   assert.equal(snapshot.totalStats.effectHit, profile.stats.total.effectHit);
+});
+
+test("collection can sort cards by affinity", () => {
+  const db = createTestDb();
+  const low = makeCard(1, "R");
+  const high = makeCard(2, "R");
+  const none = makeCard(3, "R");
+  insertProfile(db, { userId: "u1", selectedCard: low });
+  insertCollectionCardFixture(db, "u1", low);
+  insertCollectionCardFixture(db, "u1", high);
+  insertCollectionCardFixture(db, "u1", none);
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_card_affinity (
+      userId, malId, fights, wins, affinityLevel, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "u1", low.malId, 25, 10, 2, now, now,
+    "u1", high.malId, 250, 200, 5, now, now,
+  );
+
+  const descending = getArenaCollectionPayload(db, "u1", { sort: "affinity-desc" });
+  assert.deepEqual(descending.cards.map((card) => card.cardInstanceId), [
+    high.cardInstanceId,
+    low.cardInstanceId,
+    none.cardInstanceId,
+  ]);
+
+  const ascending = getArenaCollectionPayload(db, "u1", { sort: "affinity-asc" });
+  assert.deepEqual(ascending.cards.map((card) => card.cardInstanceId), [
+    none.cardInstanceId,
+    low.cardInstanceId,
+    high.cardInstanceId,
+  ]);
 });
 
 test("Riversteel applies its critical bonus before attack resolution", () => {
@@ -1407,6 +1442,62 @@ test("playback fight opponent snapshot includes defender stats, equipment, and e
   assert.ok(Array.isArray(fight.opponent.activePassives));
 });
 
+test("playback fight snapshot applies sigil and affinity as card IV", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 5,
+    selectedCard: makeCard(1, "R"),
+  });
+  const maxIvCard = {
+    ...makeCard(2, "SR"),
+    iv: {
+      power: 31,
+      guard: 31,
+      speed: 31,
+      effectHit: 31,
+      total: 124,
+    },
+    cardItemStats: {
+      hp: 0,
+      power: 3,
+      guard: 1,
+      speed: 1,
+      effectHit: 1,
+    },
+    cardItemIds: ["apex_sigil"],
+  };
+  insertProfile(db, {
+    userId: "u2",
+    level: 5,
+    hp: 150,
+    power: 40,
+    guard: 20,
+    speed: 15,
+    effectHit: 9,
+    selectedCard: maxIvCard,
+  });
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_card_affinity (
+      userId, malId, fights, wins, affinityLevel, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run("u2", maxIvCard.malId, 250, 200, 5, now, now);
+
+  const fight = await startPlaybackFight(db, "u1");
+
+  assert.equal(fight.opponent.stats.power, 52);
+  assert.deepEqual(fight.opponent.statBreakdown.card, {
+    hp: 16,
+    power: 12,
+    guard: 11,
+    speed: 11,
+    effectHit: 11,
+  });
+  assert.equal(fight.opponent.selectedCard.cardItemStats.power, 3);
+  assert.equal(fight.opponent.selectedCard.affinity.level, 5);
+});
+
 test("direct fight response exposes the real-time defender snapshot", async () => {
   const db = createTestDb();
   insertProfile(db, {
@@ -2011,6 +2102,89 @@ test("Vampiric Fang applies 20% lifesteal", () => {
   const result = useConsumable(db, "u1", "gate_key");
   assert.equal(result.effects.vampiricHealPct, effect.pct);
   assert.equal(result.effects.vampiricHealFightsRemaining, effect.fights);
+});
+
+test("Apex Sigil rejects selected cards below max IV", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 1,
+    coins: 200000,
+    selectedCard: makeCard(1, "C"),
+  });
+  buyShopItem(db, "u1", "apex_sigil");
+
+  assert.throws(
+    () => useConsumable(db, "u1", "apex_sigil"),
+    { code: "ARENA_CARD_MAX_IV_REQUIRED" },
+  );
+
+  const shop = getArenaShopPayload(db, "u1");
+  const item = shop.cardItems.find((candidate) => candidate.id === "apex_sigil");
+  assert.equal(item.ownedQuantity, 1);
+});
+
+test("Apex Sigil adds permanent card IV to max IV selected card", () => {
+  const db = createTestDb();
+  const maxIvCard = {
+    ...makeCard(1, "C"),
+    iv: {
+      power: 31,
+      guard: 31,
+      speed: 31,
+      effectHit: 31,
+      total: 124,
+    },
+  };
+  insertProfile(db, {
+    userId: "u1",
+    level: 1,
+    coins: 200000,
+    selectedCard: maxIvCard,
+  });
+  buyShopItem(db, "u1", "apex_sigil");
+
+  const result = useConsumable(db, "u1", "apex_sigil");
+  const selectedCard = result.shop.profile.selectedCard;
+
+  assert.equal(selectedCard.cardItemStats.power, 3);
+  assert.equal(selectedCard.cardItemStats.guard, 1);
+  assert.equal(selectedCard.cardItemStats.speed, 1);
+  assert.equal(selectedCard.cardItemStats.effectHit, 1);
+  assert.deepEqual(selectedCard.cardItemIds, ["apex_sigil"]);
+  assert.equal(result.shop.profile.stats.card.hp, 16);
+  assert.equal(result.shop.profile.stats.card.power, 11);
+  assert.equal(result.shop.profile.stats.card.guard, 10);
+  assert.equal(result.shop.profile.stats.card.speed, 10);
+  assert.equal(result.shop.profile.stats.card.effectHit, 10);
+});
+
+test("Apex Sigil can only be used once per card", () => {
+  const db = createTestDb();
+  const maxIvCard = {
+    ...makeCard(1, "C"),
+    iv: {
+      power: 31,
+      guard: 31,
+      speed: 31,
+      effectHit: 31,
+      total: 124,
+    },
+  };
+  insertProfile(db, {
+    userId: "u1",
+    level: 1,
+    coins: 400000,
+    selectedCard: maxIvCard,
+  });
+  buyShopItem(db, "u1", "apex_sigil");
+  buyShopItem(db, "u1", "apex_sigil");
+  useConsumable(db, "u1", "apex_sigil");
+
+  assert.throws(
+    () => useConsumable(db, "u1", "apex_sigil"),
+    { code: "ARENA_CARD_ITEM_ALREADY_APPLIED" },
+  );
 });
 
 test("Fuse Bomb deals +100 true damage", () => {

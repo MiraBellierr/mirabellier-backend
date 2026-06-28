@@ -38,16 +38,17 @@ function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function createCard(malCard) {
+function createCard(malCard, options = {}) {
   const catalogSize = getArenaCharacterCatalog().characters.length;
   const rarity = rarityFromCharacterRank(
     malCard.popularity,
     catalogSize > 0 ? catalogSize : 5000,
   );
-  const ivPower = randomInt(CARD_IV_MIN, CARD_IV_MAX);
-  const ivGuard = randomInt(CARD_IV_MIN, CARD_IV_MAX);
-  const ivSpeed = randomInt(CARD_IV_MIN, CARD_IV_MAX);
-  const ivEffectHit = randomInt(CARD_IV_MIN, CARD_IV_MAX);
+  const maxIv = !!options.maxIv;
+  const ivPower = maxIv ? CARD_IV_MAX : randomInt(CARD_IV_MIN, CARD_IV_MAX);
+  const ivGuard = maxIv ? CARD_IV_MAX : randomInt(CARD_IV_MIN, CARD_IV_MAX);
+  const ivSpeed = maxIv ? CARD_IV_MAX : randomInt(CARD_IV_MIN, CARD_IV_MAX);
+  const ivEffectHit = maxIv ? CARD_IV_MAX : randomInt(CARD_IV_MIN, CARD_IV_MAX);
 
   return {
     cardInstanceId: makeId("card"),
@@ -80,6 +81,23 @@ function createCard(malCard) {
   };
 }
 
+function readUserLookup(db, target) {
+  const profile = db
+    .prepare("SELECT * FROM arena_profiles WHERE userId = ?")
+    .get(target.id);
+
+  return {
+    id: target.id,
+    username: target.username,
+    avatar: target.avatar || null,
+    hasArenaProfile: Boolean(profile),
+    coins: profile?.coins ?? null,
+    level: profile?.level ?? null,
+    dailyDrawsUsed: profile?.dailyCardDrawCount ?? 0,
+    lastCardDrawDate: profile?.lastCardDrawDate ?? null,
+  };
+}
+
 module.exports = function registerAdminRoutes(app, deps) {
   const { db, authFromReq } = deps;
   const router = express.Router();
@@ -96,28 +114,43 @@ module.exports = function registerAdminRoutes(app, deps) {
       }
 
       const target = db
-        .prepare("SELECT id, username, avatar FROM users WHERE username = ?")
+        .prepare("SELECT id, username, avatar FROM users WHERE username = ? COLLATE NOCASE")
         .get(username);
       if (!target) {
         return res.status(404).json({ error: "User not found" });
       }
 
-      const profile = db
-        .prepare("SELECT * FROM arena_profiles WHERE userId = ?")
-        .get(target.id);
-
-      res.json({
-        id: target.id,
-        username: target.username,
-        avatar: target.avatar || null,
-        hasArenaProfile: Boolean(profile),
-        coins: profile?.coins ?? null,
-        level: profile?.level ?? null,
-        dailyDrawsUsed: profile?.dailyCardDrawCount ?? 0,
-        lastCardDrawDate: profile?.lastCardDrawDate ?? null,
-      });
+      res.json(readUserLookup(db, target));
     } catch (error) {
       res.status(500).json({ error: "Failed to look up user" });
+    }
+  });
+
+  router.get("/users/suggestions", (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const user = authFromReq(req);
+      if (!isOwner(user)) return res.status(403).json({ error: "Forbidden" });
+
+      const q = String(req.query.q || "").trim();
+      if (!q) {
+        return res.json({ users: [] });
+      }
+
+      const users = db
+        .prepare(
+          `SELECT id, username, avatar
+           FROM users
+           WHERE username LIKE ? COLLATE NOCASE
+           ORDER BY username ASC
+           LIMIT 10`,
+        )
+        .all(`${q}%`)
+        .map((target) => readUserLookup(db, target));
+
+      res.json({ users });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to suggest users" });
     }
   });
 
@@ -166,6 +199,7 @@ module.exports = function registerAdminRoutes(app, deps) {
 
       const targetUserId = req.params.userId;
       const count = Math.min(Math.max(Number(req.body?.count) || 1, 1), 20);
+      const maxIv = req.body?.maxIv === true;
 
       const profile = db
         .prepare("SELECT * FROM arena_profiles WHERE userId = ?")
@@ -178,7 +212,7 @@ module.exports = function registerAdminRoutes(app, deps) {
       const cards = [];
       for (let i = 0; i < count; i++) {
         const malCard = await drawArenaCard(db);
-        const card = createCard(malCard);
+        const card = createCard(malCard, { maxIv });
         if (!card) continue;
 
         const now = nowIso();
@@ -194,12 +228,13 @@ module.exports = function registerAdminRoutes(app, deps) {
           now,
           now,
         );
-        cards.push({ title: card.title, rarity: card.rarity });
+        cards.push({ title: card.title, rarity: card.rarity, iv: card.iv });
       }
 
       res.json({
         userId: targetUserId,
         added: cards.length,
+        maxIv,
         cards,
       });
     } catch (error) {
