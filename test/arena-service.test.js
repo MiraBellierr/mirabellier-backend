@@ -15,6 +15,7 @@ const {
   calculateCardSacrificePayout,
   craftShopRecipe,
   calculateRoundPower,
+  computeEvasionChance,
   calculateWinCoins,
   calculateWinXp,
   createArenaMarketListing,
@@ -450,6 +451,43 @@ test("round power includes metadata and rarity modifiers", () => {
   assert.equal(result.breakdown.rarityPower, 12.24);
   assert.ok(result.breakdown.malScoreBonus >= 0);
   assert.ok(result.breakdown.popularityBonus >= 0);
+});
+
+test("attack evasion chance is capped at 44 percent", () => {
+  const sharedInput = {
+    attackerStats: { power: 100, speed: 1 },
+    defenderStats: { hp: 100, guard: 1, speed: 500 },
+    attackerRarity: "C",
+    defenderRarity: "C",
+    extraDefenderEvasionPct: 95,
+  };
+
+  assert.equal(
+    calculateAttackOutcome({ ...sharedInput, randomFn: () => 0.43 }).avoided,
+    true,
+  );
+  assert.equal(
+    calculateAttackOutcome({ ...sharedInput, randomFn: () => 0.45 }).avoided,
+    false,
+  );
+});
+
+test("evasion chance is driven by relative speed gap", () => {
+  const chance = (attackerSpeed, defenderSpeed, extraPct = 0) =>
+    Number(
+      computeEvasionChance(
+        { speed: attackerSpeed },
+        { speed: defenderSpeed },
+        extraPct,
+      ).toFixed(3),
+  );
+
+  assert.equal(chance(50, 50), 0.03);
+  assert.equal(chance(50, 60), 0.046);
+  assert.equal(chance(60, 50), 0.02);
+  assert.equal(chance(50, 160), 0.205);
+  assert.equal(chance(10, 167, 12), 0.4);
+  assert.equal(chance(1, 500, 95), 0.44);
 });
 
 test("character rank maps to the configured rarity percentiles", () => {
@@ -1496,6 +1534,53 @@ test("playback fight snapshot applies sigil and affinity as card IV", async () =
   });
   assert.equal(fight.opponent.selectedCard.cardItemStats.power, 3);
   assert.equal(fight.opponent.selectedCard.affinity.level, 5);
+});
+
+test("playback fight player stats include sigil and affinity card IV", async () => {
+  const db = createTestDb();
+  const maxIvCard = {
+    ...makeCard(1, "SR"),
+    iv: {
+      power: 31,
+      guard: 31,
+      speed: 31,
+      effectHit: 31,
+      total: 124,
+    },
+    cardItemStats: {
+      hp: 0,
+      power: 3,
+      guard: 1,
+      speed: 1,
+      effectHit: 1,
+    },
+    cardItemIds: ["apex_sigil"],
+  };
+  insertProfile(db, {
+    userId: "u1",
+    level: 5,
+    hp: 150,
+    power: 40,
+    guard: 20,
+    speed: 15,
+    effectHit: 9,
+    selectedCard: maxIvCard,
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 5,
+    selectedCard: makeCard(2, "R"),
+  });
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_card_affinity (
+      userId, malId, fights, wins, affinityLevel, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run("u1", maxIvCard.malId, 250, 200, 5, now, now);
+
+  const fight = await startPlaybackFight(db, "u1");
+
+  assert.equal(fight.battle.maxHp.player, 266);
 });
 
 test("direct fight response exposes the real-time defender snapshot", async () => {
@@ -2699,7 +2784,7 @@ test("trade listings can request a specific card", () => {
   assert.equal(row.askerCardInstanceId, matchingOffer.cardInstanceId);
 });
 
-test("accepting a listing trade with both cards opens an active session", () => {
+test("accepting a listing trade with both cards completes the swap", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", coins: 1000 });
   insertProfile(db, { userId: "u2", coins: 1000 });
@@ -2722,24 +2807,29 @@ test("accepting a listing trade with both cards opens an active session", () => 
   );
 
   const accepted = acceptTradeRequest(db, "u1", request.requestId);
-  assert.ok(accepted.sessionId);
+  assert.equal(accepted.completed, true);
+  assert.equal(accepted.askerCard.cardInstanceId, offeredCard.cardInstanceId);
+  assert.equal(accepted.responderCard.cardInstanceId, listedCard.cardInstanceId);
 
   const session = db
-    .prepare("SELECT * FROM arena_trade_sessions WHERE id = ?")
-    .get(accepted.sessionId);
-  assert.equal(session.status, "active");
-  assert.equal(session.askerId, "u2");
-  assert.equal(session.responderId, "u1");
-  assert.deepEqual(JSON.parse(session.askerCardInstanceIdsJson), [
-    offeredCard.cardInstanceId,
-  ]);
-  assert.deepEqual(JSON.parse(session.responderCardInstanceIdsJson), [
-    listedCard.cardInstanceId,
-  ]);
+    .prepare("SELECT id FROM arena_trade_sessions WHERE requestId = ?")
+    .get(request.requestId);
+  assert.equal(session, undefined);
   assert.ok(
     db
       .prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
-      .get("u1", listedCard.cardInstanceId),
+      .get("u1", offeredCard.cardInstanceId),
+  );
+  assert.ok(
+    db
+      .prepare("SELECT id FROM arena_card_collection WHERE userId = ? AND cardInstanceId = ?")
+      .get("u2", listedCard.cardInstanceId),
+  );
+  assert.equal(
+    db
+      .prepare("SELECT status FROM arena_trade_requests WHERE id = ?")
+      .get(request.requestId).status,
+    "accepted",
   );
   assert.equal(
     db
@@ -3313,9 +3403,9 @@ test("all effect duration fields respect EFFECT_DURATION_LIMITS caps", () => {
 
   const effects = normalizeArenaEffects(overblown);
 
-  // Every field must be ≤ its EFFECT_DURATION_LIMITS cap
+  // Every field clamps to its current EFFECT_DURATION_LIMITS cap
   const limits = {
-    expBoostWinsRemaining: 1000,
+    expBoostWinsRemaining: 500,
     coinBoostWinsRemaining: 40,
     drawBonusChanceWinsRemaining: 60,
     rerollKeepHigherCharges: 4,
@@ -3323,69 +3413,65 @@ test("all effect duration fields respect EFFECT_DURATION_LIMITS caps", () => {
     upgradeLowestRarityCharges: 6,
     guaranteeSsrPlusCharges: 6,
     fightStartShieldCharges: 2000,
-    evadeBoostFightsRemaining: 1000,
-    firstHitTrueDamageCharges: 1000,
-    higherRarityDamageBonusPctCharges: 2000,
+    evadeBoostFightsRemaining: 500,
+    firstHitTrueDamageCharges: 500,
+    higherRarityDamageBonusPctCharges: 1000,
     gateKeyCharges: 4,
-    doublePassiveTriggerFightsRemaining: 2000,
-    damageBoostFightsRemaining: 1000,
-    speedBoostFightsRemaining: 1000,
-    deathSaveCharges: 2000,
-    statSteroidFightsRemaining: 2000,
+    doublePassiveTriggerFightsRemaining: 1000,
+    damageBoostFightsRemaining: 500,
+    speedBoostFightsRemaining: 500,
+    deathSaveCharges: 1000,
+    statSteroidFightsRemaining: 1000,
     matchRarityCharges: 1500,
-    vampiricHealFightsRemaining: 2000,
-    critChanceBoostFightsRemaining: 1000,
-    guardBoostFightsRemaining: 1000,
-    firstAttackDoubleCharges: 2000,
-    ivBoostCharges: 1000,
-    selfReviveCharges: 2000,
+    vampiricHealFightsRemaining: 1000,
+    critChanceBoostFightsRemaining: 500,
+    guardBoostFightsRemaining: 500,
+    firstAttackDoubleCharges: 1000,
+    ivBoostCharges: 500,
+    selfReviveCharges: 1000,
   };
 
   Object.entries(limits).forEach(([field, cap]) => {
-    assert.ok(
-      effects[field] <= cap,
-      `${field} should be ≤ ${cap}, got ${effects[field]}`,
-    );
+    assert.equal(effects[field], cap, `${field} should clamp to ${cap}`);
   });
 });
 
-test("consumable stacking soft-caps at 2× base, never exceeding hard cap", () => {
+test("consumable stacking never exceeds the current hard cap", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 500000, selectedCard: makeCard(1, "C") });
 
-  // amber_draft: speed boost, base 500 fights, soft cap 1000, hard cap 1000
+  // amber_draft: speed boost, base 500 fights, hard cap 500
   for (let i = 0; i < 5; i++) {
     craftShopRecipe(db, "u1", "rookie_cons_3");
     const result = useConsumable(db, "u1", "amber_draft");
     assert.ok(
-      result.effects.speedBoostFightsRemaining <= 1000,
-      `after ${i + 1} uses, speedBoostFightsRemaining should be ≤ 1000, got ${result.effects.speedBoostFightsRemaining}`,
+      result.effects.speedBoostFightsRemaining <= 500,
+      `after ${i + 1} uses, speedBoostFightsRemaining should be <= 500, got ${result.effects.speedBoostFightsRemaining}`,
     );
     assert.equal(result.effects.speedBoostPct, 12);
   }
-  // After 5 uses, should be at exactly 1000 (soft-capped at 2× base)
+  // After 5 uses, it should still be at the current hard cap.
   const profile = getArenaProfilePayload(db, "u1");
-  assert.equal(profile.effects.speedBoostFightsRemaining, 1000);
+  assert.equal(profile.effects.speedBoostFightsRemaining, 500);
 });
 
-test("hard cap is always at least 2× base for every consumable field", () => {
-  // Verify that for every consumable, EFFECT_DURATION_LIMITS[field] >= base * 2
+test("consumable fields clamp to their current hard caps", () => {
   const consumableFields = [
-    { id: "exp_tome", field: "expBoostWinsRemaining", base: 250, cap: 1000 },
-    { id: "frost_elixir", field: "evadeBoostFightsRemaining", base: 250, cap: 1000 },
-    { id: "fuse_bomb", field: "firstHitTrueDamageCharges", base: 250, cap: 1000 },
-    { id: "viridian_elixir", field: "ivBoostCharges", base: 250, cap: 1000 },
-    { id: "green_draft", field: "damageBoostFightsRemaining", base: 500, cap: 1000 },
-    { id: "amber_draft", field: "speedBoostFightsRemaining", base: 500, cap: 1000 },
-    { id: "seeker_lens", field: "critChanceBoostFightsRemaining", base: 500, cap: 1000 },
-    { id: "oath_ribbon", field: "guardBoostFightsRemaining", base: 500, cap: 1000 },
-    { id: "sun_elixir", field: "deathSaveCharges", base: 500, cap: 2000 },
-    { id: "lantern_oil", field: "higherRarityDamageBonusPctCharges", base: 500, cap: 2000 },
-    { id: "star_tonic", field: "statSteroidFightsRemaining", base: 500, cap: 2000 },
-    { id: "gate_key", field: "vampiricHealFightsRemaining", base: 1000, cap: 2000 },
-    { id: "void_cauldron", field: "doublePassiveTriggerFightsRemaining", base: 1000, cap: 2000 },
-    { id: "prism_draught", field: "firstAttackDoubleCharges", base: 1000, cap: 2000 },
-    { id: "chrono_vial", field: "selfReviveCharges", base: 1000, cap: 2000 },
+    { id: "exp_tome", field: "expBoostWinsRemaining", base: 250, cap: 500 },
+    { id: "frost_elixir", field: "evadeBoostFightsRemaining", base: 250, cap: 500 },
+    { id: "fuse_bomb", field: "firstHitTrueDamageCharges", base: 250, cap: 500 },
+    { id: "viridian_elixir", field: "ivBoostCharges", base: 250, cap: 500 },
+    { id: "green_draft", field: "damageBoostFightsRemaining", base: 500, cap: 500 },
+    { id: "amber_draft", field: "speedBoostFightsRemaining", base: 500, cap: 500 },
+    { id: "seeker_lens", field: "critChanceBoostFightsRemaining", base: 500, cap: 500 },
+    { id: "oath_ribbon", field: "guardBoostFightsRemaining", base: 500, cap: 500 },
+    { id: "sun_elixir", field: "deathSaveCharges", base: 500, cap: 1000 },
+    { id: "lantern_oil", field: "higherRarityDamageBonusPctCharges", base: 500, cap: 1000 },
+    { id: "star_tonic", field: "statSteroidFightsRemaining", base: 500, cap: 1000 },
+    { id: "gate_key", field: "vampiricHealFightsRemaining", base: 1000, cap: 1000 },
+    { id: "void_cauldron", field: "doublePassiveTriggerFightsRemaining", base: 1000, cap: 1000 },
+    { id: "prism_draught", field: "firstAttackDoubleCharges", base: 1000, cap: 1000 },
+    { id: "chrono_vial", field: "selfReviveCharges", base: 1000, cap: 1000 },
     { id: "red_tonic", field: "fightStartShieldCharges", base: 100, cap: 2000 },
     { id: "sacred_candles", field: "fightStartShieldCharges", base: 1000, cap: 2000 },
     { id: "treasure_cache", field: "matchRarityCharges", base: 750, cap: 1500 },
@@ -3396,17 +3482,7 @@ test("hard cap is always at least 2× base for every consumable field", () => {
     const actualBase = effect.charges || effect.fights || 0;
     assert.equal(actualBase, base, `${id} base should be ${base}`);
 
-    // Hard cap must be at least 2× base for the soft cap to be reachable
-    assert.ok(
-      cap >= base * 2,
-      `${field} hard cap ${cap} should be ≥ 2× base ${base * 2}`,
-    );
-
-    // Verify the actual EFFECT_DURATION_LIMITS matches
     const effects = normalizeArenaEffects({ [field]: 99999 });
-    assert.ok(
-      effects[field] <= cap,
-      `${field} should be clamped to ≤ ${cap}, got ${effects[field]}`,
-    );
+    assert.equal(effects[field], cap, `${field} should clamp to ${cap}`);
   });
 });
