@@ -4,10 +4,12 @@ const Database = require("better-sqlite3");
 
 const {
   ArenaHttpError,
+} = require("../lib/arena/utils");
+const {
   createArenaUpdate,
   deleteArenaUpdate,
   getArenaUpdates,
-} = require("../lib/arena-service");
+} = require("../lib/arena/updates");
 
 function createDb() {
   const db = new Database(":memory:");

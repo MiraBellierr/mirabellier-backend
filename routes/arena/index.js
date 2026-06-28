@@ -4,21 +4,21 @@ const { acceptTradeRequest, cancelTradeRequest, cancelTradeSession, confirmTrade
   createArenaTradeListing, cancelArenaTradeListing, denyTradeRequest,
   getArenaTradeListings, getIncomingTradeRequests, getMyArenaTradeListings,
   getTradeSession, offerCardInTrade, removeCardFromTrade, offerCoinInTrade,
-  removeCoinFromTrade, searchArenaTradeCards, searchArenaUsers,
-  sendTradeRequest, unconfirmTrade } = require("../../lib/arena/trade");
+  removeCoinFromTrade, sendTradeRequest, unconfirmTrade } = require("../../lib/arena/trade");
+const { searchArenaTradeCards, searchArenaUsers } = require("../../lib/arena/archive");
 const { advancePlaybackFightTurn, getPlaybackFightState, hasActiveFight,
   skipPlaybackFightToEnd, startPlaybackFight } = require("../../lib/arena/playback");
 const { activateArenaSkill, getArenaSkillTreePayload, resetArenaSkills } = require("../../lib/arena/skill-tree");
 const { buyArenaMarketListing, cancelArenaMarketListing, createArenaMarketListing,
   getArenaMarketListings, getArenaMarketPriceGuide, getMyArenaMarketListings } = require("../../lib/arena/market");
-const { buyArenaShopCard, getArenaCardShopPayload } = require("../../lib/arena/card-shop");
+const { buyArenaShopCard, getArenaCardShopPayload, drawDailyCard, drawArenaPack } = require("../../lib/arena/card-shop");
 const { buyShopItem, craftShopRecipe, equipShopItem, getArenaShopPayload,
   useConsumable } = require("../../lib/arena/shop");
 const { unequipEquipmentSlot, fodderEquipmentPiece,
   getEquipmentLoadouts, saveEquipmentLoadout, restoreEquipmentLoadout,
   deleteEquipmentLoadout } = require("../../lib/arena/equipment");
 const { createArenaUpdate, deleteArenaUpdate, getArenaUpdates } = require("../../lib/arena/updates");
-const { drawDailyCard, drawArenaPack, getArenaCollectionPayload,
+const { getArenaCollectionPayload,
   sacrificeCollectionCards, selectCollectionCard, toggleCollectionCardFavorite } = require("../../lib/arena/collection");
 const { getArenaArchivePayload } = require("../../lib/arena/archive");
 const { getMintDuplicates, mintRainbowCard } = require("../../lib/arena/mint");
@@ -630,13 +630,13 @@ module.exports = function registerArenaRoutes(app, deps) {
 
   router.get("/trade/users", (req, res) => {
     try {
-      requireAuthUser(req, authFromReq);
+      const user = requireAuthUser(req, authFromReq);
       const q = String(req.query?.q || "").trim();
       if (!q || q.length < 1) {
         setNoStoreHeaders(res);
         return res.json({ users: [] });
       }
-      const users = searchArenaUsers(db, q);
+      const users = searchArenaUsers(db, q, user.id);
       setNoStoreHeaders(res);
       res.json({ users });
     } catch (error) {

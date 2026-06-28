@@ -53,7 +53,7 @@ const {
   startPlaybackFight,
   useConsumable,
   xpToNext,
-} = require("../lib/arena-service");
+} = require("../lib/arena");
 const registerArenaRoutes = require("../routes/arena");
 const { initializeSchema } = require("../lib/db");
 const { CATALOG_VERSION, SHOP_ITEMS } = require("../lib/arena-constants");
