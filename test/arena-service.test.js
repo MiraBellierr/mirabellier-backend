@@ -56,7 +56,7 @@ const {
   startPlaybackFight,
   useConsumable,
   xpToNext,
-  DAILY_OPPONENT_LIMIT,
+  DAILY_OPPONENT_LIMIT_MIN,
 } = require("../lib/arena");
 const registerArenaRoutes = require("../routes/arena");
 const { initializeSchema } = require("../lib/db");
@@ -68,6 +68,7 @@ const {
   calculateEloExchange,
   chooseEloOpponent,
   consumeTempGuard,
+  getDailyOpponentLimit,
   getCardShopPrice,
   getMarketIvBand,
   getMarketPrice,
@@ -1342,9 +1343,28 @@ test("daily opponent count resets only when defender day changes", () => {
   assert.equal(row.dailyOpponentCount, 2);
 });
 
+test("daily opponent limit scales with total arena profiles", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "C") });
+  insertProfile(db, { userId: "u2", selectedCard: makeCard(2, "C") });
+  insertProfile(db, { userId: "u3", selectedCard: makeCard(3, "C") });
+
+  assert.equal(getDailyOpponentLimit(db), DAILY_OPPONENT_LIMIT_MIN);
+
+  for (let id = 4; id <= 60; id += 1) {
+    insertProfile(db, {
+      userId: `u${id}`,
+      selectedCard: makeCard(id, "C"),
+    });
+  }
+
+  assert.equal(getDailyOpponentLimit(db), 120);
+});
+
 test("active fighters clear their defender count and daily cap skips overused defenders", async () => {
   const db = createTestDb();
   const today = new Date().toISOString();
+  const dailyOpponentLimit = DAILY_OPPONENT_LIMIT_MIN;
   insertProfile(db, {
     userId: "u1",
     level: 10,
@@ -1367,11 +1387,12 @@ test("active fighters clear their defender count and daily cap skips overused de
   ).run(12, today, "u1");
   db.prepare(
     "UPDATE arena_profiles SET dailyOpponentCount = ?, lastOpponentDate = ? WHERE userId = ?",
-  ).run(DAILY_OPPONENT_LIMIT, today, "u2");
+  ).run(dailyOpponentLimit, today, "u2");
   db.prepare(
     "UPDATE arena_profiles SET dailyOpponentCount = ?, lastOpponentDate = ? WHERE userId = ?",
-  ).run(DAILY_OPPONENT_LIMIT, "2026-01-01T00:00:00.000Z", "u3");
+  ).run(dailyOpponentLimit, "2026-01-01T00:00:00.000Z", "u3");
 
+  assert.equal(getDailyOpponentLimit(db), dailyOpponentLimit);
   assert.equal(chooseEloOpponent(db, "u1", () => 0).userId, "u3");
 
   const result = await runFight(db, "u1");
