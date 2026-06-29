@@ -16,6 +16,7 @@ const {
   craftShopRecipe,
   calculateRoundPower,
   computeEvasionChance,
+  calculateLossXp,
   calculateWinCoins,
   calculateWinXp,
   createArenaMarketListing,
@@ -54,6 +55,7 @@ const {
   sendTradeRequest,
   skipPlaybackFightToEnd,
   startPlaybackFight,
+  upsertInventoryItem,
   useConsumable,
   xpToNext,
   DAILY_OPPONENT_LIMIT_MIN,
@@ -64,6 +66,7 @@ const { CATALOG_VERSION, SHOP_ITEMS } = require("../lib/arena-constants");
 
 const {
   buildPassiveRuntime,
+  buildNpcOpponent,
   calculateAttackOutcome,
   calculateEloExchange,
   chooseEloOpponent,
@@ -1264,7 +1267,7 @@ test("skill reset charges 100 coins per level and refunds allocations", () => {
   );
 });
 
-test("fight loss grants exactly 1 exp and 0 coins", async () => {
+test("fight loss grants consolation XP and 0 coins", async () => {
   const db = createTestDb();
   const today = new Date().toISOString();
   insertProfile(db, {
@@ -1308,7 +1311,11 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
   const response = await runFight(db, "u1");
   assert.equal(response.result, "loss");
   assert.ok(response.battle);
-  assert.equal(response.rewards.xp, 1);
+  assert.equal(
+    response.rewards.xp,
+    Math.floor(calculateLossXp(response.opponent.level, 1, 4) * 1.2),
+  );
+  assert.ok(response.rewards.xp > 1);
   assert.equal(response.rewards.coins, 0);
   assert.equal(response.profile.losses, 1);
   assert.equal(response.profile.effects.expBoostWinsRemaining, 49);
@@ -2465,12 +2472,56 @@ test("Chrono Vial revives on KO", async () => {
     opponent,
     playerEffects: {
       selfReviveCharges: 1,
-      selfReviveHpThresholdPct: 20,
+      selfReviveHpThresholdPct: 50,
     },
     randomFn: () => 0.5,
   });
 
   assert.equal(result.effectUsage.usedSelfRevive, true);
+  const expectedReviveHp = Math.ceil(result.battle.maxHp.player * 0.5);
+  assert.ok(result.battle.console.some(
+    (entry) => entry.line === `Card 1 revived to ${expectedReviveHp} HP (Chrono Vial)`,
+  ));
+});
+
+test("combined consumable damage multipliers are capped", async () => {
+  const db = createTestDb();
+  const player = makeCombatSnapshot({
+    id: 1,
+    stats: { hp: 1000, power: 80, guard: 20, speed: 100, effectHit: 0 },
+  });
+  const opponent = makeCombatSnapshot({
+    id: 2,
+    stats: { hp: 1000, power: 10, guard: 10, speed: 1, effectHit: 0 },
+  });
+
+  const baseline = await simulateFight(db, {
+    player: makeCombatSnapshot({
+      id: 1,
+      stats: { hp: 1000, power: 80, guard: 20, speed: 100, effectHit: 0 },
+    }),
+    opponent: makeCombatSnapshot({
+      id: 2,
+      stats: { hp: 1000, power: 10, guard: 10, speed: 1, effectHit: 0 },
+    }),
+    randomFn: () => 0.99,
+  });
+  const boosted = await simulateFight(db, {
+    player,
+    opponent,
+    playerEffects: {
+      damageBoostPct: 200,
+      damageBoostFightsRemaining: 1,
+      firstAttackDoubleCharges: 1,
+    },
+    randomFn: () => 0.99,
+  });
+
+  const baselineHit = baseline.rounds.find((round) => round.attacker === "player" && !round.avoided);
+  const boostedHit = boosted.rounds.find((round) => round.attacker === "player" && !round.avoided);
+  assert.ok(baselineHit);
+  assert.ok(boostedHit);
+  assert.ok(boostedHit.damage <= baselineHit.damage * 5);
 });
 
 test("Vampiric Fang heals player on successful hit", async () => {
@@ -3366,6 +3417,19 @@ test("first player can fight npc fallback when no real opponent", async () => {
   assert.equal(result.profile.eloMatches, 0);
 });
 
+test("npc opponents receive synthetic equipment and skill bonuses", async () => {
+  const db = createTestDb();
+  const npc = await buildNpcOpponent(db, 60);
+  const snapshot = loadCombatSnapshot(db, npc);
+
+  assert.equal(npc.isNpc, true);
+  assert.ok(snapshot.equipmentStats.power > 0);
+  assert.ok(snapshot.equipmentStats.guard > 0);
+  assert.ok(snapshot.skillStats.hp > 0);
+  assert.ok(snapshot.equipmentPctStats.dmgPct > 0);
+  assert.ok(snapshot.totalStats.power > snapshot.baseStats.power);
+});
+
 // ── Consumable cap & stacking tests ──
 
 const ALL_CONSUMABLES = [
@@ -3386,7 +3450,7 @@ const ALL_CONSUMABLES = [
   { id: "sacred_candles", recipe: "mythic_cons_2", kind: "shield_fight_start", field: "fightStartShieldCharges", value: 1000, pctField: "fightStartShieldAmount", pctValue: 80 },
   { id: "gate_key", recipe: "mythic_cons_3", kind: "vampiric_heal", field: "vampiricHealFightsRemaining", value: 1000, pctField: "vampiricHealPct", pctValue: 20 },
   { id: "void_cauldron", recipe: "cosmic_cons_2", kind: "double_passive_trigger", field: "doublePassiveTriggerFightsRemaining", value: 1000 },
-  { id: "chrono_vial", recipe: "cosmic_cons_3", kind: "self_revive", field: "selfReviveCharges", value: 1000, pctField: "selfReviveHpThresholdPct", pctValue: 20 },
+  { id: "chrono_vial", recipe: "cosmic_cons_3", kind: "self_revive", field: "selfReviveCharges", value: 1000, pctField: "selfReviveHpThresholdPct", pctValue: 50 },
 ];
 
 test("all consumables define valid effects with positive durations", () => {
@@ -3445,12 +3509,13 @@ test("Void Cauldron applies double passive trigger with 1000 fight duration", ()
   assert.equal(result.effects.doublePassiveTriggerFightsRemaining, effect.fights);
 });
 
-test("Chrono Vial applies 20% self-revive threshold with 1000 charges", () => {
+test("Chrono Vial applies 50% self-revive heal with 1000 charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 60, coins: 200000, selectedCard: makeCard(1, "C") });
   craftShopRecipe(db, "u1", "cosmic_cons_3");
   const effect = getConsumableEffect("chrono_vial");
   const result = useConsumable(db, "u1", "chrono_vial");
+  assert.equal(effect.hpPct, 50);
   assert.equal(result.effects.selfReviveHpThresholdPct, effect.hpPct);
   assert.equal(result.effects.selfReviveCharges, effect.charges);
 });
@@ -3484,8 +3549,7 @@ test("Solar Cauldron ascension applies +1 all stats and enforces cooldown", () =
   );
 });
 
-test("consumable soft cap limits stacking to 2× base charges", () => {
-  // sun_elixir: deathSaveCharges base 500, soft cap 1000, hard cap 2000
+test("consumable stacking is additive", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 100000, selectedCard: makeCard(1, "C") });
 
@@ -3495,11 +3559,68 @@ test("consumable soft cap limits stacking to 2× base charges", () => {
 
   craftShopRecipe(db, "u1", "silver_cons_1");
   const r2 = useConsumable(db, "u1", "sun_elixir");
-  assert.equal(r2.effects.deathSaveCharges, 1000, "2nd use should cap at 1000 (2× base)");
+  assert.equal(r2.effects.deathSaveCharges, 1000, "2nd use should add another 500");
 
   craftShopRecipe(db, "u1", "silver_cons_1");
   const r3 = useConsumable(db, "u1", "sun_elixir");
-  assert.equal(r3.effects.deathSaveCharges, 1000, "3rd use should stay capped at 1000");
+  assert.equal(r3.effects.deathSaveCharges, 1500, "3rd use should add another 500");
+});
+
+test("consumable recipes are not level locked", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 1, coins: 500000, selectedCard: makeCard(1, "C") });
+
+  const result = craftShopRecipe(db, "u1", "cosmic_cons_3");
+
+  assert.equal(result.outputItemId, "chrono_vial");
+  assert.equal(result.shop.recipes.find((recipe) => recipe.id === "cosmic_cons_3")?.unlocked, true);
+});
+
+test("consumable inventory is capped per item", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 1, coins: 500000, selectedCard: makeCard(1, "C") });
+
+  upsertInventoryItem(db, "u1", "red_tonic", 99);
+  assert.throws(
+    () => upsertInventoryItem(db, "u1", "red_tonic", 1),
+    (error) => error instanceof ArenaHttpError && error.code === "ARENA_INVENTORY_CAP",
+  );
+
+  const shop = getArenaShopPayload(db, "u1");
+  const redTonic = shop.shop.flatMap((tier) => tier.items).find((item) => item.id === "red_tonic");
+  const redTonicRecipe = shop.recipes.find((recipe) => recipe.id === "rookie_cons_1");
+  assert.equal(redTonic?.canCraft, false);
+  assert.equal(redTonicRecipe?.canCraft, false);
+});
+
+test("active consumable effects replace the oldest after four kinds", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
+
+  [
+    ["rookie_cons_1", "red_tonic"],
+    ["rookie_cons_2", "green_draft"],
+    ["rookie_cons_3", "amber_draft"],
+    ["bronze_cons_1", "frost_elixir"],
+    ["silver_cons_1", "sun_elixir"],
+  ].forEach(([recipeId, itemId]) => {
+    craftShopRecipe(db, "u1", recipeId);
+    useConsumable(db, "u1", itemId);
+  });
+
+  const profile = getArenaProfilePayload(db, "u1");
+  const activeKinds = profile.effects.activeConsumables.map((entry) => entry.kind);
+
+  assert.deepEqual(activeKinds, [
+    "damage_boost",
+    "speed_boost",
+    "evade_next_fight",
+    "death_save",
+  ]);
+  assert.equal(profile.effects.fightStartShieldCharges, 0);
+  assert.equal(profile.effects.fightStartShieldAmount, 0);
+  assert.equal(profile.effects.damageBoostFightsRemaining, 500);
+  assert.equal(profile.effects.deathSaveCharges, 500);
 });
 
 test("consumable pct uses Math.max across different tiers", () => {
@@ -3514,7 +3635,6 @@ test("consumable pct uses Math.max across different tiers", () => {
   const result = useConsumable(db, "u1", "sacred_candles");
 
   assert.equal(result.effects.fightStartShieldAmount, 80, "should keep the higher shield amount");
-  // Charges: 100 (from red_tonic) + 1000 (from sacred_candles) = 1100, soft capped at max(100, 2000) = 2000... wait: max(existing, 2000) where existing is 100 = 2000, then min(1100, 2000) = 1100
   assert.equal(result.effects.fightStartShieldCharges, 1100);
 });
 
@@ -3553,63 +3673,27 @@ test("self revive threshold pct is capped at 95", () => {
   assert.equal(effects.selfReviveHpThresholdPct, 95);
 });
 
-test("all effect duration fields respect EFFECT_DURATION_LIMITS caps", () => {
-  // Push every duration field way beyond its cap and verify clamping
+test("non-consumable effect duration fields respect EFFECT_DURATION_LIMITS caps", () => {
   const overblown = {
-    expBoostWinsRemaining: 9999,
     coinBoostWinsRemaining: 9999,
     drawBonusChanceWinsRemaining: 9999,
     rerollKeepHigherCharges: 9999,
     streakShieldCharges: 9999,
     upgradeLowestRarityCharges: 9999,
     guaranteeSsrPlusCharges: 9999,
-    fightStartShieldCharges: 9999,
-    evadeBoostFightsRemaining: 9999,
-    firstHitTrueDamageCharges: 9999,
-    higherRarityDamageBonusPctCharges: 9999,
     gateKeyCharges: 9999,
-    doublePassiveTriggerFightsRemaining: 9999,
-    damageBoostFightsRemaining: 9999,
-    speedBoostFightsRemaining: 9999,
-    deathSaveCharges: 9999,
-    statSteroidFightsRemaining: 9999,
-    matchRarityCharges: 9999,
-    vampiricHealFightsRemaining: 9999,
-    critChanceBoostFightsRemaining: 9999,
-    guardBoostFightsRemaining: 9999,
-    firstAttackDoubleCharges: 9999,
-    ivBoostCharges: 9999,
-    selfReviveCharges: 9999,
   };
 
   const effects = normalizeArenaEffects(overblown);
 
-  // Every field clamps to its current EFFECT_DURATION_LIMITS cap
   const limits = {
-    expBoostWinsRemaining: 500,
     coinBoostWinsRemaining: 40,
     drawBonusChanceWinsRemaining: 60,
     rerollKeepHigherCharges: 4,
     streakShieldCharges: 6,
     upgradeLowestRarityCharges: 6,
     guaranteeSsrPlusCharges: 6,
-    fightStartShieldCharges: 2000,
-    evadeBoostFightsRemaining: 500,
-    firstHitTrueDamageCharges: 500,
-    higherRarityDamageBonusPctCharges: 1000,
     gateKeyCharges: 4,
-    doublePassiveTriggerFightsRemaining: 1000,
-    damageBoostFightsRemaining: 500,
-    speedBoostFightsRemaining: 500,
-    deathSaveCharges: 1000,
-    statSteroidFightsRemaining: 1000,
-    matchRarityCharges: 1500,
-    vampiricHealFightsRemaining: 1000,
-    critChanceBoostFightsRemaining: 500,
-    guardBoostFightsRemaining: 500,
-    firstAttackDoubleCharges: 1000,
-    ivBoostCharges: 500,
-    selfReviveCharges: 1000,
   };
 
   Object.entries(limits).forEach(([field, cap]) => {
@@ -3617,53 +3701,49 @@ test("all effect duration fields respect EFFECT_DURATION_LIMITS caps", () => {
   });
 });
 
-test("consumable stacking never exceeds the current hard cap", () => {
+test("repeated consumable stacking is additive", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 500000, selectedCard: makeCard(1, "C") });
 
-  // amber_draft: speed boost, base 500 fights, hard cap 500
   for (let i = 0; i < 5; i++) {
     craftShopRecipe(db, "u1", "rookie_cons_3");
     const result = useConsumable(db, "u1", "amber_draft");
-    assert.ok(
-      result.effects.speedBoostFightsRemaining <= 500,
-      `after ${i + 1} uses, speedBoostFightsRemaining should be <= 500, got ${result.effects.speedBoostFightsRemaining}`,
-    );
+    assert.equal(result.effects.speedBoostFightsRemaining, 500 * (i + 1));
     assert.equal(result.effects.speedBoostPct, 12);
   }
-  // After 5 uses, it should still be at the current hard cap.
+
   const profile = getArenaProfilePayload(db, "u1");
-  assert.equal(profile.effects.speedBoostFightsRemaining, 500);
+  assert.equal(profile.effects.speedBoostFightsRemaining, 2500);
 });
 
-test("consumable fields clamp to their current hard caps", () => {
+test("consumable duration fields normalize large values unchanged", () => {
   const consumableFields = [
-    { id: "exp_tome", field: "expBoostWinsRemaining", base: 250, cap: 500 },
-    { id: "frost_elixir", field: "evadeBoostFightsRemaining", base: 250, cap: 500 },
-    { id: "fuse_bomb", field: "firstHitTrueDamageCharges", base: 250, cap: 500 },
-    { id: "viridian_elixir", field: "ivBoostCharges", base: 250, cap: 500 },
-    { id: "green_draft", field: "damageBoostFightsRemaining", base: 500, cap: 500 },
-    { id: "amber_draft", field: "speedBoostFightsRemaining", base: 500, cap: 500 },
-    { id: "seeker_lens", field: "critChanceBoostFightsRemaining", base: 500, cap: 500 },
-    { id: "oath_ribbon", field: "guardBoostFightsRemaining", base: 500, cap: 500 },
-    { id: "sun_elixir", field: "deathSaveCharges", base: 500, cap: 1000 },
-    { id: "lantern_oil", field: "higherRarityDamageBonusPctCharges", base: 500, cap: 1000 },
-    { id: "star_tonic", field: "statSteroidFightsRemaining", base: 500, cap: 1000 },
-    { id: "gate_key", field: "vampiricHealFightsRemaining", base: 1000, cap: 1000 },
-    { id: "void_cauldron", field: "doublePassiveTriggerFightsRemaining", base: 1000, cap: 1000 },
-    { id: "prism_draught", field: "firstAttackDoubleCharges", base: 1000, cap: 1000 },
-    { id: "chrono_vial", field: "selfReviveCharges", base: 1000, cap: 1000 },
-    { id: "red_tonic", field: "fightStartShieldCharges", base: 100, cap: 2000 },
-    { id: "sacred_candles", field: "fightStartShieldCharges", base: 1000, cap: 2000 },
-    { id: "treasure_cache", field: "matchRarityCharges", base: 750, cap: 1500 },
+    { id: "exp_tome", field: "expBoostWinsRemaining", base: 250 },
+    { id: "frost_elixir", field: "evadeBoostFightsRemaining", base: 250 },
+    { id: "fuse_bomb", field: "firstHitTrueDamageCharges", base: 250 },
+    { id: "viridian_elixir", field: "ivBoostCharges", base: 250 },
+    { id: "green_draft", field: "damageBoostFightsRemaining", base: 500 },
+    { id: "amber_draft", field: "speedBoostFightsRemaining", base: 500 },
+    { id: "seeker_lens", field: "critChanceBoostFightsRemaining", base: 500 },
+    { id: "oath_ribbon", field: "guardBoostFightsRemaining", base: 500 },
+    { id: "sun_elixir", field: "deathSaveCharges", base: 500 },
+    { id: "lantern_oil", field: "higherRarityDamageBonusPctCharges", base: 500 },
+    { id: "star_tonic", field: "statSteroidFightsRemaining", base: 500 },
+    { id: "gate_key", field: "vampiricHealFightsRemaining", base: 1000 },
+    { id: "void_cauldron", field: "doublePassiveTriggerFightsRemaining", base: 1000 },
+    { id: "prism_draught", field: "firstAttackDoubleCharges", base: 1000 },
+    { id: "chrono_vial", field: "selfReviveCharges", base: 1000 },
+    { id: "red_tonic", field: "fightStartShieldCharges", base: 100 },
+    { id: "sacred_candles", field: "fightStartShieldCharges", base: 1000 },
+    { id: "treasure_cache", field: "matchRarityCharges", base: 750 },
   ];
 
-  consumableFields.forEach(({ id, field, base, cap }) => {
+  consumableFields.forEach(({ id, field, base }) => {
     const effect = getConsumableEffect(id);
     const actualBase = effect.charges || effect.fights || 0;
     assert.equal(actualBase, base, `${id} base should be ${base}`);
 
     const effects = normalizeArenaEffects({ [field]: 99999 });
-    assert.equal(effects[field], cap, `${field} should clamp to ${cap}`);
+    assert.equal(effects[field], 99999, `${field} should not clamp`);
   });
 });
