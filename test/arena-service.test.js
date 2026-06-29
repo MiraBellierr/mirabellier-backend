@@ -37,6 +37,7 @@ const {
   getCardAffinity,
   getLeaderboard,
   getPlaybackFightState,
+  incrementDailyOpponentCount,
   finalizePlaybackFightRewards,
   loadCombatSnapshot,
   acceptTradeRequest,
@@ -55,6 +56,7 @@ const {
   startPlaybackFight,
   useConsumable,
   xpToNext,
+  DAILY_OPPONENT_LIMIT,
 } = require("../lib/arena");
 const registerArenaRoutes = require("../routes/arena");
 const { initializeSchema } = require("../lib/db");
@@ -1135,6 +1137,29 @@ test("tie break uses speed before coinflip", () => {
   );
 });
 
+test("60-turn timeout tiebreak compares remaining HP percentage", async () => {
+  const db = createTestDb();
+  const player = makeCombatSnapshot({
+    id: 1,
+    stats: { hp: 240, power: 16, guard: 50, speed: 10, effectHit: 0 },
+  });
+  const opponent = makeCombatSnapshot({
+    id: 2,
+    stats: { hp: 1200, power: 1, guard: 20, speed: 0, effectHit: 0 },
+  });
+
+  const result = await simulateFight(db, { player, opponent, randomFn: () => 0.5 });
+  const finalTurn = result.rounds.at(-1);
+
+  assert.equal(result.rounds.length, 60);
+  assert.ok(finalTurn.playerHp < finalTurn.opponentHp);
+  assert.ok(
+    finalTurn.playerHp / result.battle.maxHp.player >
+      finalTurn.opponentHp / result.battle.maxHp.opponent,
+  );
+  assert.equal(result.playerWon, true);
+});
+
 test("skill points are retroactive and bank beyond the initial tree", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 1 });
@@ -1240,6 +1265,7 @@ test("skill reset charges 100 coins per level and refunds allocations", () => {
 
 test("fight loss grants exactly 1 exp and 0 coins", async () => {
   const db = createTestDb();
+  const today = new Date().toISOString();
   insertProfile(db, {
     userId: "u1",
     level: 1,
@@ -1274,6 +1300,9 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
     effectHit: 400,
     selectedCard: makeCard(2, "UR"),
   });
+  db.prepare(
+    "UPDATE arena_profiles SET dailyOpponentCount = 7, lastOpponentDate = ? WHERE userId = ?",
+  ).run(today, "u1");
 
   const response = await runFight(db, "u1");
   assert.equal(response.result, "loss");
@@ -1281,8 +1310,76 @@ test("fight loss grants exactly 1 exp and 0 coins", async () => {
   assert.equal(response.rewards.xp, 1);
   assert.equal(response.rewards.coins, 0);
   assert.equal(response.profile.losses, 1);
-  assert.equal(response.profile.effects.expBoostWinsRemaining, 50);
-  assert.equal(response.profile.effects.coinBoostWinsRemaining, 40);
+  assert.equal(response.profile.effects.expBoostWinsRemaining, 49);
+  assert.equal(response.profile.effects.coinBoostWinsRemaining, 39);
+  const row = db
+    .prepare("SELECT dailyOpponentCount FROM arena_profiles WHERE userId = ?")
+    .get("u1");
+  assert.equal(row.dailyOpponentCount, 0);
+});
+
+test("daily opponent count resets only when defender day changes", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    selectedCard: makeCard(1, "C"),
+  });
+
+  db.prepare(
+    "UPDATE arena_profiles SET dailyOpponentCount = 4, lastOpponentDate = ? WHERE userId = ?",
+  ).run("2026-01-01T12:00:00.000Z", "u1");
+
+  incrementDailyOpponentCount(db, "u1");
+  let row = db
+    .prepare("SELECT dailyOpponentCount, lastOpponentDate FROM arena_profiles WHERE userId = ?")
+    .get("u1");
+  assert.equal(row.dailyOpponentCount, 1);
+
+  incrementDailyOpponentCount(db, "u1");
+  row = db
+    .prepare("SELECT dailyOpponentCount FROM arena_profiles WHERE userId = ?")
+    .get("u1");
+  assert.equal(row.dailyOpponentCount, 2);
+});
+
+test("active fighters clear their defender count and daily cap skips overused defenders", async () => {
+  const db = createTestDb();
+  const today = new Date().toISOString();
+  insertProfile(db, {
+    userId: "u1",
+    level: 10,
+    selectedCard: makeCard(1, "R"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 10,
+    eloRating: 1000,
+    selectedCard: makeCard(2, "R"),
+  });
+  insertProfile(db, {
+    userId: "u3",
+    level: 10,
+    eloRating: 1010,
+    selectedCard: makeCard(3, "R"),
+  });
+  db.prepare(
+    "UPDATE arena_profiles SET dailyOpponentCount = ?, lastOpponentDate = ? WHERE userId = ?",
+  ).run(12, today, "u1");
+  db.prepare(
+    "UPDATE arena_profiles SET dailyOpponentCount = ?, lastOpponentDate = ? WHERE userId = ?",
+  ).run(DAILY_OPPONENT_LIMIT, today, "u2");
+  db.prepare(
+    "UPDATE arena_profiles SET dailyOpponentCount = ?, lastOpponentDate = ? WHERE userId = ?",
+  ).run(DAILY_OPPONENT_LIMIT, "2026-01-01T00:00:00.000Z", "u3");
+
+  assert.equal(chooseEloOpponent(db, "u1", () => 0).userId, "u3");
+
+  const result = await runFight(db, "u1");
+  assert.equal(result.opponent.userId, "u3");
+  const activePlayer = db
+    .prepare("SELECT dailyOpponentCount FROM arena_profiles WHERE userId = ?")
+    .get("u1");
+  assert.equal(activePlayer.dailyOpponentCount, 0);
 });
 
 test("fight includes hp battle console events", async () => {
@@ -2307,6 +2404,54 @@ test("Phoenix Feather prevents KO in combat", async () => {
   assert.equal(result.effectUsage.usedDeathSave, true);
 });
 
+test("Chrono Vial does not trigger as a low-HP heal", async () => {
+  const db = createTestDb();
+  const player = makeCombatSnapshot({
+    id: 1,
+    stats: { hp: 300, power: 1, guard: 50, speed: 10, effectHit: 0 },
+  });
+  const opponent = makeCombatSnapshot({
+    id: 2,
+    stats: { hp: 300, power: 1, guard: 50, speed: 0, effectHit: 0 },
+  });
+
+  const result = await simulateFight(db, {
+    player,
+    opponent,
+    playerEffects: {
+      selfReviveCharges: 1,
+      selfReviveHpThresholdPct: 95,
+    },
+    randomFn: () => 0.5,
+  });
+
+  assert.equal(result.effectUsage.usedSelfRevive, false);
+});
+
+test("Chrono Vial revives on KO", async () => {
+  const db = createTestDb();
+  const player = makeCombatSnapshot({
+    id: 1,
+    stats: { hp: 120, power: 1, guard: 1, speed: 1, effectHit: 0 },
+  });
+  const opponent = makeCombatSnapshot({
+    id: 2,
+    stats: { hp: 120, power: 300, guard: 10, speed: 10, effectHit: 0 },
+  });
+
+  const result = await simulateFight(db, {
+    player,
+    opponent,
+    playerEffects: {
+      selfReviveCharges: 1,
+      selfReviveHpThresholdPct: 20,
+    },
+    randomFn: () => 0.5,
+  });
+
+  assert.equal(result.effectUsage.usedSelfRevive, true);
+});
+
 test("Vampiric Fang heals player on successful hit", async () => {
   const db = createTestDb();
   insertProfile(db, {
@@ -2362,6 +2507,21 @@ test("rich leaderboard sorts by coins then lifetime earned", () => {
   const board = getLeaderboard(db, "rich", 10);
   assert.equal(board.entries[0].user.id, "u3");
   assert.equal(board.entries[1].user.id, "u2");
+});
+
+test("leaderboard XP progress uses the shared xpToNext formula", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 10,
+    xp: xpToNext(10) / 2,
+    selectedCard: makeCard(1, "C"),
+  });
+
+  const board = getLeaderboard(db, "level", { perPage: 10 });
+  assert.equal(board.entries[0].user.id, "u1");
+  assert.equal(board.entries[0].xpToNext, xpToNext(10));
+  assert.equal(board.entries[0].xpProgress, 0.5);
 });
 
 test("ELO leaderboard sorts by rating, matches, and peak rating", () => {
