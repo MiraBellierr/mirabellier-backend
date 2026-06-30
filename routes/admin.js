@@ -271,6 +271,91 @@ module.exports = function registerAdminRoutes(app, deps) {
     }
   });
 
+  // Fields cleared when wiping consumable effects — mirrors every
+  // consumable-related field that applyConsumableEffect / combat can mutate.
+  const CONSUMABLE_EFFECT_FIELDS = [
+    "damageBoostPct",
+    "damageBoostFightsRemaining",
+    "speedBoostPct",
+    "speedBoostFightsRemaining",
+    "deathSaveCharges",
+    "statSteroidPct",
+    "statSteroidFightsRemaining",
+    "matchRarityCharges",
+    "vampiricHealPct",
+    "vampiricHealFightsRemaining",
+    "critChanceBoostPct",
+    "critChanceBoostFightsRemaining",
+    "guardBoostPct",
+    "guardBoostFightsRemaining",
+    "firstAttackDoubleCharges",
+    "ivBoostCharges",
+    "expBoostPct",
+    "expBoostWinsRemaining",
+    "selfReviveHpThresholdPct",
+    "selfReviveCharges",
+    "fightStartShieldAmount",
+    "fightStartShieldCharges",
+    "evadeBoostPct",
+    "evadeBoostFightsRemaining",
+    "firstHitTrueDamageValue",
+    "firstHitTrueDamageCharges",
+    "higherRarityDamageBonusPct",
+    "higherRarityDamageBonusPctCharges",
+    "doublePassiveTriggerFightsRemaining",
+  ];
+
+  router.post("/users/:userId/clear-consumable-effects", (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const user = authFromReq(req);
+      if (!isOwner(user)) return res.status(403).json({ error: "Forbidden" });
+
+      const targetUserId = req.params.userId;
+      const profile = db
+        .prepare("SELECT * FROM arena_profiles WHERE userId = ?")
+        .get(targetUserId);
+      if (!profile) {
+        return res.status(404).json({ error: "User has no arena profile" });
+      }
+
+      let effects = {};
+      try {
+        effects = JSON.parse(profile.effectsJson || "{}");
+      } catch {
+        effects = {};
+      }
+      if (!effects || typeof effects !== "object") effects = {};
+
+      // Zero out every consumable-related effect field.
+      let clearedCount = 0;
+      CONSUMABLE_EFFECT_FIELDS.forEach((field) => {
+        if (typeof effects[field] === "number" && effects[field] !== 0) {
+          clearedCount++;
+        }
+        effects[field] = 0;
+      });
+
+      // Clear the active-consumables tracking list.
+      const hadActiveEntries = Array.isArray(effects.activeConsumables) && effects.activeConsumables.length > 0;
+      if (hadActiveEntries) clearedCount++;
+      effects.activeConsumables = [];
+
+      const now = nowIso();
+      db.prepare(
+        "UPDATE arena_profiles SET effectsJson = ?, updatedAt = ? WHERE userId = ?",
+      ).run(JSON.stringify(effects), now, targetUserId);
+
+      res.json({
+        userId: targetUserId,
+        message: `Cleared ${clearedCount} consumable effect(s).`,
+        clearedCount,
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to clear consumable effects" });
+    }
+  });
+
   router.post("/arena/card-shop/reroll", async (req, res) => {
     setNoStoreHeaders(res);
     try {

@@ -3593,20 +3593,91 @@ test("consumable inventory is capped per item", () => {
   assert.equal(redTonicRecipe?.canCraft, false);
 });
 
-test("active consumable effects replace the oldest after four kinds", () => {
+test("active consumable effects replace the oldest after six kinds", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
 
+  // Use 6 different consumables — all should stay active (cap is 6).
   [
     ["rookie_cons_1", "red_tonic"],
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
     ["silver_cons_1", "sun_elixir"],
+    ["bronze_cons_2", "viridian_elixir"],
   ].forEach(([recipeId, itemId]) => {
     craftShopRecipe(db, "u1", recipeId);
     useConsumable(db, "u1", itemId);
   });
+
+  const profile = getArenaProfilePayload(db, "u1");
+  const activeKinds = profile.effects.activeConsumables.map((entry) => entry.kind);
+
+  // All 6 should be active (no replacement yet).
+  assert.deepEqual(activeKinds, [
+    "shield_fight_start",
+    "damage_boost",
+    "speed_boost",
+    "evade_next_fight",
+    "death_save",
+    "iv_boost",
+  ]);
+  assert.equal(profile.effects.fightStartShieldCharges, 100);
+  assert.equal(profile.effects.damageBoostFightsRemaining, 500);
+  assert.equal(profile.effects.deathSaveCharges, 500);
+  assert.equal(profile.effects.ivBoostCharges, 250);
+});
+
+test("seventh consumable without force throws ARENA_CONSUMABLE_CAP_REACHED", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
+
+  // Fill the cap with 6 different consumables.
+  [
+    ["rookie_cons_1", "red_tonic"],
+    ["rookie_cons_2", "green_draft"],
+    ["rookie_cons_3", "amber_draft"],
+    ["bronze_cons_1", "frost_elixir"],
+    ["silver_cons_1", "sun_elixir"],
+    ["bronze_cons_2", "viridian_elixir"],
+  ].forEach(([recipeId, itemId]) => {
+    craftShopRecipe(db, "u1", recipeId);
+    useConsumable(db, "u1", itemId);
+  });
+
+  // Try a 7th without force — should throw.
+  craftShopRecipe(db, "u1", "bronze_cons_3"); // Fuse Bomb
+  assert.throws(
+    () => useConsumable(db, "u1", "fuse_bomb"),
+    (err) => err.code === "ARENA_CONSUMABLE_CAP_REACHED",
+  );
+
+  // Profile should be unchanged (transaction rolled back).
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.equal(profile.effects.activeConsumables.length, 6);
+  assert.equal(profile.effects.firstHitTrueDamageCharges, 0);
+});
+
+test("seventh consumable with force replaces the oldest active kind", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
+
+  // Fill the cap with 6 different consumables.
+  [
+    ["rookie_cons_1", "red_tonic"],
+    ["rookie_cons_2", "green_draft"],
+    ["rookie_cons_3", "amber_draft"],
+    ["bronze_cons_1", "frost_elixir"],
+    ["silver_cons_1", "sun_elixir"],
+    ["bronze_cons_2", "viridian_elixir"],
+  ].forEach(([recipeId, itemId]) => {
+    craftShopRecipe(db, "u1", recipeId);
+    useConsumable(db, "u1", itemId);
+  });
+
+  // Use a 7th with force — the oldest (red_tonic) should be replaced.
+  craftShopRecipe(db, "u1", "bronze_cons_3"); // Fuse Bomb
+  useConsumable(db, "u1", "fuse_bomb", true);
 
   const profile = getArenaProfilePayload(db, "u1");
   const activeKinds = profile.effects.activeConsumables.map((entry) => entry.kind);
@@ -3616,11 +3687,16 @@ test("active consumable effects replace the oldest after four kinds", () => {
     "speed_boost",
     "evade_next_fight",
     "death_save",
+    "iv_boost",
+    "first_hit_true_damage",
   ]);
+  // Oldest (red_tonic / shield_fight_start) was cleared.
   assert.equal(profile.effects.fightStartShieldCharges, 0);
   assert.equal(profile.effects.fightStartShieldAmount, 0);
+  // Remaining effects should be intact.
   assert.equal(profile.effects.damageBoostFightsRemaining, 500);
   assert.equal(profile.effects.deathSaveCharges, 500);
+  assert.equal(profile.effects.firstHitTrueDamageCharges, 250);
 });
 
 test("consumable pct uses Math.max across different tiers", () => {
