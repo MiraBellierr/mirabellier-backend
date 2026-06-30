@@ -42,6 +42,7 @@ const {
   finalizePlaybackFightRewards,
   loadCombatSnapshot,
   acceptTradeRequest,
+  applyFightEffectUsage,
   confirmTrade,
   normalizeArenaEffects,
   offerCardInTrade,
@@ -2432,6 +2433,39 @@ test("Phoenix Feather prevents KO in combat", async () => {
   assert.equal(result.effectUsage.usedDeathSave, true);
 });
 
+test("Phoenix Feather active marker clears after final death save charge is spent", () => {
+  const effects = normalizeArenaEffects({
+    deathSaveCharges: 1,
+    activeConsumables: [
+      {
+        itemId: "sun_elixir",
+        kind: "death_save",
+        activatedAt: new Date().toISOString(),
+      },
+    ],
+  });
+
+  const result = applyFightEffectUsage(effects, { usedDeathSave: true });
+
+  assert.equal(result.deathSaveCharges, 0);
+  assert.deepEqual(result.activeConsumables, []);
+});
+
+test("expired Phoenix Feather marker is pruned when effects are normalized", () => {
+  const result = normalizeArenaEffects({
+    deathSaveCharges: 0,
+    activeConsumables: [
+      {
+        itemId: "sun_elixir",
+        kind: "death_save",
+        activatedAt: new Date().toISOString(),
+      },
+    ],
+  });
+
+  assert.deepEqual(result.activeConsumables, []);
+});
+
 test("Chrono Vial does not trigger as a low-HP heal", async () => {
   const db = createTestDb();
   const player = makeCombatSnapshot({
@@ -3656,6 +3690,92 @@ test("seventh consumable without force throws ARENA_CONSUMABLE_CAP_REACHED", () 
   const profile = getArenaProfilePayload(db, "u1");
   assert.equal(profile.effects.activeConsumables.length, 6);
   assert.equal(profile.effects.firstHitTrueDamageCharges, 0);
+});
+
+test("Phoenix Feather top-up does not require replacing oldest when tracking marker is missing", () => {
+  const db = createTestDb();
+  const now = new Date().toISOString();
+  insertProfile(db, {
+    userId: "u1",
+    level: 60,
+    coins: 500000,
+    selectedCard: makeCard(1, "C"),
+    effects: {
+      fightStartShieldAmount: 60,
+      fightStartShieldCharges: 100,
+      damageBoostPct: 20,
+      damageBoostFightsRemaining: 500,
+      speedBoostPct: 12,
+      speedBoostFightsRemaining: 500,
+      evadeBoostPct: 10,
+      evadeBoostFightsRemaining: 250,
+      firstHitTrueDamageValue: 100,
+      firstHitTrueDamageCharges: 250,
+      ivBoostCharges: 250,
+      deathSaveCharges: 1,
+      activeConsumables: [
+        { itemId: "red_tonic", kind: "shield_fight_start", activatedAt: now },
+        { itemId: "green_draft", kind: "damage_boost", activatedAt: now },
+        { itemId: "amber_draft", kind: "speed_boost", activatedAt: now },
+        { itemId: "frost_elixir", kind: "evade_next_fight", activatedAt: now },
+        { itemId: "fuse_bomb", kind: "first_hit_true_damage", activatedAt: now },
+        { itemId: "viridian_elixir", kind: "iv_boost", activatedAt: now },
+      ],
+    },
+  });
+  upsertInventoryItem(db, "u1", "sun_elixir", 1);
+
+  const result = useConsumable(db, "u1", "sun_elixir");
+
+  assert.equal(result.effects.deathSaveCharges, 501);
+  assert.equal(result.effects.fightStartShieldCharges, 100);
+  assert.equal(result.effects.activeConsumables.length, 6);
+});
+
+test("expired Phoenix Feather marker is pruned before active consumable cap check", () => {
+  const db = createTestDb();
+  const now = new Date().toISOString();
+  insertProfile(db, {
+    userId: "u1",
+    level: 60,
+    coins: 500000,
+    selectedCard: makeCard(1, "C"),
+    effects: {
+      fightStartShieldAmount: 60,
+      fightStartShieldCharges: 100,
+      damageBoostPct: 20,
+      damageBoostFightsRemaining: 500,
+      speedBoostPct: 12,
+      speedBoostFightsRemaining: 500,
+      evadeBoostPct: 10,
+      evadeBoostFightsRemaining: 250,
+      firstHitTrueDamageValue: 100,
+      firstHitTrueDamageCharges: 250,
+      deathSaveCharges: 0,
+      activeConsumables: [
+        { itemId: "red_tonic", kind: "shield_fight_start", activatedAt: now },
+        { itemId: "green_draft", kind: "damage_boost", activatedAt: now },
+        { itemId: "amber_draft", kind: "speed_boost", activatedAt: now },
+        { itemId: "frost_elixir", kind: "evade_next_fight", activatedAt: now },
+        { itemId: "fuse_bomb", kind: "first_hit_true_damage", activatedAt: now },
+        { itemId: "sun_elixir", kind: "death_save", activatedAt: now },
+      ],
+    },
+  });
+  upsertInventoryItem(db, "u1", "sun_elixir", 1);
+
+  const result = useConsumable(db, "u1", "sun_elixir");
+  const activeKinds = result.effects.activeConsumables.map((entry) => entry.kind);
+
+  assert.equal(result.effects.deathSaveCharges, 500);
+  assert.deepEqual(activeKinds, [
+    "shield_fight_start",
+    "damage_boost",
+    "speed_boost",
+    "evade_next_fight",
+    "first_hit_true_damage",
+    "death_save",
+  ]);
 });
 
 test("seventh consumable with force replaces the oldest active kind", () => {
