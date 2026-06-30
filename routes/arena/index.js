@@ -490,8 +490,9 @@ module.exports = function registerArenaRoutes(app, deps) {
       if (!itemId) {
         throw new ArenaHttpError(400, "itemId is required.", "ARENA_ITEM_REQUIRED");
       }
+      const force = Boolean(req.body?.force);
 
-      const payload = useConsumable(db, user.id, itemId);
+      const payload = useConsumable(db, user.id, itemId, force);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
