@@ -3692,6 +3692,39 @@ test("seventh consumable without force throws ARENA_CONSUMABLE_CAP_REACHED", () 
   assert.equal(profile.effects.firstHitTrueDamageCharges, 0);
 });
 
+test("Solar Cauldron ascension does not count toward active consumable cap", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
+
+  [
+    ["rookie_cons_1", "red_tonic"],
+    ["rookie_cons_2", "green_draft"],
+    ["rookie_cons_3", "amber_draft"],
+    ["bronze_cons_1", "frost_elixir"],
+    ["silver_cons_1", "sun_elixir"],
+    ["bronze_cons_2", "viridian_elixir"],
+  ].forEach(([recipeId, itemId]) => {
+    craftShopRecipe(db, "u1", recipeId);
+    useConsumable(db, "u1", itemId);
+  });
+
+  craftShopRecipe(db, "u1", "cosmic_cons_1");
+  const result = useConsumable(db, "u1", "solar_cauldron");
+  const activeKinds = result.effects.activeConsumables.map((entry) => entry.kind);
+
+  assert.equal(result.effects.ascensionCount, 1);
+  assert.equal(result.effects.activeConsumables.length, 6);
+  assert.ok(!activeKinds.includes("ascension"));
+  assert.deepEqual(activeKinds, [
+    "shield_fight_start",
+    "damage_boost",
+    "speed_boost",
+    "evade_next_fight",
+    "death_save",
+    "iv_boost",
+  ]);
+});
+
 test("Phoenix Feather top-up does not require replacing oldest when tracking marker is missing", () => {
   const db = createTestDb();
   const now = new Date().toISOString();
