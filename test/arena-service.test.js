@@ -15,7 +15,11 @@ const {
   calculateCardSacrificePayout,
   craftShopRecipe,
   calculateRoundPower,
+  computeElementMultiplier,
   computeEvasionChance,
+  computeMaxHp,
+  computeShieldPiercePct,
+  convertMaxLevelOverflowXp,
   calculateLossXp,
   calculateWinCoins,
   calculateWinXp,
@@ -437,6 +441,28 @@ test("xp formula and reward formulas stay stable", () => {
   assert.equal(xpToNext(10), 2580);
   assert.equal(calculateWinXp(20, 2, 3), 70);
   assert.equal(calculateWinCoins(20, 12), 130);
+});
+
+test("day 3 balance formulas cap snowballing and reward max-level overflow", () => {
+  assert.equal(computeMaxHp({ hp: 100, power: 50, guard: 50, speed: 50 }), 230);
+  assert.equal(calculateWinXp(20, 2, 127), 71);
+  assert.equal(calculateWinCoins(20, 12, 20), 169);
+  assert.equal(
+    computeElementMultiplier(1.3, { effectHit: 100 }, { effectHit: 0 }),
+    1.8,
+  );
+  assert.equal(computeShieldPiercePct({ effectHit: 72 }), 7);
+
+  const profile = {
+    level: 70,
+    xp: 123,
+    coins: 10,
+    lifetimeCoinsEarned: 25,
+  };
+  assert.equal(convertMaxLevelOverflowXp(profile), 615);
+  assert.equal(profile.xp, 0);
+  assert.equal(profile.coins, 625);
+  assert.equal(profile.lifetimeCoinsEarned, 640);
 });
 
 test("round power includes metadata and rarity modifiers", () => {
@@ -1705,8 +1731,12 @@ test("playback fight player stats include sigil and affinity card IV", async () 
   ).run("u1", maxIvCard.malId, 250, 200, 5, now, now);
 
   const fight = await startPlaybackFight(db, "u1");
+  const snapshot = loadCombatSnapshot(db, ensureArenaProfile(db, "u1"));
 
-  assert.equal(fight.battle.maxHp.player, 266);
+  assert.equal(
+    fight.battle.maxHp.player,
+    computeMaxHp(snapshot.totalStats, snapshot.equipmentPct?.hpPct || 0),
+  );
 });
 
 test("direct fight response exposes the real-time defender snapshot", async () => {
@@ -3681,10 +3711,17 @@ test("seventh consumable without force throws ARENA_CONSUMABLE_CAP_REACHED", () 
 
   // Try a 7th without force — should throw.
   craftShopRecipe(db, "u1", "bronze_cons_3"); // Fuse Bomb
+  let capError;
   assert.throws(
     () => useConsumable(db, "u1", "fuse_bomb"),
-    (err) => err.code === "ARENA_CONSUMABLE_CAP_REACHED",
+    (err) => {
+      capError = err;
+      return err.code === "ARENA_CONSUMABLE_CAP_REACHED";
+    },
   );
+  assert.equal(capError.details.activeConsumables.length, 6);
+  assert.equal(capError.details.activeConsumables[0].itemId, "red_tonic");
+  assert.equal(capError.details.activeConsumables[0].itemName, "Red Tonic");
 
   // Profile should be unchanged (transaction rolled back).
   const profile = getArenaProfilePayload(db, "u1");
@@ -3849,6 +3886,45 @@ test("seventh consumable with force replaces the oldest active kind", () => {
   // Remaining effects should be intact.
   assert.equal(profile.effects.damageBoostFightsRemaining, 500);
   assert.equal(profile.effects.deathSaveCharges, 500);
+  assert.equal(profile.effects.firstHitTrueDamageCharges, 250);
+});
+
+test("seventh consumable with force can replace a chosen active kind", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
+
+  [
+    ["rookie_cons_1", "red_tonic"],
+    ["rookie_cons_2", "green_draft"],
+    ["rookie_cons_3", "amber_draft"],
+    ["bronze_cons_1", "frost_elixir"],
+    ["silver_cons_1", "sun_elixir"],
+    ["bronze_cons_2", "viridian_elixir"],
+  ].forEach(([recipeId, itemId]) => {
+    craftShopRecipe(db, "u1", recipeId);
+    useConsumable(db, "u1", itemId);
+  });
+
+  craftShopRecipe(db, "u1", "bronze_cons_3"); // Fuse Bomb
+  useConsumable(db, "u1", "fuse_bomb", {
+    force: true,
+    replaceItemId: "amber_draft",
+  });
+
+  const profile = getArenaProfilePayload(db, "u1");
+  const activeKinds = profile.effects.activeConsumables.map((entry) => entry.kind);
+
+  assert.deepEqual(activeKinds, [
+    "shield_fight_start",
+    "damage_boost",
+    "evade_next_fight",
+    "death_save",
+    "iv_boost",
+    "first_hit_true_damage",
+  ]);
+  assert.equal(profile.effects.speedBoostFightsRemaining, 0);
+  assert.equal(profile.effects.speedBoostPct, 0);
+  assert.equal(profile.effects.fightStartShieldCharges, 100);
   assert.equal(profile.effects.firstHitTrueDamageCharges, 250);
 });
 
