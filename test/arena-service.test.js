@@ -446,6 +446,7 @@ test("xp formula and reward formulas stay stable", () => {
 test("day 3 balance formulas cap snowballing and reward max-level overflow", () => {
   assert.equal(computeMaxHp({ hp: 100, power: 50, guard: 50, speed: 50 }), 230);
   assert.equal(calculateWinXp(20, 2, 127), 71);
+  assert.equal(calculateWinXp(70, 3, 127), 198);
   assert.equal(calculateWinCoins(20, 12, 20), 169);
   assert.equal(
     computeElementMultiplier(1.3, { effectHit: 100 }, { effectHit: 0 }),
@@ -459,10 +460,10 @@ test("day 3 balance formulas cap snowballing and reward max-level overflow", () 
     coins: 10,
     lifetimeCoinsEarned: 25,
   };
-  assert.equal(convertMaxLevelOverflowXp(profile), 615);
+  assert.equal(convertMaxLevelOverflowXp(profile), 123);
   assert.equal(profile.xp, 0);
-  assert.equal(profile.coins, 625);
-  assert.equal(profile.lifetimeCoinsEarned, 640);
+  assert.equal(profile.coins, 133);
+  assert.equal(profile.lifetimeCoinsEarned, 148);
 });
 
 test("round power includes metadata and rarity modifiers", () => {
