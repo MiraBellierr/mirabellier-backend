@@ -139,7 +139,7 @@ function rerollEquipmentSubstatRanges(db, { apply = false, onlyOutOfRange = fals
 
         const typeChanged = type !== beforeType;
         const shouldRerollValue =
-          !onlyOutOfRange || !isInRange(subStat?.value, range) || typeChanged;
+          !onlyOutOfRange || !isInRange(subStat?.value, range);
         if (!shouldRerollValue && !typeChanged) return subStat;
 
         const beforeValue = Number(subStat?.value) || 0;
