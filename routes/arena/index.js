@@ -16,7 +16,7 @@ const { buyShopItem, craftShopRecipe, equipShopItem, getArenaShopPayload,
   useConsumable } = require("../../lib/arena/shop");
 const { unequipEquipmentSlot, fodderEquipmentPiece,
   getEquipmentLoadouts, saveEquipmentLoadout, restoreEquipmentLoadout,
-  deleteEquipmentLoadout } = require("../../lib/arena/equipment");
+  deleteEquipmentLoadout, enhanceEquipmentPiece, rerollEquipmentSubStat } = require("../../lib/arena/equipment");
 const { createArenaUpdate, deleteArenaUpdate, getArenaUpdates } = require("../../lib/arena/updates");
 const { getArenaCollectionPayload,
   sacrificeCollectionCards, selectCollectionCard, toggleCollectionCardFavorite } = require("../../lib/arena/collection");
@@ -550,6 +550,41 @@ module.exports = function registerArenaRoutes(app, deps) {
       const payload = fodderEquipmentPiece(db, user.id, pieceId, refundAmount);
       setNoStoreHeaders(res);
       res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/enhance", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const pieceId = String(req.body?.pieceId || "").trim();
+      const fodderPieceId = String(req.body?.fodderPieceId || "").trim();
+      const result = enhanceEquipmentPiece(db, user.id, pieceId, fodderPieceId);
+      const shop = getArenaShopPayload(db, user.id);
+      setNoStoreHeaders(res);
+      res.json({ ...result, shop });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/reroll-substat", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const pieceId = String(req.body?.pieceId || "").trim();
+      const fodderPieceId = String(req.body?.fodderPieceId || "").trim();
+      const subStatIndex = Number(req.body?.subStatIndex);
+      const result = rerollEquipmentSubStat(
+        db,
+        user.id,
+        pieceId,
+        subStatIndex,
+        fodderPieceId,
+      );
+      const shop = getArenaShopPayload(db, user.id);
+      setNoStoreHeaders(res);
+      res.json({ ...result, shop });
     } catch (error) {
       handleArenaError(error, res);
     }
