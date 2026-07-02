@@ -19,11 +19,13 @@ const {
   computeEvasionChance,
   computeMaxHp,
   computeShieldPiercePct,
+  claimArenaCompensations,
   convertMaxLevelOverflowXp,
   calculateLossXp,
   calculateWinCoins,
   calculateWinXp,
   createArenaMarketListing,
+  createArenaCompensation,
   createArenaTradeListing,
   createArenaUpdate,
   deleteArenaUpdate,
@@ -2100,6 +2102,49 @@ test("admin reroll replaces today's global card shop offers", async () => {
   });
   assert.equal(shopAfterReroll.dailyOffers.length, 5);
   assert.ok(shopAfterReroll.dailyOffers.every((offer) => !offer.sold));
+});
+
+test("arena compensation snapshots existing profiles and claims rewards once", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 100 });
+
+  const compensation = createArenaCompensation(db, "owner", {
+    title: "Patch gift",
+    message: "Thanks for playing.",
+    coins: 250,
+    cardMalId: 1,
+    cardCount: 2,
+    cardMaxIv: true,
+    equipmentSlot: "weapon",
+    equipmentCount: 1,
+  });
+
+  assert.equal(compensation.recipientCount, 1);
+
+  insertProfile(db, { userId: "u2", coins: 100 });
+
+  const claimed = claimArenaCompensations(db, "u1");
+  assert.equal(claimed.compensations.length, 1);
+  assert.equal(claimed.compensations[0].title, "Patch gift");
+  assert.equal(claimed.compensations[0].rewards.coins, 250);
+  assert.equal(claimed.compensations[0].rewards.cards.length, 2);
+  assert.equal(claimed.compensations[0].rewards.cards[0].ivTotal, 124);
+  assert.equal(claimed.compensations[0].rewards.equipment.length, 1);
+
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.equal(profile.coins, 350);
+  assert.equal(profile.lifetimeCoinsEarned, 250);
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM arena_card_collection WHERE userId = ?").get("u1").count,
+    2,
+  );
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM arena_equipment_pieces WHERE userId = ?").get("u1").count,
+    1,
+  );
+
+  assert.equal(claimArenaCompensations(db, "u1").compensations.length, 0);
+  assert.equal(claimArenaCompensations(db, "u2").compensations.length, 0);
 });
 
 test("random card purchases remain available and failures never charge coins", async () => {
