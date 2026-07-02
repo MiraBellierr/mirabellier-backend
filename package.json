@@ -16,6 +16,8 @@
     "migrate:remove-arena-materials": "node scripts/remove-arena-materials.cjs --apply",
     "migrate:card-elements": "node scripts/migrate-arena-card-elements.cjs",
     "migrate:clamp-defend-pct": "node scripts/clamp-equipment-defend-pct.cjs",
+    "migrate:equipment-substat-ranges": "node scripts/reroll-equipment-substat-ranges.cjs --apply",
+    "migrate:equipment-substat-ranges:dry": "node scripts/reroll-equipment-substat-ranges.cjs --dry-run",
     "refund:gear": "node scripts/refund-gear.js",
     "refund:gear:dry": "node scripts/refund-gear.js --dry",
     "backfill:card-from": "node scripts/backfill-card-from.js",

@@ -28,6 +28,7 @@ const {
   createArenaUpdate,
   deleteArenaUpdate,
   drawDailyCard,
+  enhanceEquipmentPiece,
   equipShopItem,
   ensureArenaProfile,
   getArenaCardShopPayload,
@@ -53,6 +54,7 @@ const {
   rarityFromCharacterRank,
   resolveRoundWinner,
   resetArenaSkills,
+  rerollEquipmentSubStat,
   rerollArenaCardShopOffers,
   runFight,
   sacrificeCollectionCards,
@@ -67,7 +69,7 @@ const {
 } = require("../lib/arena");
 const registerArenaRoutes = require("../routes/arena");
 const { initializeSchema } = require("../lib/db");
-const { CATALOG_VERSION, SHOP_ITEMS } = require("../lib/arena-constants");
+const { CATALOG_VERSION, SHOP_ITEMS, SUB_STAT_POOL } = require("../lib/arena-constants");
 
 const {
   buildPassiveRuntime,
@@ -2237,6 +2239,101 @@ test("owned rolled gear can be re-equipped from inventory", () => {
   );
 });
 
+test("day 4 equipment rolls use tightened substat ranges and critRate naming", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 10,
+    coins: 25000,
+    selectedCard: makeCard(1, "C"),
+  });
+
+  for (let i = 0; i < 10; i += 1) {
+    const bought = buyShopItem(db, "u1", "weapon_roll");
+    bought.rolledPiece.subStats.forEach((subStat) => {
+      assert.notEqual(subStat.type, "crit");
+      const range = SUB_STAT_POOL.ranges[subStat.type];
+      assert.ok(range, `missing range for ${subStat.type}`);
+      assert.ok(subStat.value >= range[0], `${subStat.type} below range`);
+      assert.ok(subStat.value <= range[1], `${subStat.type} above range`);
+    });
+  }
+});
+
+test("enhancing equipment consumes coins and a fodder piece for +1 main stat", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    coins: 3000,
+    selectedCard: makeCard(1, "C"),
+  });
+  const target = buyShopItem(db, "u1", "weapon_roll");
+  const fodder = buyShopItem(db, "u1", "weapon_roll");
+
+  const result = enhanceEquipmentPiece(db, "u1", target.rolledPieceId, fodder.rolledPieceId);
+  assert.equal(result.previousLevel, 0);
+  assert.equal(result.enhancementLevel, 1);
+  assert.equal(result.coinCost, 350);
+
+  const payload = getArenaShopPayload(db, "u1");
+  const upgraded = payload.profile.equipmentPieces.find((piece) => piece.id === target.rolledPieceId);
+  assert.equal(upgraded.enhancementLevel, 1);
+  assert.equal(upgraded.enhancedMainStatValue, upgraded.mainStatValue + 1);
+  assert.equal(payload.profile.equipmentPieces.some((piece) => piece.id === fodder.rolledPieceId), false);
+  assert.equal(payload.profile.coins, 650);
+});
+
+test("rerolling one equipment substat consumes coins and a fodder piece", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    coins: 3000,
+    selectedCard: makeCard(1, "C"),
+  });
+  const target = buyShopItem(db, "u1", "weapon_roll");
+  const fodder = buyShopItem(db, "u1", "weapon_roll");
+
+  const result = rerollEquipmentSubStat(db, "u1", target.rolledPieceId, 0, fodder.rolledPieceId);
+  assert.equal(result.pieceId, target.rolledPieceId);
+  assert.equal(result.subStatIndex, 0);
+  assert.equal(result.coinCost, 500);
+  assert.equal(result.newSubStat.type, result.oldSubStat.type === "crit" ? "critRate" : result.oldSubStat.type);
+  const range = SUB_STAT_POOL.ranges[result.newSubStat.type];
+  assert.ok(result.newSubStat.value >= range[0]);
+  assert.ok(result.newSubStat.value <= range[1]);
+
+  const payload = getArenaShopPayload(db, "u1");
+  const rerolled = payload.profile.equipmentPieces.find((piece) => piece.id === target.rolledPieceId);
+  assert.deepEqual(rerolled.subStats[0], result.newSubStat);
+  assert.equal(payload.profile.equipmentPieces.some((piece) => piece.id === fodder.rolledPieceId), false);
+  assert.equal(payload.profile.coins, 500);
+});
+
+test("profile total HP includes equipment hpPct display bonus", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    hp: 100,
+    guard: 10,
+    power: 10,
+    speed: 10,
+    selectedCard: null,
+  });
+  insertEquippedEquipmentPiece(db, "u1", {
+    slot: "armor",
+    mainStatType: "guard",
+    mainStatValue: 0,
+    subStats: [{ type: "hpPct", value: 10 }],
+  });
+
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.equal(profile.stats.total.hp, 110);
+  assert.equal(profile.equipmentPct.hpPct, 10);
+});
+
 test("using consumable applies effect and consumes quantity", () => {
   const db = createTestDb();
   insertProfile(db, {
@@ -3416,6 +3513,8 @@ test("arena routes remain registered through compatibility entry", async () => {
     ["POST", "/arena/shop/equip"],
     ["POST", "/arena/shop/unequip"],
     ["POST", "/arena/shop/fodder"],
+    ["POST", "/arena/shop/enhance"],
+    ["POST", "/arena/shop/reroll-substat"],
     ["POST", "/arena/shop/craft"],
     ["GET", "/arena/leaderboard"],
     ["GET", "/arena/trade/users"],
