@@ -14,7 +14,7 @@ const { buyArenaMarketListing, cancelArenaMarketListing, createArenaMarketListin
 const { buyArenaShopCard, getArenaCardShopPayload, drawDailyCard, drawArenaPack } = require("../../lib/arena/card-shop");
 const { buyShopItem, craftShopRecipe, equipShopItem, getArenaShopPayload,
   useConsumable } = require("../../lib/arena/shop");
-const { unequipEquipmentSlot, fodderEquipmentPiece,
+const { unequipEquipmentSlot, fodderEquipmentPiece, lockEquipmentPiece, unlockEquipmentPiece,
   getEquipmentLoadouts, saveEquipmentLoadout, restoreEquipmentLoadout,
   deleteEquipmentLoadout, enhanceEquipmentPiece, rerollEquipmentSubStat } = require("../../lib/arena/equipment");
 const { createArenaUpdate, deleteArenaUpdate, getArenaUpdates } = require("../../lib/arena/updates");
@@ -630,6 +630,36 @@ module.exports = function registerArenaRoutes(app, deps) {
       const shop = getArenaShopPayload(db, user.id);
       setNoStoreHeaders(res);
       res.json({ ...result, shop });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/lock", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const pieceId = String(req.body?.pieceId || "").trim();
+      if (!pieceId) {
+        throw new ArenaHttpError(400, "pieceId is required.", "ARENA_PIECE_REQUIRED");
+      }
+      const result = lockEquipmentPiece(db, user.id, pieceId);
+      setNoStoreHeaders(res);
+      res.json(result);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/unlock", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const pieceId = String(req.body?.pieceId || "").trim();
+      if (!pieceId) {
+        throw new ArenaHttpError(400, "pieceId is required.", "ARENA_PIECE_REQUIRED");
+      }
+      const result = unlockEquipmentPiece(db, user.id, pieceId);
+      setNoStoreHeaders(res);
+      res.json(result);
     } catch (error) {
       handleArenaError(error, res);
     }
