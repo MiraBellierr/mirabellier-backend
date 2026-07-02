@@ -18,6 +18,7 @@ const { unequipEquipmentSlot, fodderEquipmentPiece, lockEquipmentPiece, unlockEq
   getEquipmentLoadouts, saveEquipmentLoadout, restoreEquipmentLoadout,
   deleteEquipmentLoadout, enhanceEquipmentPiece, rerollEquipmentSubStat } = require("../../lib/arena/equipment");
 const { createArenaUpdate, deleteArenaUpdate, getArenaUpdates } = require("../../lib/arena/updates");
+const { claimArenaCompensations } = require("../../lib/arena/compensation");
 const { getArenaCollectionPayload,
   sacrificeCollectionCards, selectCollectionCard, toggleCollectionCardFavorite } = require("../../lib/arena/collection");
 const { getArenaArchivePayload } = require("../../lib/arena/archive");
@@ -58,6 +59,17 @@ module.exports = function registerArenaRoutes(app, deps) {
       const updates = getArenaUpdates(db, { limit: req.query?.limit });
       setNoStoreHeaders(res);
       res.json({ updates });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/compensations/claim", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = claimArenaCompensations(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
     } catch (error) {
       handleArenaError(error, res);
     }

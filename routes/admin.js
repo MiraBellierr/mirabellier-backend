@@ -7,6 +7,8 @@ const {
   rarityFromCharacterRank,
 } = require("../lib/arena-characters");
 const { rerollArenaCardShopOffers } = require("../lib/arena/card-shop");
+const { createArenaCompensation } = require("../lib/arena/compensation");
+const { ArenaHttpError } = require("../lib/arena/utils");
 
 const CARD_IV_MIN = 0;
 const CARD_IV_MAX = 31;
@@ -98,6 +100,20 @@ function readUserLookup(db, target) {
   };
 }
 
+function compactArenaCharacter(character) {
+  return {
+    malId: character.malId,
+    title: character.title,
+    imageUrl: character.imageUrl,
+    favorites: character.favorites,
+    from: character.from || null,
+    rarity: rarityFromCharacterRank(
+      character.popularity,
+      getArenaCharacterCatalog().characters.length,
+    ),
+  };
+}
+
 module.exports = function registerAdminRoutes(app, deps) {
   const { db, authFromReq } = deps;
   const router = express.Router();
@@ -154,6 +170,37 @@ module.exports = function registerAdminRoutes(app, deps) {
     }
   });
 
+  router.get("/arena/characters/suggestions", (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const user = authFromReq(req);
+      if (!isOwner(user)) return res.status(403).json({ error: "Forbidden" });
+
+      const q = String(req.query.q || "").trim().toLowerCase();
+      if (!q) {
+        return res.json({ characters: [] });
+      }
+
+      const catalog = getArenaCharacterCatalog();
+      const characters = catalog.characters
+        .filter((character) => {
+          const id = String(character.malId);
+          const title = String(character.title || "").toLowerCase();
+          const from = String(character.from || "").toLowerCase();
+          return id.includes(q) || title.includes(q) || from.includes(q);
+        })
+        .slice(0, 12)
+        .map(compactArenaCharacter);
+
+      res.json({
+        source: "mal-characters.json",
+        characters,
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to suggest Arena characters" });
+    }
+  });
+
   router.post("/users/:userId/coins", (req, res) => {
     setNoStoreHeaders(res);
     try {
@@ -162,8 +209,8 @@ module.exports = function registerAdminRoutes(app, deps) {
 
       const targetUserId = req.params.userId;
       const amount = Number(req.body?.amount);
-      if (!Number.isFinite(amount) || amount <= 0) {
-        return res.status(400).json({ error: "amount must be a positive number" });
+      if (!Number.isFinite(amount) || amount === 0) {
+        return res.status(400).json({ error: "amount must be a non-zero number" });
       }
 
       const profile = db
@@ -173,9 +220,16 @@ module.exports = function registerAdminRoutes(app, deps) {
         return res.status(404).json({ error: "User has no arena profile" });
       }
 
-      const added = Math.trunc(amount);
-      const newCoins = profile.coins + added;
-      const newLifetime = (profile.lifetimeCoinsEarned ?? 0) + added;
+      const delta = Math.trunc(amount);
+      const currentCoins = Math.max(toPositiveInt(profile.coins, 0), 0);
+      const newCoins = currentCoins + delta;
+      if (newCoins < 0) {
+        return res.status(400).json({ error: "User does not have enough coins to remove that amount" });
+      }
+
+      const newLifetime = delta > 0
+        ? (profile.lifetimeCoinsEarned ?? 0) + delta
+        : (profile.lifetimeCoinsEarned ?? 0);
       const now = nowIso();
       db.prepare(
         "UPDATE arena_profiles SET coins = ?, lifetimeCoinsEarned = ?, updatedAt = ? WHERE userId = ?",
@@ -184,10 +238,11 @@ module.exports = function registerAdminRoutes(app, deps) {
       res.json({
         userId: targetUserId,
         coins: newCoins,
-        added,
+        added: delta,
+        delta,
       });
     } catch (error) {
-      res.status(500).json({ error: "Failed to add coins" });
+      res.status(500).json({ error: "Failed to update coins" });
     }
   });
 
@@ -366,6 +421,36 @@ module.exports = function registerAdminRoutes(app, deps) {
       res.json(payload);
     } catch (error) {
       res.status(500).json({ error: "Failed to reroll card shop" });
+    }
+  });
+
+  router.post("/arena/compensations", (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const user = authFromReq(req);
+      if (!isOwner(user)) return res.status(403).json({ error: "Forbidden" });
+
+      const compensation = createArenaCompensation(db, user.id, {
+        title: req.body?.title,
+        message: req.body?.message,
+        coins: req.body?.coins,
+        cardMalId: req.body?.cardMalId,
+        cardCount: req.body?.cardCount,
+        cardMaxIv: req.body?.cardMaxIv === true,
+        equipmentSlot: req.body?.equipmentSlot,
+        equipmentCount: req.body?.equipmentCount,
+      });
+
+      res.status(201).json({ compensation });
+    } catch (error) {
+      if (error instanceof ArenaHttpError) {
+        return res.status(error.status).json({
+          error: error.message,
+          code: error.code,
+          ...error.details,
+        });
+      }
+      res.status(500).json({ error: "Failed to create compensation" });
     }
   });
 
