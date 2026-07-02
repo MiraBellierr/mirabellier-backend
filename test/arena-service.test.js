@@ -45,6 +45,7 @@ const {
   getPlaybackFightState,
   incrementDailyOpponentCount,
   finalizePlaybackFightRewards,
+  fodderEquipmentPiece,
   loadCombatSnapshot,
   acceptTradeRequest,
   applyFightEffectUsage,
@@ -58,6 +59,7 @@ const {
   rerollArenaCardShopOffers,
   runFight,
   sacrificeCollectionCards,
+  saveEquipmentLoadout,
   selectCollectionCard,
   sendTradeRequest,
   skipPlaybackFightToEnd,
@@ -2282,6 +2284,63 @@ test("enhancing equipment consumes coins and a fodder piece for +1 main stat", (
   assert.equal(upgraded.enhancedMainStatValue, upgraded.mainStatValue + 1);
   assert.equal(payload.profile.equipmentPieces.some((piece) => piece.id === fodder.rolledPieceId), false);
   assert.equal(payload.profile.coins, 650);
+});
+
+function makeLoadoutProtectedWeaponFodder(db) {
+  const target = buyShopItem(db, "u1", "weapon_roll");
+  const protectedFodder = buyShopItem(db, "u1", "weapon_roll");
+  equipShopItem(db, "u1", protectedFodder.rolledPieceId);
+  saveEquipmentLoadout(db, "u1", "Protected");
+  equipShopItem(db, "u1", target.rolledPieceId);
+  return { target, protectedFodder };
+}
+
+test("equipment saved in a loadout cannot be scrapped directly", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    coins: 3000,
+    selectedCard: makeCard(1, "C"),
+  });
+  const { protectedFodder } = makeLoadoutProtectedWeaponFodder(db);
+
+  assert.throws(
+    () => fodderEquipmentPiece(db, "u1", protectedFodder.rolledPieceId, 500),
+    (error) => error instanceof ArenaHttpError && error.code === "ARENA_PIECE_IN_LOADOUT",
+  );
+});
+
+test("equipment saved in a loadout cannot be used as enhancement fodder", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    coins: 3000,
+    selectedCard: makeCard(1, "C"),
+  });
+  const { target, protectedFodder } = makeLoadoutProtectedWeaponFodder(db);
+
+  assert.throws(
+    () => enhanceEquipmentPiece(db, "u1", target.rolledPieceId, protectedFodder.rolledPieceId),
+    (error) => error instanceof ArenaHttpError && error.code === "ARENA_PIECE_IN_LOADOUT",
+  );
+});
+
+test("equipment saved in a loadout cannot be used as reroll fodder", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    coins: 3000,
+    selectedCard: makeCard(1, "C"),
+  });
+  const { target, protectedFodder } = makeLoadoutProtectedWeaponFodder(db);
+
+  assert.throws(
+    () => rerollEquipmentSubStat(db, "u1", target.rolledPieceId, 0, protectedFodder.rolledPieceId),
+    (error) => error instanceof ArenaHttpError && error.code === "ARENA_PIECE_IN_LOADOUT",
+  );
 });
 
 test("rerolling one equipment substat consumes coins and a fodder piece", () => {
