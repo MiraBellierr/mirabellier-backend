@@ -3817,7 +3817,7 @@ test("Solar Cauldron ascension applies +1 all stats and enforces cooldown", () =
   );
 });
 
-test("consumable stacking is additive", () => {
+test("reusing a charge consumable adds charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 100000, selectedCard: makeCard(1, "C") });
 
@@ -4132,19 +4132,31 @@ test("seventh consumable with force can replace a chosen active kind", () => {
   assert.equal(profile.effects.firstHitTrueDamageCharges, 250);
 });
 
-test("consumable pct uses Math.max across different tiers", () => {
+test("same-type consumable values stay fixed while charges increase", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 200000, selectedCard: makeCard(1, "C") });
 
-  // Use red_tonic (60 shield) then sacred_candles (80 shield) — should keep 80
+  // Use red_tonic (60 shield) then sacred_candles (80 shield).
   craftShopRecipe(db, "u1", "rookie_cons_1");
   useConsumable(db, "u1", "red_tonic");
 
   craftShopRecipe(db, "u1", "mythic_cons_2");
   const result = useConsumable(db, "u1", "sacred_candles");
 
-  assert.equal(result.effects.fightStartShieldAmount, 80, "should keep the higher shield amount");
+  assert.equal(result.effects.fightStartShieldAmount, 60, "should keep the active shield amount");
   assert.equal(result.effects.fightStartShieldCharges, 1100);
+});
+
+test("reusing the same percentage consumable extends duration without raising value", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
+
+  craftShopRecipe(db, "u1", "rookie_cons_2", 2);
+  useConsumable(db, "u1", "green_draft");
+  const result = useConsumable(db, "u1", "green_draft");
+
+  assert.equal(result.effects.damageBoostPct, 20);
+  assert.equal(result.effects.damageBoostFightsRemaining, 1000);
 });
 
 test("evade boost pct is capped at 95", () => {
@@ -4210,7 +4222,7 @@ test("non-consumable effect duration fields respect EFFECT_DURATION_LIMITS caps"
   });
 });
 
-test("repeated consumable stacking is additive", () => {
+test("repeated consumables extend duration without stacking effect value", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 500000, selectedCard: makeCard(1, "C") });
 
@@ -4223,6 +4235,7 @@ test("repeated consumable stacking is additive", () => {
 
   const profile = getArenaProfilePayload(db, "u1");
   assert.equal(profile.effects.speedBoostFightsRemaining, 2500);
+  assert.equal(profile.effects.speedBoostPct, 12);
 });
 
 test("consumable duration fields normalize large values unchanged", () => {
