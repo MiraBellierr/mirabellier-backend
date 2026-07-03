@@ -1901,19 +1901,23 @@ test("buying card shop card consumes coins", async () => {
   assert.ok(buyResult.profile.coins < startingCoins);
 });
 
-test("card shop shares five unique daily offers and refreshes by UTC date", async () => {
+test("card shop gives each player five personal unique daily offers", async () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", coins: 5000 });
   insertProfile(db, { userId: "u2", coins: 5000 });
+  const drawCard = makeDrawSequence([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
   const first = await getArenaCardShopPayload(db, "u1", {
     recordedDate: "2099-01-05",
+    drawCard,
   });
   const second = await getArenaCardShopPayload(db, "u2", {
     recordedDate: "2099-01-05",
+    drawCard,
   });
   const nextDay = await getArenaCardShopPayload(db, "u1", {
     recordedDate: "2099-01-06",
+    drawCard,
   });
 
   assert.equal(first.dailyOffers.length, 5);
@@ -1934,7 +1938,9 @@ test("card shop shares five unique daily offers and refreshes by UTC date", asyn
     new Set(first.dailyOffers.map((offer) => offer.card.malId)).size,
     5,
   );
-  assert.deepEqual(second.dailyOffers, first.dailyOffers);
+  assert.deepEqual(first.dailyOffers.map((offer) => offer.card.malId), [1, 2, 3, 4, 5]);
+  assert.deepEqual(second.dailyOffers.map((offer) => offer.card.malId), [6, 7, 8, 9, 10]);
+  assert.notDeepEqual(second.dailyOffers, first.dailyOffers);
   assert.equal(first.nextRefreshAt, "2099-01-06T00:00:00.000Z");
   assert.equal(nextDay.offerDate, "2099-01-06");
   assert.ok(
@@ -1985,7 +1991,7 @@ test("random card offer follows the configured weekday schedule", async () => {
   assert.equal(getArenaProfilePayload(db, "u1").coins, 1000);
 });
 
-test("daily card purchases are limited to once per user and preserve selected card", async () => {
+test("daily card purchases are personal offers and preserve selected card", async () => {
   const db = createTestDb();
   const selectedCard = makeCard(99, "SSR");
   insertProfile(db, {
@@ -2043,37 +2049,47 @@ test("daily card purchases are limited to once per user and preserve selected ca
 
   const otherAccountShop = await getArenaCardShopPayload(db, "u2", {
     recordedDate: "2099-02-01",
+    drawCard: makeDrawSequence([6, 7, 8, 9, 10]),
   });
-  assert.equal(
-    otherAccountShop.dailyOffers.find(
-      (candidate) => candidate.offerId === offer.offerId,
-    )?.sold,
-    false,
+  assert.equal(otherAccountShop.dailyOffers.some((candidate) => candidate.offerId === offer.offerId), false);
+  assert.ok(otherAccountShop.dailyOffers.every((candidate) => !candidate.sold));
+
+  await assert.rejects(
+    () =>
+      buyArenaShopCard(db, "u2", {
+        kind: "daily",
+        offerId: offer.offerId,
+      }, {
+        recordedDate: "2099-02-01",
+      }),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_CARD_SHOP_OFFER_NOT_FOUND",
   );
+
+  const secondAccountOffer = otherAccountShop.dailyOffers[0];
   const secondPurchase = await buyArenaShopCard(db, "u2", {
     kind: "daily",
-    offerId: offer.offerId,
+    offerId: secondAccountOffer.offerId,
   }, {
     recordedDate: "2099-02-01",
   });
-
-  assert.equal(secondPurchase.purchasedOfferId, offer.offerId);
-  assert.equal(
-    secondPurchase.cardShop.dailyOffers.find(
-      (candidate) => candidate.offerId === offer.offerId,
-    )?.sold,
-    true,
-  );
+  assert.equal(secondPurchase.purchasedOfferId, secondAccountOffer.offerId);
 });
 
-test("admin reroll replaces today's global card shop offers", async () => {
+test("admin reroll clears today's generated personal card shop offers", async () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", coins: 5000 });
   insertProfile(db, { userId: "u2", coins: 5000 });
+  const drawCard = makeDrawSequence([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
   const initial = await getArenaCardShopPayload(db, "u1", {
     recordedDate: "2099-03-01",
-    drawCard: makeDrawSequence([1, 2, 3, 4, 5]),
+    drawCard,
+  });
+  const secondInitial = await getArenaCardShopPayload(db, "u2", {
+    recordedDate: "2099-03-01",
+    drawCard,
   });
   const initialMalIds = initial.dailyOffers.map((offer) => offer.card.malId);
   await buyArenaShopCard(db, "u1", {
@@ -2085,23 +2101,22 @@ test("admin reroll replaces today's global card shop offers", async () => {
 
   const rerolled = await rerollArenaCardShopOffers(db, {
     recordedDate: "2099-03-01",
-    drawCard: makeDrawSequence([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
   });
-  const rerolledMalIds = rerolled.dailyOffers.map((offer) => offer.card.malId);
 
   assert.equal(rerolled.offerDate, "2099-03-01");
-  assert.equal(rerolled.deletedOffers, 5);
+  assert.equal(rerolled.deletedOffers, initial.dailyOffers.length + secondInitial.dailyOffers.length);
   assert.equal(rerolled.deletedPurchases, 1);
-  assert.deepEqual(rerolledMalIds, [6, 7, 8, 9, 10]);
-  assert.ok(
-    rerolledMalIds.every((malId) => !initialMalIds.includes(malId)),
-  );
+  assert.deepEqual(rerolled.dailyOffers, []);
 
   const shopAfterReroll = await getArenaCardShopPayload(db, "u2", {
     recordedDate: "2099-03-01",
+    drawCard: makeDrawSequence([11, 12, 13, 14, 15]),
   });
   assert.equal(shopAfterReroll.dailyOffers.length, 5);
   assert.ok(shopAfterReroll.dailyOffers.every((offer) => !offer.sold));
+  assert.ok(
+    shopAfterReroll.dailyOffers.every((offer) => !initialMalIds.includes(offer.card.malId)),
+  );
 });
 
 test("arena compensation snapshots existing profiles and claims rewards once", () => {
