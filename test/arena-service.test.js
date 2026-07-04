@@ -3876,18 +3876,16 @@ test("consumable inventory is capped per item", () => {
   assert.equal(redTonicRecipe?.canCraft, false);
 });
 
-test("active consumable effects replace the oldest after six kinds", () => {
+test("active consumable effects allow four kinds", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
 
-  // Use 6 different consumables — all should stay active (cap is 6).
+  // Use 4 different consumables -- all should stay active (cap is 4).
   [
     ["rookie_cons_1", "red_tonic"],
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-    ["silver_cons_1", "sun_elixir"],
-    ["bronze_cons_2", "viridian_elixir"],
   ].forEach(([recipeId, itemId]) => {
     craftShopRecipe(db, "u1", recipeId);
     useConsumable(db, "u1", itemId);
@@ -3896,39 +3894,35 @@ test("active consumable effects replace the oldest after six kinds", () => {
   const profile = getArenaProfilePayload(db, "u1");
   const activeKinds = profile.effects.activeConsumables.map((entry) => entry.kind);
 
-  // All 6 should be active (no replacement yet).
+  // All 4 should be active (no replacement yet).
   assert.deepEqual(activeKinds, [
     "shield_fight_start",
     "damage_boost",
     "speed_boost",
     "evade_next_fight",
-    "death_save",
-    "iv_boost",
   ]);
   assert.equal(profile.effects.fightStartShieldCharges, 100);
   assert.equal(profile.effects.damageBoostFightsRemaining, 500);
-  assert.equal(profile.effects.deathSaveCharges, 500);
-  assert.equal(profile.effects.ivBoostCharges, 250);
+  assert.equal(profile.effects.speedBoostFightsRemaining, 500);
+  assert.equal(profile.effects.evadeBoostFightsRemaining, 250);
 });
 
-test("seventh consumable without force throws ARENA_CONSUMABLE_CAP_REACHED", () => {
+test("fifth consumable without force throws ARENA_CONSUMABLE_CAP_REACHED", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
 
-  // Fill the cap with 6 different consumables.
+  // Fill the cap with 4 different consumables.
   [
     ["rookie_cons_1", "red_tonic"],
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-    ["silver_cons_1", "sun_elixir"],
-    ["bronze_cons_2", "viridian_elixir"],
   ].forEach(([recipeId, itemId]) => {
     craftShopRecipe(db, "u1", recipeId);
     useConsumable(db, "u1", itemId);
   });
 
-  // Try a 7th without force — should throw.
+  // Try a 5th without force -- should throw.
   craftShopRecipe(db, "u1", "bronze_cons_3"); // Fuse Bomb
   let capError;
   assert.throws(
@@ -3938,13 +3932,13 @@ test("seventh consumable without force throws ARENA_CONSUMABLE_CAP_REACHED", () 
       return err.code === "ARENA_CONSUMABLE_CAP_REACHED";
     },
   );
-  assert.equal(capError.details.activeConsumables.length, 6);
+  assert.equal(capError.details.activeConsumables.length, 4);
   assert.equal(capError.details.activeConsumables[0].itemId, "red_tonic");
   assert.equal(capError.details.activeConsumables[0].itemName, "Red Tonic");
 
   // Profile should be unchanged (transaction rolled back).
   const profile = getArenaProfilePayload(db, "u1");
-  assert.equal(profile.effects.activeConsumables.length, 6);
+  assert.equal(profile.effects.activeConsumables.length, 4);
   assert.equal(profile.effects.firstHitTrueDamageCharges, 0);
 });
 
@@ -3957,8 +3951,6 @@ test("Solar Cauldron ascension does not count toward active consumable cap", () 
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-    ["silver_cons_1", "sun_elixir"],
-    ["bronze_cons_2", "viridian_elixir"],
   ].forEach(([recipeId, itemId]) => {
     craftShopRecipe(db, "u1", recipeId);
     useConsumable(db, "u1", itemId);
@@ -3969,15 +3961,13 @@ test("Solar Cauldron ascension does not count toward active consumable cap", () 
   const activeKinds = result.effects.activeConsumables.map((entry) => entry.kind);
 
   assert.equal(result.effects.ascensionCount, 1);
-  assert.equal(result.effects.activeConsumables.length, 6);
+  assert.equal(result.effects.activeConsumables.length, 4);
   assert.ok(!activeKinds.includes("ascension"));
   assert.deepEqual(activeKinds, [
     "shield_fight_start",
     "damage_boost",
     "speed_boost",
     "evade_next_fight",
-    "death_save",
-    "iv_boost",
   ]);
 });
 
@@ -4007,8 +3997,6 @@ test("Phoenix Feather top-up does not require replacing oldest when tracking mar
         { itemId: "green_draft", kind: "damage_boost", activatedAt: now },
         { itemId: "amber_draft", kind: "speed_boost", activatedAt: now },
         { itemId: "frost_elixir", kind: "evade_next_fight", activatedAt: now },
-        { itemId: "fuse_bomb", kind: "first_hit_true_damage", activatedAt: now },
-        { itemId: "viridian_elixir", kind: "iv_boost", activatedAt: now },
       ],
     },
   });
@@ -4018,7 +4006,7 @@ test("Phoenix Feather top-up does not require replacing oldest when tracking mar
 
   assert.equal(result.effects.deathSaveCharges, 501);
   assert.equal(result.effects.fightStartShieldCharges, 100);
-  assert.equal(result.effects.activeConsumables.length, 6);
+  assert.equal(result.effects.activeConsumables.length, 4);
 });
 
 test("expired Phoenix Feather marker is pruned before active consumable cap check", () => {
@@ -4045,8 +4033,6 @@ test("expired Phoenix Feather marker is pruned before active consumable cap chec
         { itemId: "red_tonic", kind: "shield_fight_start", activatedAt: now },
         { itemId: "green_draft", kind: "damage_boost", activatedAt: now },
         { itemId: "amber_draft", kind: "speed_boost", activatedAt: now },
-        { itemId: "frost_elixir", kind: "evade_next_fight", activatedAt: now },
-        { itemId: "fuse_bomb", kind: "first_hit_true_damage", activatedAt: now },
         { itemId: "sun_elixir", kind: "death_save", activatedAt: now },
       ],
     },
@@ -4061,30 +4047,26 @@ test("expired Phoenix Feather marker is pruned before active consumable cap chec
     "shield_fight_start",
     "damage_boost",
     "speed_boost",
-    "evade_next_fight",
-    "first_hit_true_damage",
     "death_save",
   ]);
 });
 
-test("seventh consumable with force replaces the oldest active kind", () => {
+test("fifth consumable with force replaces the oldest active kind", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
 
-  // Fill the cap with 6 different consumables.
+  // Fill the cap with 4 different consumables.
   [
     ["rookie_cons_1", "red_tonic"],
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-    ["silver_cons_1", "sun_elixir"],
-    ["bronze_cons_2", "viridian_elixir"],
   ].forEach(([recipeId, itemId]) => {
     craftShopRecipe(db, "u1", recipeId);
     useConsumable(db, "u1", itemId);
   });
 
-  // Use a 7th with force — the oldest (red_tonic) should be replaced.
+  // Use a 5th with force -- the oldest (red_tonic) should be replaced.
   craftShopRecipe(db, "u1", "bronze_cons_3"); // Fuse Bomb
   useConsumable(db, "u1", "fuse_bomb", true);
 
@@ -4095,8 +4077,6 @@ test("seventh consumable with force replaces the oldest active kind", () => {
     "damage_boost",
     "speed_boost",
     "evade_next_fight",
-    "death_save",
-    "iv_boost",
     "first_hit_true_damage",
   ]);
   // Oldest (red_tonic / shield_fight_start) was cleared.
@@ -4104,11 +4084,11 @@ test("seventh consumable with force replaces the oldest active kind", () => {
   assert.equal(profile.effects.fightStartShieldAmount, 0);
   // Remaining effects should be intact.
   assert.equal(profile.effects.damageBoostFightsRemaining, 500);
-  assert.equal(profile.effects.deathSaveCharges, 500);
+  assert.equal(profile.effects.evadeBoostFightsRemaining, 250);
   assert.equal(profile.effects.firstHitTrueDamageCharges, 250);
 });
 
-test("seventh consumable with force can replace a chosen active kind", () => {
+test("fifth consumable with force can replace a chosen active kind", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
 
@@ -4117,8 +4097,6 @@ test("seventh consumable with force can replace a chosen active kind", () => {
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-    ["silver_cons_1", "sun_elixir"],
-    ["bronze_cons_2", "viridian_elixir"],
   ].forEach(([recipeId, itemId]) => {
     craftShopRecipe(db, "u1", recipeId);
     useConsumable(db, "u1", itemId);
@@ -4137,8 +4115,6 @@ test("seventh consumable with force can replace a chosen active kind", () => {
     "shield_fight_start",
     "damage_boost",
     "evade_next_fight",
-    "death_save",
-    "iv_boost",
     "first_hit_true_damage",
   ]);
   assert.equal(profile.effects.speedBoostFightsRemaining, 0);
