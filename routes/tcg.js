@@ -91,9 +91,43 @@ module.exports = (app, { db, authFromReq }) => {
   router.get("/active-game", (req, res) => {
     try {
       const user = requireAuthUser(req);
-      const game = db.prepare(
-        `SELECT id FROM tcg_games WHERE (player1Id = ? OR player2Id = ?) AND state = 'playing' LIMIT 1`
-      ).get(user.id, user.id);
+      const games = db.prepare(
+        `SELECT g.id, g.player1Id, g.player2Id, s.stateJson
+         FROM tcg_games g
+         LEFT JOIN tcg_game_state s ON s.gameId = g.id
+         WHERE (g.player1Id = ? OR g.player2Id = ?) AND g.state = 'playing'
+         ORDER BY g.updatedAt DESC
+         LIMIT 10`
+      ).all(user.id, user.id);
+      let game = null;
+      for (const candidate of games) {
+        let state = null;
+        try {
+          state = candidate.stateJson ? JSON.parse(candidate.stateJson) : null;
+        } catch {
+          state = null;
+        }
+        if (state?.phase === "finished" || state?.winner) {
+          db.prepare(
+            `UPDATE tcg_games
+             SET state = 'finished',
+                 winnerId = ?,
+                 player1Score = ?,
+                 player2Score = ?,
+                 updatedAt = ?
+             WHERE id = ?`
+          ).run(
+            state.winner === "p1" ? candidate.player1Id : state.winner === "p2" ? candidate.player2Id : null,
+            state.p1Score ?? 0,
+            state.p2Score ?? 0,
+            new Date().toISOString(),
+            candidate.id,
+          );
+          continue;
+        }
+        game = candidate;
+        break;
+      }
       setNoStore(res);
       res.json(game ? { gameId: game.id } : { gameId: null });
     } catch (error) {
