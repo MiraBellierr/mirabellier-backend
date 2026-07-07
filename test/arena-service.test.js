@@ -72,7 +72,9 @@ const {
   DAILY_OPPONENT_LIMIT_MIN,
 } = require("../lib/arena");
 const registerArenaRoutes = require("../routes/arena");
+const registerAdminRoutes = require("../routes/admin");
 const { initializeSchema } = require("../lib/db");
+const { readArenaMetrics } = require("../lib/arena-monitoring");
 const { CATALOG_VERSION, SHOP_ITEMS, SUB_STAT_POOL } = require("../lib/arena-constants");
 
 const {
@@ -364,6 +366,7 @@ function getConsumableEffect(itemId) {
 
 function makeCombatSnapshot({
   id,
+  level = 1,
   rarity = "C",
   stats = {},
   activePassives = [],
@@ -378,7 +381,7 @@ function makeCombatSnapshot({
   };
 
   return {
-    profile: { level: 1 },
+    profile: { level },
     selectedCard: makeCard(id, rarity),
     rarity,
     baseStats: { ...totalStats },
@@ -1018,6 +1021,62 @@ test("fight-start passive shields absorb damage before HP is lost", async () => 
   assert.equal(result.battle.initialShield.player, 6);
   assert.equal(firstIncomingHit.playerShield, 0);
   assert.equal(baselineHit.damage - firstIncomingHit.damage, 6);
+});
+
+test("combat passives alter live attack and defense damage", async () => {
+  const basePlayer = makeCombatSnapshot({
+    id: 1,
+    stats: { hp: 800, power: 42, guard: 20, speed: 35 },
+  });
+  const baseOpponent = makeCombatSnapshot({
+    id: 2,
+    stats: { hp: 800, power: 16, guard: 18, speed: 10 },
+  });
+  const baseline = await simulateFight(null, {
+    player: basePlayer,
+    opponent: baseOpponent,
+    playerEffects: makeEffects(),
+    randomFn: () => 0.99,
+  });
+  const withPassives = await simulateFight(null, {
+    player: makeCombatSnapshot({
+      id: 1,
+      stats: { hp: 800, power: 42, guard: 20, speed: 35 },
+      activePassives: [
+        {
+          key: "test:flat-edge",
+          trigger: "onAttack",
+          priority: 10,
+          actions: [{ type: "addFlatDamage", value: 20 }],
+        },
+      ],
+    }),
+    opponent: makeCombatSnapshot({
+      id: 2,
+      stats: { hp: 800, power: 16, guard: 18, speed: 10 },
+      activePassives: [
+        {
+          key: "test:ward",
+          trigger: "onDamageTaken",
+          priority: 10,
+          actions: [{ type: "reduceIncomingDamageFlat", value: 7 }],
+        },
+      ],
+    }),
+    playerEffects: makeEffects(),
+    randomFn: () => 0.99,
+  });
+
+  const baselineHit = baseline.rounds.find(
+    (round) => round.attacker === "player" && !round.avoided,
+  );
+  const passiveHit = withPassives.rounds.find(
+    (round) => round.attacker === "player" && !round.avoided,
+  );
+
+  assert.ok(baselineHit);
+  assert.ok(passiveHit);
+  assert.equal(passiveHit.damage, baselineHit.damage + 13);
 });
 
 test("consumable fight-start shields are applied and marked for consumption", async () => {
@@ -2805,6 +2864,66 @@ test("combined consumable damage multipliers are capped", async () => {
   assert.ok(boostedHit.damage <= baselineHit.damage * 5);
 });
 
+test("max-level all-consumable burst still respects the damage cap", async () => {
+  const db = createTestDb();
+  const stats = { hp: 672, power: 150, guard: 150, speed: 79, effectHit: 72 };
+  const opponentStats = { hp: 1400, power: 120, guard: 80, speed: 30, effectHit: 30 };
+
+  const steroidOnly = await simulateFight(db, {
+    player: makeCombatSnapshot({ id: 1, level: 70, rarity: "UR", stats }),
+    opponent: makeCombatSnapshot({ id: 2, level: 70, rarity: "UR", stats: opponentStats }),
+    playerEffects: {
+      statSteroidPct: 200,
+      statSteroidFightsRemaining: 1,
+      speedBoostPct: 200,
+      speedBoostFightsRemaining: 1,
+      guardBoostPct: 200,
+      guardBoostFightsRemaining: 1,
+    },
+    randomFn: () => 0.99,
+  });
+  const allConsumables = await simulateFight(db, {
+    player: makeCombatSnapshot({ id: 1, level: 70, rarity: "UR", stats }),
+    opponent: makeCombatSnapshot({ id: 2, level: 70, rarity: "UR", stats: opponentStats }),
+    playerEffects: {
+      damageBoostPct: 200,
+      damageBoostFightsRemaining: 1,
+      speedBoostPct: 200,
+      speedBoostFightsRemaining: 1,
+      guardBoostPct: 200,
+      guardBoostFightsRemaining: 1,
+      critChanceBoostPct: 200,
+      critChanceBoostFightsRemaining: 1,
+      statSteroidPct: 200,
+      statSteroidFightsRemaining: 1,
+      vampiricHealPct: 100,
+      vampiricHealFightsRemaining: 1,
+      deathSaveCharges: 1,
+      selfReviveCharges: 1,
+      selfReviveHpThresholdPct: 50,
+      fightStartShieldCharges: 1,
+      fightStartShieldAmount: 9999,
+      evadeBoostPct: 95,
+      evadeBoostFightsRemaining: 1,
+      firstAttackDoubleCharges: 1,
+      firstHitTrueDamageCharges: 1,
+      firstHitTrueDamageValue: 100,
+    },
+    randomFn: () => 0.99,
+  });
+
+  const cappedBaseHit = steroidOnly.rounds.find(
+    (round) => round.attacker === "player" && !round.avoided,
+  );
+  const burstHit = allConsumables.rounds.find(
+    (round) => round.attacker === "player" && !round.avoided,
+  );
+
+  assert.ok(cappedBaseHit);
+  assert.ok(burstHit);
+  assert.ok(burstHit.damage <= cappedBaseHit.damage * 5 + 100);
+});
+
 test("Vampiric Fang heals player on successful hit", async () => {
   const db = createTestDb();
   insertProfile(db, {
@@ -3681,6 +3800,115 @@ test("arena routes remain registered through compatibility entry", async () => {
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
+
+test("arena monitoring reports activity, economy, and balance alerts", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    coins: 50,
+    lifetimeCoinsEarned: 500,
+    selectedCard: makeCard(1, "C"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    coins: 25,
+    lifetimeCoinsEarned: 100,
+    effects: { evadeBoostPct: 60, evadeBoostFightsRemaining: 1 },
+    selectedCard: makeCard(2, "C"),
+  });
+  insertProfile(db, {
+    userId: "u3",
+    coins: 10,
+    lifetimeCoinsEarned: 10,
+    winStreak: 101,
+    selectedCard: makeCard(3, "C"),
+  });
+
+  const now = new Date().toISOString();
+  const insertFight = db.prepare(
+    `INSERT INTO arena_fights (
+      id, userId, opponentUserId, result, roundsJson, xpDelta, coinDelta, createdAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  insertFight.run(
+    "fight-1",
+    "u1",
+    "u2",
+    "win",
+    JSON.stringify([{ turn: 1, attacker: "player", damage: 1201 }]),
+    30,
+    40,
+    now,
+  );
+  insertFight.run(
+    "fight-2",
+    "u2",
+    "u1",
+    "loss",
+    JSON.stringify([{ turn: 1, attacker: "opponent", damage: 10 }]),
+    8,
+    0,
+    now,
+  );
+
+  const metrics = readArenaMetrics(db, { days: 7 });
+
+  assert.equal(metrics.activity.fights, 2);
+  assert.equal(metrics.activity.wins, 1);
+  assert.equal(metrics.activity.winRate, 0.5);
+  assert.equal(metrics.activity.coinInflow, 40);
+  assert.equal(metrics.economy.currentCoins, 85);
+  assert.equal(metrics.economy.lifetimeCoinsEarned, 610);
+  assert.equal(metrics.economy.estimatedCoinOutflow, 525);
+  assert.equal(metrics.balance.highDamageTurns[0].damage, 1201);
+  assert.equal(metrics.balance.highEvasionProfiles[0].userId, "u2");
+  assert.equal(metrics.balance.highStreakProfiles[0].userId, "u3");
+});
+
+test("admin arena metrics endpoint is owner-only", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    selectedCard: makeCard(1, "C"),
+  });
+
+  const forbiddenApp = express();
+  registerAdminRoutes(forbiddenApp, { db, authFromReq: () => null });
+  const forbiddenServer = forbiddenApp.listen(0);
+  try {
+    await new Promise((resolve) => forbiddenServer.once("listening", resolve));
+    const address = forbiddenServer.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(`http://127.0.0.1:${address.port}/admin/arena/metrics`);
+    assert.equal(response.status, 403);
+  } finally {
+    await new Promise((resolve, reject) => {
+      forbiddenServer.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  const ownerApp = express();
+  registerAdminRoutes(ownerApp, {
+    db,
+    authFromReq: () => ({ discordId: "548050617889980426" }),
+  });
+  const ownerServer = ownerApp.listen(0);
+  try {
+    await new Promise((resolve) => ownerServer.once("listening", resolve));
+    const address = ownerServer.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(`http://127.0.0.1:${address.port}/admin/arena/metrics`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.economy.profiles, 1);
+    assert.equal(body.activity.fights, 0);
+  } finally {
+    await new Promise((resolve, reject) => {
+      ownerServer.close((error) => (error ? reject(error) : resolve()));
     });
   }
 });
