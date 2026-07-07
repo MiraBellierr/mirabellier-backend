@@ -8,6 +8,7 @@ const {
 } = require("../lib/arena-characters");
 const { rerollArenaCardShopOffers } = require("../lib/arena/card-shop");
 const { createArenaCompensation } = require("../lib/arena/compensation");
+const { readArenaMetrics } = require("../lib/arena-monitoring");
 const { ArenaHttpError } = require("../lib/arena/utils");
 
 const CARD_IV_MIN = 0;
@@ -451,6 +452,18 @@ module.exports = function registerAdminRoutes(app, deps) {
         });
       }
       res.status(500).json({ error: "Failed to create compensation" });
+    }
+  });
+
+  router.get("/arena/metrics", (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const user = authFromReq(req);
+      if (!isOwner(user)) return res.status(403).json({ error: "Forbidden" });
+
+      res.json(readArenaMetrics(db, { days: req.query.days }));
+    } catch (error) {
+      res.status(500).json({ error: "Failed to read Arena metrics" });
     }
   });
 
