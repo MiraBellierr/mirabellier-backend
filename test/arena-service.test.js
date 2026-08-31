@@ -46,6 +46,9 @@ const {
   getLeaderboard,
   getPlaybackFightState,
   incrementDailyOpponentCount,
+  resetDailyOpponentCount,
+  getCurrentRecordedDate,
+  toRecordedIso,
   finalizePlaybackFightRewards,
   fodderEquipmentPiece,
   loadCombatSnapshot,
@@ -1414,9 +1417,11 @@ test("fight loss grants consolation XP and 0 coins", async () => {
   assert.equal(response.profile.effects.expBoostWinsRemaining, 49);
   assert.equal(response.profile.effects.coinBoostWinsRemaining, 39);
   const row = db
-    .prepare("SELECT dailyOpponentCount FROM arena_profiles WHERE userId = ?")
+    .prepare("SELECT dailyOpponentCount, lastOpponentDate FROM arena_profiles WHERE userId = ?")
     .get("u1");
+  assert.equal(response.opponent.isNpc, true);
   assert.equal(row.dailyOpponentCount, 0);
+  assert.equal(row.lastOpponentDate, null);
 });
 
 test("daily opponent count resets only when defender day changes", () => {
@@ -1501,6 +1506,72 @@ test("active fighters clear their defender count and daily cap skips overused de
     .prepare("SELECT dailyOpponentCount FROM arena_profiles WHERE userId = ?")
     .get("u1");
   assert.equal(activePlayer.dailyOpponentCount, 0);
+});
+
+test("npc fights also reset the attacker's defender count", async () => {
+  const db = createTestDb();
+  const today = new Date().toISOString();
+  insertProfile(db, {
+    userId: "u1",
+    selectedCard: makeCard(1, "R"),
+  });
+  db.prepare(
+    "UPDATE arena_profiles SET dailyOpponentCount = 7, lastOpponentDate = ? WHERE userId = ?",
+  ).run(today, "u1");
+
+  const result = await runFight(db, "u1");
+  assert.equal(result.opponent.isNpc, true);
+  const row = db
+    .prepare("SELECT dailyOpponentCount, lastOpponentDate FROM arena_profiles WHERE userId = ?")
+    .get("u1");
+  assert.equal(row.dailyOpponentCount, 0);
+  assert.equal(row.lastOpponentDate, null);
+});
+
+test("resetDailyOpponentCount clears count and lastOpponentDate", () => {
+  const db = createTestDb();
+  const today = new Date().toISOString();
+  insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "C") });
+  db.prepare(
+    "UPDATE arena_profiles SET dailyOpponentCount = 7, lastOpponentDate = ? WHERE userId = ?",
+  ).run(today, "u1");
+
+  resetDailyOpponentCount(db, "u1");
+  const row = db
+    .prepare("SELECT dailyOpponentCount, lastOpponentDate FROM arena_profiles WHERE userId = ?")
+    .get("u1");
+  assert.equal(row.dailyOpponentCount, 0);
+  assert.equal(row.lastOpponentDate, null);
+});
+
+test("arena day boundary honors ARENA_DAY_UTC_OFFSET_MINUTES", () => {
+  const previous = process.env.ARENA_DAY_UTC_OFFSET_MINUTES;
+  try {
+    process.env.ARENA_DAY_UTC_OFFSET_MINUTES = "-300";
+    assert.equal(
+      getCurrentRecordedDate(new Date("2026-01-01T03:00:00.000Z")),
+      "2025-12-31",
+    );
+    assert.equal(
+      toRecordedIso(new Date("2026-01-01T03:00:00.000Z")),
+      "2025-12-31T22:00:00.000Z",
+    );
+
+    const db = createTestDb();
+    insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "C") });
+    incrementDailyOpponentCount(db, "u1");
+    const row = db
+      .prepare("SELECT dailyOpponentCount, lastOpponentDate FROM arena_profiles WHERE userId = ?")
+      .get("u1");
+    assert.equal(row.dailyOpponentCount, 1);
+    assert.equal(row.lastOpponentDate.slice(0, 10), getCurrentRecordedDate());
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ARENA_DAY_UTC_OFFSET_MINUTES;
+    } else {
+      process.env.ARENA_DAY_UTC_OFFSET_MINUTES = previous;
+    }
+  }
 });
 
 test("fight includes hp battle console events", async () => {
