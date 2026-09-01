@@ -320,17 +320,20 @@ module.exports = function registerVideoRoutes(app, deps) {
     return weights;
   }
 
-  function scoreVideo(row, weights) {
+  function tagAffinity(row, weights) {
     let affinity = 0;
     for (const tag of parseTags(row.tags)) {
       affinity += weights.get(tag) || 0;
     }
+    return affinity;
+  }
 
+  function scoreVideo(row, weights) {
     const likes = parseLikes(row.likes).length;
     const comments = row.commentsCount || 0;
 
     return (
-      affinity +
+      tagAffinity(row, weights) +
       ENGAGEMENT_LIKE_WEIGHT * Math.log1p(likes) +
       ENGAGEMENT_COMMENT_WEIGHT * Math.log1p(comments)
     );
@@ -544,43 +547,74 @@ module.exports = function registerVideoRoutes(app, deps) {
       const rows = selectAllVideos.all();
       const includeId =
         typeof req.query.include === "string" ? req.query.include : null;
+      const excludeIds = new Set(
+        typeof req.query.exclude === "string"
+          ? req.query.exclude
+              .split(",")
+              .map((id) => id.trim())
+              .filter(Boolean)
+          : [],
+      );
+      const rawLimit = Number.parseInt(String(req.query.limit || "10"), 10);
+      const limit = Math.min(
+        Math.max(Number.isFinite(rawLimit) ? rawLimit : 10, 1),
+        50,
+      );
       let ordered = rows;
 
       if (viewer) {
-        const excludedIds = new Set();
+        const seenIds = new Set();
         for (const row of rows) {
           if (parseLikes(row.likes).includes(viewer.id)) {
-            excludedIds.add(row.id);
+            seenIds.add(row.id);
           }
         }
         for (const view of selectViewedVideoIds.all(viewer.id)) {
-          excludedIds.add(view.videoId);
+          seenIds.add(view.videoId);
         }
+        if (includeId) seenIds.delete(includeId);
 
-        if (excludedIds.size > 0) {
-          const remaining = rows.filter(
-            (row) => !excludedIds.has(row.id) || row.id === includeId,
-          );
-          if (remaining.length > 0) ordered = remaining;
-        }
+        const unwatched = rows.filter((row) => !seenIds.has(row.id));
+        const watched = rows.filter((row) => seenIds.has(row.id));
 
         const weights = buildViewerTagWeights(viewer.id, rows);
-        const hasInteractions = weights.size > 0;
-        if (hasInteractions) {
-          ordered = ordered
-            .map((row) => ({ row, score: scoreVideo(row, weights) }))
-            .sort((a, b) => {
+        if (weights.size > 0) {
+          const scored = unwatched.map((row) => ({
+            row,
+            affinity: tagAffinity(row, weights),
+            score: scoreVideo(row, weights),
+          }));
+          const hasSuitableTags = scored.some(
+            (entry) => entry.affinity > 0,
+          );
+          if (hasSuitableTags) {
+            scored.sort((a, b) => {
               if (b.score !== a.score) return b.score - a.score;
               if (a.row.createdAt > b.row.createdAt) return -1;
               if (a.row.createdAt < b.row.createdAt) return 1;
               return 0;
-            })
-            .map((entry) => entry.row);
+            });
+          }
+          ordered = [...scored.map((entry) => entry.row), ...watched];
+        } else {
+          ordered = [...unwatched, ...watched];
         }
       }
 
+      if (includeId) {
+        ordered = ordered.filter((row) => row.id !== includeId);
+        const includeRow = rows.find((row) => row.id === includeId);
+        if (includeRow) ordered = [includeRow, ...ordered];
+      }
+
+      if (excludeIds.size > 0) {
+        ordered = ordered.filter((row) => !excludeIds.has(row.id));
+      }
+
       setNoStoreHeaders(res);
-      res.json(ordered.map((row) => mapVideoRow(row, viewer?.id)));
+      res.json(
+        ordered.slice(0, limit).map((row) => mapVideoRow(row, viewer?.id)),
+      );
     } catch {
       res.status(500).json({ error: "failed" });
     }
