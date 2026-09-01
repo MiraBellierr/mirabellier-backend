@@ -222,6 +222,7 @@ function registerRoutes(app) {
 
   require("./routes/anime")(app, { db, authFromReq });
   require("./routes/fanart")(app);
+  require("./routes/twitch")(app, { db, authFromReq });
   require("./routes/arena")(app, { db, authFromReq });
   require("./routes/tcg")(app, { db, authFromReq });
   require("./routes/admin")(app, { db, authFromReq });
@@ -275,6 +276,8 @@ startQuoteOfTheDayScheduler();
 startQuestionOfTheDayDiscordScheduler(db);
 const { startHallOfFameScheduler } = require("./lib/arena-hall-of-fame-scheduler");
 startHallOfFameScheduler(db);
+const { startTwitchScheduler } = require("./lib/twitch-scheduler");
+startTwitchScheduler(db);
 const indexNowKeyResult = ensureIndexNowKeyFile();
 if (indexNowKeyResult.ok === false) {
   console.warn(`[indexnow] ${indexNowKeyResult.error}`);
