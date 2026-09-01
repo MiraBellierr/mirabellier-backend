@@ -6,6 +6,13 @@ const {
   handleHumanSpaRequest,
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
+const {
+  normalizeTikTokUrl,
+  normalizeTikTokQueueEntry,
+  readTikTokList,
+  fetchTikTokMetadata,
+  fetchTikTokOembed,
+} = require("../lib/tiktok");
 
 const VIDEO_TITLE_MAX_LENGTH = 4000;
 const COMMENT_MAX_LENGTH = 500;
@@ -237,6 +244,15 @@ module.exports = function registerVideoRoutes(app, deps) {
      FROM user_video_comments c
      JOIN user_videos v ON v.id = c.videoId
      WHERE c.userId = ?`,
+  );
+
+  const selectViewedVideoIds = db.prepare(
+    `SELECT videoId FROM user_video_views WHERE userId = ?`,
+  );
+
+  const insertVideoView = db.prepare(
+    `INSERT OR IGNORE INTO user_video_views (id, videoId, userId, createdAt)
+     VALUES (?, ?, ?, ?)`,
   );
 
   const selectUserByUsername = db.prepare(
@@ -472,18 +488,86 @@ module.exports = function registerVideoRoutes(app, deps) {
     }
   });
 
+  // ── TikTok import queue (owner only) ──
+  router.get("/admin/tiktok/queue", async (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+
+      const entries = readTikTokList()
+        .map(normalizeTikTokQueueEntry)
+        .filter(Boolean);
+
+      const shuffled = entries
+        .map((entry) => ({ entry, order: Math.random() }))
+        .sort((a, b) => a.order - b.order)
+        .map(({ entry }) => entry);
+
+      const rawLimit = Number.parseInt(String(req.query.limit || "12"), 10);
+      const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 12, 1), 50);
+
+      const selected = shuffled.slice(0, limit);
+
+      const enriched = await Promise.all(
+        selected.map(async (entry) => {
+          const needsMeta =
+            !entry.username || !entry.caption || !entry.thumbnailUrl;
+          if (!needsMeta) return entry;
+          try {
+            const oembed = await fetchTikTokOembed(entry.url);
+            if (!oembed) return entry;
+            return {
+              ...entry,
+              username: entry.username || oembed.username || undefined,
+              caption: entry.caption || oembed.caption || undefined,
+              thumbnailUrl:
+                entry.thumbnailUrl || oembed.thumbnailUrl || undefined,
+            };
+          } catch {
+            return entry;
+          }
+        }),
+      );
+
+      setNoStoreHeaders(res);
+      res.json(enriched);
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
   // ── Public feed (personalized for authenticated viewers) ──
   router.get("/feed", (req, res) => {
     try {
       const viewer = authFromReq(req);
       const rows = selectAllVideos.all();
+      const includeId =
+        typeof req.query.include === "string" ? req.query.include : null;
       let ordered = rows;
 
       if (viewer) {
+        const excludedIds = new Set();
+        for (const row of rows) {
+          if (parseLikes(row.likes).includes(viewer.id)) {
+            excludedIds.add(row.id);
+          }
+        }
+        for (const view of selectViewedVideoIds.all(viewer.id)) {
+          excludedIds.add(view.videoId);
+        }
+
+        if (excludedIds.size > 0) {
+          const remaining = rows.filter(
+            (row) => !excludedIds.has(row.id) || row.id === includeId,
+          );
+          if (remaining.length > 0) ordered = remaining;
+        }
+
         const weights = buildViewerTagWeights(viewer.id, rows);
         const hasInteractions = weights.size > 0;
         if (hasInteractions) {
-          ordered = rows
+          ordered = ordered
             .map((row) => ({ row, score: scoreVideo(row, weights) }))
             .sort((a, b) => {
               if (b.score !== a.score) return b.score - a.score;
@@ -529,6 +613,25 @@ module.exports = function registerVideoRoutes(app, deps) {
       const rows = selectUserVideos.all(String(req.params.userId));
       setNoStoreHeaders(res);
       res.json(rows.map((row) => mapVideoRow(row, viewer?.id)));
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // ── Record a view (marks the video as watched for this user) ──
+  router.post("/:id/view", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+
+      const row = selectVideoById.get(String(req.params.id));
+      if (!row) return res.status(404).json({ error: "not found" });
+
+      const id = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      insertVideoView.run(id, row.id, user.id, new Date().toISOString());
+
+      setNoStoreHeaders(res);
+      res.json({ ok: true });
     } catch {
       res.status(500).json({ error: "failed" });
     }
@@ -663,6 +766,37 @@ module.exports = function registerVideoRoutes(app, deps) {
     }
   });
 
+  // ── Resolve TikTok video metadata (owner only) ──
+  router.post("/admin/tiktok-resolve", async (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+
+      const metadata = await fetchTikTokMetadata(req.body?.url);
+      if (metadata.error) {
+        return res.status(502).json({ error: metadata.error });
+      }
+
+      setNoStoreHeaders(res);
+      res.json({
+        username: metadata.username || "",
+        avatarUrl: metadata.avatarUrl || "",
+        caption: metadata.caption || "",
+        hashtags: metadata.tags || [],
+        durationSeconds: metadata.durationSeconds ?? null,
+        coverUrl: metadata.thumbnailUrl || "",
+      });
+    } catch (err) {
+      res.status(502).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : "Failed to resolve TikTok video",
+      });
+    }
+  });
+
   // ── Pixies SPA handoffs (humans get the frontend app) ──
   app.get("/pixies", (req, res) => {
     if (handleHumanSpaRequest(req, res, "/pixies")) return;
@@ -679,25 +813,26 @@ module.exports = function registerVideoRoutes(app, deps) {
     sendFrontendRedirectConfigError(req, res, "/admin/pixies");
   });
 
+  app.get("/admin/tiktok", (req, res) => {
+    if (handleHumanSpaRequest(req, res, "/admin/tiktok")) return;
+    sendFrontendRedirectConfigError(req, res, "/admin/tiktok");
+  });
+
   // ── Pixie share links: SEO preview for crawlers, SPA for humans ──
   app.get("/pixies/:videoId", (req, res) => {
     try {
       const videoId = String(req.params.videoId || "");
       const row = selectVideoById.get(videoId);
       const spaPath = row ? `/pixies/${videoId}` : "/pixies";
-
       if (!isLikelyCrawler(req.get("user-agent"))) {
         if (handleHumanSpaRequest(req, res, spaPath)) return;
         return sendFrontendRedirectConfigError(req, res, spaPath);
       }
-
       if (!row) return res.status(404).send("Video not found");
-
       const protocol =
         req.headers["x-forwarded-proto"] || req.protocol || "http";
       const host = req.get("host");
       const requestPath = req.originalUrl || req.path || spaPath;
-
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(buildVideoSeoPage({ row, protocol, host, requestPath }));
     } catch {
