@@ -201,6 +201,12 @@ function registerRoutes(app) {
   });
 
   require("./routes/images")(app, { IMAGES_DIR: uploads.IMAGES_DIR });
+  require("./routes/videos")(app, {
+    db,
+    authFromReq,
+    VIDEOS_DIR: uploads.VIDEOS_DIR,
+    videoUpload: uploads.videoUpload,
+  });
   require("./routes/quotes")(app);
   require("./routes/shrines")(app, { db, authFromReq });
 
@@ -288,6 +294,9 @@ app.post("/posts-img", uploads.imageUpload.single("image"), imageUploadHandler);
 
 // Serve static files with long cache headers
 app.use("/images", createStaticMiddleware(uploads.IMAGES_DIR));
+
+// Serve uploaded videos with range request support (via express.static/send)
+app.use("/videos", createStaticMiddleware(uploads.VIDEOS_DIR));
 
 // ── WebSocket infrastructure ──
 
