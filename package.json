@@ -39,6 +39,7 @@
     "multer": "^2.0.2",
     "passport": "^0.7.0",
     "passport-discord": "^0.1.4",
+    "playwright": "^1.62.1",
     "sharp": "^0.34.5",
     "socket.io": "^4.8.1",
     "web-push": "^3.6.7"
