@@ -2,12 +2,17 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const { isOwner } = require("../lib/authz");
+const {
+  handleHumanSpaRequest,
+  sendFrontendRedirectConfigError,
+} = require("../lib/spa-entry");
 
-const VIDEO_TITLE_MAX_LENGTH = 200;
+const VIDEO_TITLE_MAX_LENGTH = 4000;
 const COMMENT_MAX_LENGTH = 500;
 const MAX_VIDEO_TAGS = 10;
 const MAX_TAG_LENGTH = 20;
 const USERNAME_PATTERN = /^[^\s/\\]{3,32}$/u;
+const SEO_CAPTION_MAX_LENGTH = 200;
 
 const TAG_LIKE_WEIGHT = 3;
 const TAG_COMMENT_WEIGHT = 5;
@@ -98,6 +103,92 @@ function mapCommentRow(row) {
 
 function setNoStoreHeaders(res) {
   res.setHeader("Cache-Control", "no-store");
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function isLikelyCrawler(userAgent) {
+  const value = String(userAgent || "").toLowerCase();
+  if (/whatsapp/.test(value) && !value.includes("mozilla")) {
+    return true;
+  }
+  return /bot|crawler|spider|preview|pinterest|redditbot|embedly|viber|kakaotalk|facebookexternalhit|twitterbot|discordbot|slackbot|linkedinbot|google-inspectiontool|googlebot|bingbot|slurp|duckduckbot|baiduspider|yandex/.test(
+    value,
+  );
+}
+
+function trimSeoCaption(raw) {
+  const collapsed = String(raw || "").trim().replace(/\s+/g, " ");
+  return collapsed.length > SEO_CAPTION_MAX_LENGTH
+    ? `${collapsed.slice(0, SEO_CAPTION_MAX_LENGTH - 3)}…`
+    : collapsed;
+}
+
+function buildVideoSeoPage({ row, protocol, host, requestPath }) {
+  const username = String(row.authorUsername || "unknown");
+  const pageTitle = `@${username} · Pixies`;
+  const caption = trimSeoCaption(row.title);
+  const description =
+    caption || `Watch this pixie by @${username} on Mirabellier.`;
+  const pageUrl = `${protocol}://${host}${requestPath}`;
+  const videoUrl = `${protocol}://${host}/videos/${row.filename}`;
+  const mimeType = row.mimeType || "video/mp4";
+
+  const rawAvatar = String(row.authorAvatar || "");
+  const avatarUrl = rawAvatar
+    ? /^https?:\/\//i.test(rawAvatar)
+      ? rawAvatar
+      : `${protocol}://${host}${rawAvatar}`
+    : "";
+  const imageUrl = avatarUrl || `${protocol}://${host}/background.jpg`;
+  const imageAlt = `@${username} on Pixies`;
+
+  const imageTags = `    <meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:image:alt" content="${escapeHtml(imageAlt)}" />
+    <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
+    <meta name="twitter:image:alt" content="${escapeHtml(imageAlt)}" />`;
+
+  const structuredData = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "VideoObject",
+    name: pageTitle,
+    description,
+    thumbnailUrl: imageUrl,
+    contentUrl: videoUrl,
+    uploadDate: String(row.createdAt || "").slice(0, 10),
+    author: { "@type": "Person", name: username },
+  });
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>${escapeHtml(pageTitle)}</title>
+    <meta name="description" content="${escapeHtml(description)}" />
+    <meta property="og:type" content="video.other" />
+    <meta property="og:site_name" content="Mirabellier" />
+    <meta property="og:title" content="${escapeHtml(pageTitle)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:url" content="${escapeHtml(pageUrl)}" />
+    <meta property="og:video" content="${escapeHtml(videoUrl)}" />
+    <meta property="og:video:secure_url" content="${escapeHtml(videoUrl)}" />
+    <meta property="og:video:type" content="${escapeHtml(mimeType)}" />
+${imageTags}
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${escapeHtml(pageTitle)}" />
+    <meta name="twitter:description" content="${escapeHtml(description)}" />
+    <link rel="canonical" href="${escapeHtml(pageUrl)}" />
+    <script type="application/ld+json">${escapeHtml(structuredData)}</script>
+  </head>
+  <body></body>
+</html>`;
 }
 
 module.exports = function registerVideoRoutes(app, deps) {
@@ -569,6 +660,48 @@ module.exports = function registerVideoRoutes(app, deps) {
       res.json({ ok: true });
     } catch {
       res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // ── Pixies SPA handoffs (humans get the frontend app) ──
+  app.get("/pixies", (req, res) => {
+    if (handleHumanSpaRequest(req, res, "/pixies")) return;
+    sendFrontendRedirectConfigError(req, res, "/pixies");
+  });
+
+  app.get("/pixies/upload", (req, res) => {
+    if (handleHumanSpaRequest(req, res, "/pixies/upload")) return;
+    sendFrontendRedirectConfigError(req, res, "/pixies/upload");
+  });
+
+  app.get("/admin/pixies", (req, res) => {
+    if (handleHumanSpaRequest(req, res, "/admin/pixies")) return;
+    sendFrontendRedirectConfigError(req, res, "/admin/pixies");
+  });
+
+  // ── Pixie share links: SEO preview for crawlers, SPA for humans ──
+  app.get("/pixies/:videoId", (req, res) => {
+    try {
+      const videoId = String(req.params.videoId || "");
+      const row = selectVideoById.get(videoId);
+      const spaPath = row ? `/pixies/${videoId}` : "/pixies";
+
+      if (!isLikelyCrawler(req.get("user-agent"))) {
+        if (handleHumanSpaRequest(req, res, spaPath)) return;
+        return sendFrontendRedirectConfigError(req, res, spaPath);
+      }
+
+      if (!row) return res.status(404).send("Video not found");
+
+      const protocol =
+        req.headers["x-forwarded-proto"] || req.protocol || "http";
+      const host = req.get("host");
+      const requestPath = req.originalUrl || req.path || spaPath;
+
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(buildVideoSeoPage({ row, protocol, host, requestPath }));
+    } catch {
+      res.status(500).send("Server error");
     }
   });
 
