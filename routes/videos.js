@@ -18,7 +18,7 @@ const VIDEO_TITLE_MAX_LENGTH = 4000;
 const COMMENT_MAX_LENGTH = 500;
 const MAX_VIDEO_TAGS = 10;
 const MAX_TAG_LENGTH = 20;
-const USERNAME_PATTERN = /^[^\s/\\]{3,32}$/u;
+const USERNAME_PATTERN = /^[^/\\]{3,32}$/u;
 const SEO_CAPTION_MAX_LENGTH = 200;
 
 const TAG_LIKE_WEIGHT = 3;
@@ -414,7 +414,7 @@ module.exports = function registerVideoRoutes(app, deps) {
       if (!USERNAME_PATTERN.test(rawUsername)) {
         cleanupFile();
         return res.status(400).json({
-          error: "Username must be 3-32 characters without spaces or slashes",
+          error: "Username must be 3-32 characters without slashes",
         });
       }
 
