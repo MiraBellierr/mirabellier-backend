@@ -17,6 +17,7 @@ const {
 const { buildPrediction } = require("../lib/twitch-prediction");
 const { getChannelProfile } = require("../lib/twitch-profile");
 const { buildChannelStats } = require("../lib/twitch-stats");
+const { hasConfig: hasPushConfig, readConfig: readPushConfig } = require("../lib/twitch-push");
 
 function setNoStoreHeaders(res) {
   res.setHeader(
@@ -223,6 +224,12 @@ module.exports = function registerTwitchRoutes(app, deps) {
 
       const events = getChannelEvents(db, channel.id, 5000);
       const stats = buildChannelStats(events);
+      const starts = events
+        .map((event) => Date.parse(event.startedAt))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .sort((left, right) => left - right)
+        .slice(-1000);
+      const statsWithStarts = { ...stats, starts };
 
       try {
         const profile = await getChannelProfile(db, channel);
@@ -230,7 +237,7 @@ module.exports = function registerTwitchRoutes(app, deps) {
           channel: readChannelPublic(channel),
           profile,
           profileError: null,
-          stats,
+          stats: statsWithStarts,
           fetchedAt: nowIso(),
         });
       } catch (profileError) {
@@ -239,7 +246,7 @@ module.exports = function registerTwitchRoutes(app, deps) {
             channel: readChannelPublic(channel),
             profile: null,
             profileError: CONFIG_ERROR_CODE,
-            stats,
+            stats: statsWithStarts,
             fetchedAt: nowIso(),
           });
           return;
@@ -248,7 +255,7 @@ module.exports = function registerTwitchRoutes(app, deps) {
           channel: readChannelPublic(channel),
           profile: null,
           profileError: "TWITCH_UNAVAILABLE",
-          stats,
+          stats: statsWithStarts,
           fetchedAt: nowIso(),
         });
       }
@@ -379,6 +386,99 @@ module.exports = function registerTwitchRoutes(app, deps) {
       res.json(result);
     } catch (error) {
       sendTwitchError(res, error);
+    }
+  });
+
+  router.get("/push/vapid-public-key", (req, res) => {
+    setNoStoreHeaders(res);
+    const config = readPushConfig();
+    res.json({
+      publicKey: hasPushConfig(config) ? config.publicKey : null,
+    });
+  });
+
+  router.post("/push/subscribe", (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const channelLogin = String(req.body?.channelLogin || "").trim().toLowerCase();
+      const endpoint = String(req.body?.subscription?.endpoint || "").trim();
+      const p256dh = String(req.body?.subscription?.keys?.p256dh || "").trim();
+      const auth = String(req.body?.subscription?.keys?.auth || "").trim();
+
+      if (!channelLogin || !endpoint || !p256dh || !auth) {
+        return res.status(400).json({ error: "channelLogin and subscription are required" });
+      }
+
+      const channel = getChannelByLogin(db, channelLogin);
+      if (!channel) {
+        return res.status(404).json({ error: "Twitch channel not found" });
+      }
+
+      const user = authFromReq(req);
+      const now = nowIso();
+      db.prepare(
+        `INSERT INTO twitch_push_subscriptions (
+          id, userId, channelLogin, endpoint, p256dh, auth, createdAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(endpoint, channelLogin) DO UPDATE SET
+          userId = excluded.userId,
+          p256dh = excluded.p256dh,
+          auth = excluded.auth,
+          createdAt = excluded.createdAt`,
+      ).run(
+        `sub-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        user?.id || null,
+        channelLogin,
+        endpoint,
+        p256dh,
+        auth,
+        now,
+      );
+
+      res.json({ ok: true, channelLogin });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to save notification subscription" });
+    }
+  });
+
+  router.delete("/push/subscribe", (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const channelLogin = String(req.query.channelLogin || "").trim().toLowerCase();
+      const endpoint = String(req.query.endpoint || "").trim();
+
+      if (!channelLogin || !endpoint) {
+        return res.status(400).json({ error: "channelLogin and endpoint are required" });
+      }
+
+      db.prepare(
+        "DELETE FROM twitch_push_subscriptions WHERE channelLogin = ? AND endpoint = ?",
+      ).run(channelLogin, endpoint);
+
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to remove notification subscription" });
+    }
+  });
+
+  router.get("/push/status", (req, res) => {
+    setNoStoreHeaders(res);
+    try {
+      const channelLogin = String(req.query.channelLogin || "").trim().toLowerCase();
+      const endpoint = String(req.query.endpoint || "").trim();
+      if (!channelLogin || !endpoint) {
+        return res.json({ subscribed: false });
+      }
+
+      const row = db
+        .prepare(
+          "SELECT id FROM twitch_push_subscriptions WHERE channelLogin = ? AND endpoint = ?",
+        )
+        .get(channelLogin, endpoint);
+
+      res.json({ subscribed: Boolean(row) });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to read notification status" });
     }
   });
 
