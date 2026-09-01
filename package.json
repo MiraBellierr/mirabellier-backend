@@ -40,7 +40,8 @@
     "passport": "^0.7.0",
     "passport-discord": "^0.1.4",
     "sharp": "^0.34.5",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
