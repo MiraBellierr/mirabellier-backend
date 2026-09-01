@@ -91,6 +91,7 @@ const USER_AGENT_VARY_PREFIXES = [
   "/anime",
   "/blog",
   "/profile",
+  "/pixies",
   "/question-of-the-day",
   "/quotes",
   "/shrine",
