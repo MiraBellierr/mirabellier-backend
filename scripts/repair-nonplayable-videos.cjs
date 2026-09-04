@@ -114,7 +114,12 @@ async function repairNonplayableVideos(db, { videosDir, apply = false }) {
     rowsByFilename.get(row.filename).push(row);
   }
 
-  for (const [filename, rowGroup] of rowsByFilename) {
+  const fileList = Array.from(rowsByFilename.entries());
+  const formatMb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  let index = 0;
+
+  for (const [filename, rowGroup] of fileList) {
+    index += 1;
     const sourcePath = path.join(videosDir, filename);
     if (!fs.existsSync(sourcePath)) {
       warnings.push(`${filename}: file missing, skipped (${rowGroup.length} row(s))`);
@@ -136,9 +141,14 @@ async function repairNonplayableVideos(db, { videosDir, apply = false }) {
       continue;
     }
 
+    const startedAt = Date.now();
     const description = `${filename}: ${probe.videoCodec || "unknown"} video → h264`;
     let result;
     try {
+      console.log(
+        `[${index}/${fileList.length}] Converting ${filename} ` +
+          `(${probe.videoCodec || "unknown"}, ${formatMb(fs.statSync(sourcePath).size)})…`,
+      );
       result = await transcodeToH264(sourcePath);
     } catch (err) {
       warnings.push(`${description} — conversion failed: ${err.message}`);
@@ -151,6 +161,10 @@ async function repairNonplayableVideos(db, { videosDir, apply = false }) {
     }
 
     const newFilename = path.basename(result.filePath);
+    const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.log(
+      `  → ${newFilename} (${formatMb(result.sizeBytes)}) in ${elapsedSeconds}s`,
+    );
     converted.push({
       filename,
       newFilename,
@@ -218,8 +232,12 @@ async function main() {
   }
 
   const db = new Database(options.dbFile);
+  // Wait up to 30s for locks instead of erroring instantly when the live
+  // backend holds a write transaction (common on shared production hosts).
+  db.pragma("busy_timeout = 30000");
   db.pragma("journal_mode = WAL");
 
+  const startedAt = Date.now();
   let result;
   try {
     result = await repairNonplayableVideos(db, {
@@ -229,22 +247,18 @@ async function main() {
   } finally {
     db.close();
   }
+  const totalSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
 
   console.log(
     `\nScanned ${result.totalRows} stored pixies across ${result.uniqueFiles} unique files: ` +
-      `${result.compatibleCount} already playable, ${result.converted.length} files need conversion.\n`,
+      `${result.compatibleCount} already playable, ${result.converted.length} converted (${totalSeconds}s).`,
   );
 
-  if (result.converted.length === 0) {
-    console.log("No videos need conversion.");
-    return;
-  }
-
-  for (const entry of result.converted) {
+  if (result.converted.length > 0) {
     console.log(
-      `  ${entry.filename} (${entry.oldCodec}, ${entry.oldSizeBytes} bytes) → ` +
-        `${entry.newFilename} (${entry.newSizeBytes} bytes)` +
-        (entry.rowCount > 1 ? ` — repoints ${entry.rowCount} rows` : ""),
+      result.converted.length === 1
+        ? "1 video converted."
+        : `${result.converted.length} videos converted.`,
     );
   }
 
@@ -257,7 +271,7 @@ async function main() {
 
   if (!options.apply) {
     console.log(
-      "\nDry run — no changes applied. Run with --apply to convert and update the database.",
+      "\nDry run — no database changes applied. Run with --apply to convert and update the database.",
     );
   } else {
     console.log(
