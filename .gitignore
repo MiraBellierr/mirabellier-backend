@@ -6,6 +6,7 @@ database-backup*
 videos
 data/tiktok-cookies.txt
 data/instagram-cookies.txt
+data/youtube-cookies.txt
 data/avatar-cache.json
 yt-dlp
 yt-dlp.exe
