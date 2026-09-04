@@ -13,13 +13,24 @@ const {
   fetchTikTokMetadata,
   fetchTikTokOembed,
 } = require("../lib/tiktok");
+const {
+  classifyPlatform,
+  resolveSocialVideo,
+  downloadSocialVideo,
+  stripHashtags,
+} = require("../lib/social");
+const { mirrorAvatarToPng } = require("../lib/avatar-png");
 
 const VIDEO_TITLE_MAX_LENGTH = 4000;
 const COMMENT_MAX_LENGTH = 500;
 const MAX_VIDEO_TAGS = 10;
 const MAX_TAG_LENGTH = 20;
-const USERNAME_PATTERN = /^[^/\\]{3,32}$/u;
+const MAX_AUTHOR_USERNAME_LENGTH = 32;
 const SEO_CAPTION_MAX_LENGTH = 200;
+
+const IMPORT_JOBS = new Map();
+const IMPORT_JOB_MAX_AGE_MS = 15 * 60 * 1000;
+let importJobSequence = 0;
 
 const TAG_LIKE_WEIGHT = 3;
 const TAG_COMMENT_WEIGHT = 5;
@@ -65,6 +76,21 @@ function sanitizeTags(raw) {
     if (tags.length >= MAX_VIDEO_TAGS) break;
   }
   return tags;
+}
+
+function truncateCodePoints(value, maxLength) {
+  const chars = Array.from(String(value || ""));
+  if (chars.length <= maxLength) return String(value || "");
+  return chars.slice(0, maxLength).join("");
+}
+
+function validateAuthorUsername(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "Username cannot be empty";
+  if (Array.from(value).length > MAX_AUTHOR_USERNAME_LENGTH) {
+    return "Username must be 32 characters or fewer";
+  }
+  return null;
 }
 
 function mapAuthor(row) {
@@ -199,8 +225,20 @@ ${imageTags}
 }
 
 module.exports = function registerVideoRoutes(app, deps) {
-  const { db, authFromReq, VIDEOS_DIR, videoUpload } = deps;
+  const { db, authFromReq, VIDEOS_DIR, IMAGES_DIR, videoUpload } = deps;
   const router = express.Router();
+
+  function isValidAvatarUrl(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return true;
+    if (/^\/images\/[A-Za-z0-9._/+-]+$/.test(value)) return true;
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
 
   const selectAllVideos = db.prepare(
     `SELECT v.id, v.userId, v.title, v.tags, v.filename, v.mimeType, v.sizeBytes, v.durationSeconds, v.likes, v.createdAt,
@@ -256,12 +294,38 @@ module.exports = function registerVideoRoutes(app, deps) {
   );
 
   const selectUserByUsername = db.prepare(
-    `SELECT id, username, avatar FROM users WHERE username = ?`,
+    `SELECT id, username, avatar, passwordHash, discordId FROM users WHERE username = ?`,
   );
 
   const insertUser = db.prepare(
     `INSERT INTO users (id, username, avatar, createdAt) VALUES (?, ?, ?, ?)`,
   );
+
+  const updateUserAvatar = db.prepare(
+    `UPDATE users SET avatar = ? WHERE id = ?`,
+  );
+
+  function resolveAuthorWithAvatar({ username, avatar }) {
+    const existing = selectUserByUsername.get(username);
+    if (!existing) {
+      const authorId = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      const now = new Date().toISOString();
+      insertUser.run(authorId, username, avatar, now);
+      return { id: authorId, username, avatar };
+    }
+    // Placeholder authors (created by earlier admin imports/uploads) have no
+    // password or Discord link — refresh their avatar to the real one.
+    // Real registered accounts always keep their own avatar.
+    if (avatar && !existing.passwordHash && !existing.discordId) {
+      updateUserAvatar.run(avatar, existing.id);
+      return { id: existing.id, username: existing.username, avatar };
+    }
+    return {
+      id: existing.id,
+      username: existing.username,
+      avatar: existing.avatar,
+    };
+  }
 
   const updateVideoLikes = db.prepare(
     `UPDATE user_videos SET likes = ? WHERE id = ?`,
@@ -411,26 +475,16 @@ module.exports = function registerVideoRoutes(app, deps) {
       }
 
       const rawUsername = String(req.body?.username || "").trim();
-      if (!USERNAME_PATTERN.test(rawUsername)) {
+      const usernameError = validateAuthorUsername(rawUsername);
+      if (usernameError) {
         cleanupFile();
-        return res.status(400).json({
-          error: "Username must be 3-32 characters without slashes",
-        });
+        return res.status(400).json({ error: usernameError });
       }
 
       const rawAvatar = String(req.body?.avatarUrl || "").trim();
       let avatar = null;
       if (rawAvatar) {
-        let parsed = null;
-        try {
-          parsed = new URL(rawAvatar);
-        } catch {
-          parsed = null;
-        }
-        if (
-          !parsed ||
-          (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-        ) {
+        if (!isValidAvatarUrl(rawAvatar)) {
           cleanupFile();
           return res.status(400).json({ error: "Invalid avatar URL" });
         }
@@ -438,12 +492,6 @@ module.exports = function registerVideoRoutes(app, deps) {
       }
 
       const tags = sanitizeTags(req.body?.tags);
-      if (tags.length === 0) {
-        cleanupFile();
-        return res
-          .status(400)
-          .json({ error: "At least one tag is required" });
-      }
 
       const title = String(req.body?.title || "")
         .trim()
@@ -455,15 +503,10 @@ module.exports = function registerVideoRoutes(app, deps) {
         durationSeconds = rawDuration;
       }
 
-      // Attribute the video to an existing user with that username,
-      // or create a placeholder author with the given avatar.
-      let authorUser = selectUserByUsername.get(rawUsername);
-      if (!authorUser) {
-        const authorId = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-        const now = new Date().toISOString();
-        insertUser.run(authorId, rawUsername, avatar, now);
-        authorUser = { id: authorId, username: rawUsername, avatar };
-      }
+      const authorUser = resolveAuthorWithAvatar({
+        username: rawUsername,
+        avatar,
+      });
 
       const id = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
       const createdAt = new Date().toISOString();
@@ -816,7 +859,7 @@ module.exports = function registerVideoRoutes(app, deps) {
       res.json({
         username: metadata.username || "",
         avatarUrl: metadata.avatarUrl || "",
-        caption: metadata.caption || "",
+        caption: stripHashtags(metadata.caption || ""),
         hashtags: metadata.tags || [],
         durationSeconds: metadata.durationSeconds ?? null,
         coverUrl: metadata.thumbnailUrl || "",
@@ -828,6 +871,397 @@ module.exports = function registerVideoRoutes(app, deps) {
             ? err.message
             : "Failed to resolve TikTok video",
       });
+    }
+  });
+
+  // ── Avatar preview proxy (owner only) ──
+  // IG/TikTok CDN avatar links are token-bound to the server's IP and 403
+  // from the browser. Mirror server-side and redirect to the local copy so
+  // the admin form's avatar preview renders.
+  router.get("/admin/avatar-proxy", async (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+
+      const rawUrl = String(req.query.url || "").trim();
+      let parsed = null;
+      try {
+        parsed = new URL(rawUrl);
+      } catch {
+        parsed = null;
+      }
+      if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+        return res.status(400).json({ error: "Invalid avatar URL" });
+      }
+
+      const mirrored = await mirrorAvatarToPng(rawUrl, IMAGES_DIR);
+      if (mirrored !== rawUrl) {
+        return res.redirect(mirrored);
+      }
+
+      // Mirroring failed (source refused) — stream what the server can reach.
+      try {
+        const remote = await fetch(rawUrl, {
+          headers: {
+            "user-agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+          },
+          redirect: "follow",
+          signal: AbortSignal.timeout(12000),
+        });
+        if (!remote.ok || !remote.body) {
+          return res.status(502).json({ error: "Avatar unavailable" });
+        }
+        res.setHeader("Content-Type", remote.headers.get("content-type") || "image/jpeg");
+        setNoStoreHeaders(res);
+        const reader = remote.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(value);
+        }
+        res.end();
+      } catch {
+        res.status(502).json({ error: "Avatar unavailable" });
+      }
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // ── Resolve TikTok / Instagram / YouTube metadata (owner only). Runs as a
+  // background job so the admin form can show progress while TikTok/IG
+  // throttle; poll GET /admin/resolve/status/:jobId. ──
+  router.post("/admin/resolve", async (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+
+      const rawUrl = String(req.body?.url || "").trim();
+      if (!classifyPlatform(rawUrl)) {
+        return res.status(400).json({
+          error:
+            "Unsupported URL — paste a TikTok, Instagram reel, or YouTube Shorts link",
+        });
+      }
+
+      pruneImportJobs();
+      importJobSequence += 1;
+      const job = {
+        jobId: `resolve-${Date.now()}-${importJobSequence}`,
+        ownerId: user.id,
+        state: "queued",
+        stage: "queued",
+        message: "Starting…",
+        progress: 0,
+        error: null,
+        result: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      IMPORT_JOBS.set(job.jobId, job);
+      performResolveJob(job, rawUrl).catch((err) => {
+        Object.assign(job, {
+          state: "error",
+          error: err instanceof Error ? err.message : "Failed to fetch details",
+          updatedAt: Date.now(),
+        });
+      });
+
+      setNoStoreHeaders(res);
+      res.status(202).json({ jobId: job.jobId });
+    } catch {
+      res.status(500).json({ error: "Failed to fetch details" });
+    }
+  });
+
+  // ── Resolve job status (owner only) ──
+  router.get("/admin/resolve/status/:jobId", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+
+      const job = IMPORT_JOBS.get(String(req.params.jobId));
+      if (!job) return res.status(404).json({ error: "Job not found" });
+      setNoStoreHeaders(res);
+      res.json(importJobSnapshot(job));
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // ── Social import jobs: run in the background so the admin form can show
+  // real-time progress while the video resolves/downloads. ──
+
+  function pruneImportJobs() {
+    const now = Date.now();
+    for (const [id, job] of IMPORT_JOBS) {
+      if (now - job.createdAt > IMPORT_JOB_MAX_AGE_MS) IMPORT_JOBS.delete(id);
+    }
+  }
+
+  // "Creep" the bar inside long stages (resolve/download can take minutes
+  // while TikTok/IG throttle) so progress never looks frozen.
+  function startJobCreep(job, from, to) {
+    job.progress = from;
+    const interval = setInterval(() => {
+      if (job.state !== "running" || job.progress >= to) return;
+      job.progress = Math.min(
+        to,
+        job.progress + 0.7 + Math.random() * 1.4,
+      );
+      job.updatedAt = Date.now();
+    }, 700);
+    return interval;
+  }
+
+  function importJobSnapshot(job) {
+    return {
+      jobId: job.jobId,
+      state: job.state,
+      stage: job.stage,
+      message: job.message,
+      progress: Math.round(job.progress),
+      error: job.error || null,
+      result: job.result || null,
+      reel: job.reel || null,
+    };
+  }
+
+  async function performResolveJob(job, rawUrl) {
+    const update = (stage, message, progress) => {
+      Object.assign(job, {
+        state: "running",
+        stage,
+        message,
+        progress,
+        updatedAt: Date.now(),
+      });
+    };
+    const creep = startJobCreep(job, 3, 92);
+    try {
+      update("resolve", "Fetching video details…", 3);
+      const resolved = await resolveSocialVideo(rawUrl);
+      Object.assign(job, {
+        state: "done",
+        stage: "done",
+        message: "Details ready!",
+        progress: 100,
+        result: {
+          platform: resolved.platform,
+          username: resolved.username || "",
+          avatarUrl: String(resolved.avatarUrl || "").trim(),
+          caption: resolved.caption || "",
+          hashtags: resolved.hashtags || [],
+          durationSeconds: resolved.durationSeconds ?? null,
+          coverUrl: resolved.coverUrl || "",
+        },
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      Object.assign(job, {
+        state: "error",
+        error: err instanceof Error ? err.message : "Failed to fetch details",
+        updatedAt: Date.now(),
+      });
+    } finally {
+      clearInterval(creep);
+    }
+  }
+
+  async function performImportJob(job, body) {
+    const update = (stage, message, progress) => {
+      Object.assign(job, {
+        state: "running",
+        stage,
+        message,
+        progress,
+        updatedAt: Date.now(),
+      });
+    };
+    let creep = null;
+
+    const rawUrl = String(body.url || "").trim();
+    let downloadedFilePath = null;
+    try {
+      update("resolve", "Fetching video details…", 4);
+      creep = startJobCreep(job, 4, 30);
+      let resolved = null;
+      try {
+        resolved = await resolveSocialVideo(rawUrl);
+      } catch {
+        resolved = null;
+      }
+
+      const username = truncateCodePoints(
+        String(body.username || "").trim() ||
+          String(resolved?.username || "").trim(),
+        MAX_AUTHOR_USERNAME_LENGTH,
+      );
+      if (!username) {
+        Object.assign(job, {
+          state: "error",
+          error:
+            "Could not determine an author username — fill in the username field",
+        });
+        return;
+      }
+
+      clearInterval(creep);
+      update("download", "Downloading video…", 34);
+      creep = startJobCreep(job, 34, 82);
+      const destBase = path.join(
+        VIDEOS_DIR,
+        `${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+      );
+      const downloaded = await downloadSocialVideo(rawUrl, destBase, {
+        metadata: resolved,
+      });
+      downloadedFilePath = downloaded.filePath;
+
+      clearInterval(creep);
+      update("process", "Processing video…", 86);
+      creep = startJobCreep(job, 86, 94);
+      const sizeBytes = downloaded.sizeBytes;
+      const mimeType = downloaded.mimeType;
+      let avatar =
+        String(body.avatarUrl || "").trim() ||
+        String(resolved?.avatarUrl || "").trim() ||
+        null;
+      if (avatar && /^https?:\/\//i.test(avatar)) {
+        avatar = await mirrorAvatarToPng(avatar, IMAGES_DIR);
+      }
+      const durationSeconds = resolved?.durationSeconds ?? null;
+      const id = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+
+      const authorUser = resolveAuthorWithAvatar({ username, avatar });
+      const createdAt = new Date().toISOString();
+      insertVideo.run(
+        id,
+        authorUser.id,
+        body.title,
+        JSON.stringify(body.tags),
+        path.basename(downloadedFilePath),
+        mimeType,
+        sizeBytes,
+        durationSeconds,
+        createdAt,
+      );
+
+      clearInterval(creep);
+      Object.assign(job, {
+        state: "done",
+        stage: "done",
+        message: "Video imported!",
+        progress: 100,
+        reel: mapVideoRow(selectVideoById.get(id), job.ownerId),
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      clearInterval(creep);
+      if (downloadedFilePath) {
+        fs.promises.unlink(downloadedFilePath).catch(() => {});
+      }
+      const message =
+        err instanceof Error ? err.message : "Import failed";
+      Object.assign(job, {
+        state: "error",
+        error: message,
+        message: "Import failed",
+        updatedAt: Date.now(),
+      });
+    }
+  }
+
+  function destBaseFor(_idPlaceholder, _rawUrl) {
+    return path.join(
+      VIDEOS_DIR,
+      `${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+    );
+  }
+
+  // ── Import a social video (owner only): starts a background job so the
+  // admin form can stream progress. Poll GET /admin/import/status/:jobId. ──
+  router.post("/admin/import", async (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+
+      const rawUrl = String(req.body?.url || "").trim();
+      const platform = classifyPlatform(rawUrl);
+      if (!platform) {
+        return res.status(400).json({
+          error:
+            "Unsupported URL — paste a TikTok, Instagram reel, or YouTube Shorts link",
+        });
+      }
+
+      const providedUsername = String(req.body?.username || "").trim();
+      const providedUsernameError = validateAuthorUsername(providedUsername);
+      if (providedUsername && providedUsernameError) {
+        return res.status(400).json({ error: providedUsernameError });
+      }
+
+      const providedAvatar = String(req.body?.avatarUrl || "").trim();
+      if (providedAvatar && !isValidAvatarUrl(providedAvatar)) {
+        return res.status(400).json({ error: "Invalid avatar URL" });
+      }
+
+      pruneImportJobs();
+      importJobSequence += 1;
+      const job = {
+        jobId: `import-${Date.now()}-${importJobSequence}`,
+        ownerId: user.id,
+        state: "queued",
+        stage: "queued",
+        message: "Starting import…",
+        progress: 0,
+        error: null,
+        reel: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      IMPORT_JOBS.set(job.jobId, job);
+
+      const body = {
+        url: rawUrl,
+        username: providedUsername,
+        avatarUrl: providedAvatar,
+        tags: sanitizeTags(req.body?.tags),
+        title: String(req.body?.title || "").trim().slice(0, VIDEO_TITLE_MAX_LENGTH),
+      };
+      performImportJob(job, body).catch((err) => {
+        Object.assign(job, {
+          state: "error",
+          error: err instanceof Error ? err.message : "Import failed",
+          updatedAt: Date.now(),
+        });
+      });
+
+      setNoStoreHeaders(res);
+      res.status(202).json({ jobId: job.jobId });
+    } catch {
+      res.status(500).json({ error: "Import failed" });
+    }
+  });
+
+  // ── Import job status (owner only) ──
+  router.get("/admin/import/status/:jobId", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+
+      const job = IMPORT_JOBS.get(String(req.params.jobId));
+      if (!job) return res.status(404).json({ error: "Job not found" });
+      setNoStoreHeaders(res);
+      res.json(importJobSnapshot(job));
+    } catch {
+      res.status(500).json({ error: "failed" });
     }
   });
 

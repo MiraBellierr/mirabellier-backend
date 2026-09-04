@@ -206,6 +206,7 @@ function registerRoutes(app) {
     db,
     authFromReq,
     VIDEOS_DIR: uploads.VIDEOS_DIR,
+    IMAGES_DIR: uploads.IMAGES_DIR,
     videoUpload: uploads.videoUpload,
   });
   require("./routes/quotes")(app);
