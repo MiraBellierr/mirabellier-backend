@@ -18,6 +18,7 @@ const {
   resolveSocialVideo,
   downloadSocialVideo,
   stripHashtags,
+  transcodeToH264,
 } = require("../lib/social");
 const { mirrorAvatarToPng } = require("../lib/avatar-png");
 
@@ -1123,10 +1124,15 @@ module.exports = function registerVideoRoutes(app, deps) {
       downloadedFilePath = downloaded.filePath;
 
       clearInterval(creep);
-      update("process", "Processing video…", 86);
+      update("process", "Making the video playable on every device…", 86);
       creep = startJobCreep(job, 86, 94);
-      const sizeBytes = downloaded.sizeBytes;
-      const mimeType = downloaded.mimeType;
+      const converted = await transcodeToH264(downloaded.filePath);
+      if (converted.converted && converted.filePath !== downloaded.filePath) {
+        await fs.promises.unlink(downloaded.filePath).catch(() => {});
+        downloadedFilePath = converted.filePath;
+      }
+      const sizeBytes = converted.sizeBytes;
+      const mimeType = converted.mimeType;
       let avatar =
         String(body.avatarUrl || "").trim() ||
         String(resolved?.avatarUrl || "").trim() ||
