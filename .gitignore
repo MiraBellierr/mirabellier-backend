@@ -4,3 +4,10 @@ images
 database.sqlite3*
 database-backup*
 videos
+data/tiktok-cookies.txt
+data/instagram-cookies.txt
+data/avatar-cache.json
+yt-dlp
+yt-dlp.exe
+backend-out.log
+backend-err.log
