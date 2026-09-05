@@ -10,14 +10,12 @@ const {
   normalizeTikTokUrl,
   normalizeTikTokQueueEntry,
   readTikTokList,
-  fetchTikTokMetadata,
   fetchTikTokOembed,
 } = require("../lib/tiktok");
 const {
   classifyPlatform,
   resolveSocialVideo,
   downloadSocialVideo,
-  stripHashtags,
   transcodeToH264,
 } = require("../lib/social");
 const { mirrorAvatarToPng } = require("../lib/avatar-png");
@@ -33,8 +31,31 @@ const IMPORT_JOBS = new Map();
 const IMPORT_JOB_MAX_AGE_MS = 15 * 60 * 1000;
 let importJobSequence = 0;
 
+// Short-lived per-viewer memo of the fully computed + mapped `/feed` ordering,
+// so an infinite-scroll session pays the O(all pixies) scan + scoring once
+// instead of on every "load more" batch. `offset > 0` requests slice from here;
+// `offset === 0` (fresh load / tab switch / refresh) always recomputes.
+const FEED_CACHE = new Map();
+const FEED_CACHE_TTL_MS = 8000;
+const FEED_CACHE_MAX_ENTRIES = 200;
+
+function pruneFeedCache(now) {
+  for (const [key, entry] of FEED_CACHE) {
+    if (now - entry.at > FEED_CACHE_TTL_MS) FEED_CACHE.delete(key);
+  }
+  while (FEED_CACHE.size > FEED_CACHE_MAX_ENTRIES) {
+    FEED_CACHE.delete(FEED_CACHE.keys().next().value);
+  }
+}
+
+function parseListOffset(raw) {
+  const n = Number.parseInt(String(raw ?? "0"), 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 100000) : 0;
+}
+
 const TAG_LIKE_WEIGHT = 3;
 const TAG_COMMENT_WEIGHT = 5;
+const TAG_INTEREST_WEIGHT = 4;
 const ENGAGEMENT_LIKE_WEIGHT = 1;
 const ENGAGEMENT_COMMENT_WEIGHT = 2;
 
@@ -101,6 +122,7 @@ function mapAuthor(row) {
     username: row.authorUsername || "unknown",
     avatar: row.authorAvatar || null,
     bio: row.authorBio || null,
+    verified: row.authorVerified === 1,
   };
 }
 
@@ -110,6 +132,8 @@ function mapVideoRow(row, viewerId) {
     id: row.id,
     title: String(row.title || "").trim(),
     tags: parseTags(row.tags),
+    // Raw media stays under /videos/ (a namespace with no route collisions);
+    // only the JSON API moved to /pixies.
     url: `/videos/${row.filename}`,
     mimeType: row.mimeType || "video/mp4",
     sizeBytes: row.sizeBytes || 0,
@@ -122,15 +146,21 @@ function mapVideoRow(row, viewerId) {
   };
 }
 
-function mapCommentRow(row) {
+function mapCommentRow(row, viewerId) {
+  const likes = parseLikes(row.likes);
   return {
     id: row.id,
     content: String(row.content || ""),
     createdAt: row.createdAt,
+    parentId: row.parentId || null,
+    likesCount: likes.length,
+    likedByMe: Boolean(viewerId && likes.includes(viewerId)),
+    replyCount: row.replyCount || 0,
     author: {
       id: row.authorId,
       username: row.authorUsername || "unknown",
       avatar: row.authorAvatar || null,
+      verified: row.authorVerified === 1,
     },
   };
 }
@@ -225,7 +255,7 @@ ${imageTags}
 </html>`;
 }
 
-module.exports = function registerVideoRoutes(app, deps) {
+module.exports = function registerPixieRoutes(app, deps) {
   const { db, authFromReq, VIDEOS_DIR, IMAGES_DIR, videoUpload } = deps;
   const router = express.Router();
 
@@ -241,37 +271,46 @@ module.exports = function registerVideoRoutes(app, deps) {
     }
   }
 
+  // Shared projection for a "video row" — the 14 columns `mapVideoRow` reads
+  // plus the correlated comment count. Only the WHERE / ORDER BY tail varies.
+  const VIDEO_ROW_SELECT = `
+    SELECT v.id, v.userId, v.title, v.tags, v.filename, v.mimeType, v.sizeBytes, v.durationSeconds, v.likes, v.createdAt,
+           u.id AS authorId, u.username AS authorUsername, u.avatar AS authorAvatar, u.bio AS authorBio,
+           u.verified AS authorVerified,
+           (SELECT COUNT(*) FROM user_video_comments c WHERE c.videoId = v.id) AS commentsCount
+    FROM user_videos v
+    LEFT JOIN users u ON u.id = v.userId`;
+
   const selectAllVideos = db.prepare(
-    `SELECT v.id, v.userId, v.title, v.tags, v.filename, v.mimeType, v.sizeBytes, v.durationSeconds, v.likes, v.createdAt,
-            u.id AS authorId, u.username AS authorUsername, u.avatar AS authorAvatar, u.bio AS authorBio,
-            (SELECT COUNT(*) FROM user_video_comments c WHERE c.videoId = v.id) AS commentsCount
-     FROM user_videos v
-     LEFT JOIN users u ON u.id = v.userId
+    `${VIDEO_ROW_SELECT}
      ORDER BY v.createdAt DESC`,
   );
 
   const selectUserVideos = db.prepare(
-    `SELECT v.id, v.userId, v.title, v.tags, v.filename, v.mimeType, v.sizeBytes, v.durationSeconds, v.likes, v.createdAt,
-            u.id AS authorId, u.username AS authorUsername, u.avatar AS authorAvatar, u.bio AS authorBio,
-            (SELECT COUNT(*) FROM user_video_comments c WHERE c.videoId = v.id) AS commentsCount
-     FROM user_videos v
-     LEFT JOIN users u ON u.id = v.userId
+    `${VIDEO_ROW_SELECT}
      WHERE v.userId = ?
      ORDER BY v.createdAt DESC`,
   );
 
   const selectVideoById = db.prepare(
-    `SELECT v.id, v.userId, v.title, v.tags, v.filename, v.mimeType, v.sizeBytes, v.durationSeconds, v.likes, v.createdAt,
-            u.id AS authorId, u.username AS authorUsername, u.avatar AS authorAvatar, u.bio AS authorBio,
-            (SELECT COUNT(*) FROM user_video_comments c WHERE c.videoId = v.id) AS commentsCount
-     FROM user_videos v
-     LEFT JOIN users u ON u.id = v.userId
+    `${VIDEO_ROW_SELECT}
      WHERE v.id = ?`,
   );
 
   const insertVideo = db.prepare(
     `INSERT INTO user_videos (id, userId, title, tags, filename, mimeType, sizeBytes, durationSeconds, likes, createdAt)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?)`,
+  );
+
+  // Social-import insert carries an idempotency key (see POST /admin/import).
+  const insertImportedVideo = db.prepare(
+    `INSERT INTO user_videos (id, userId, title, tags, filename, mimeType, sizeBytes, durationSeconds, likes, createdAt, importKey)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
+  );
+
+  const selectVideoByImportKey = db.prepare(
+    `${VIDEO_ROW_SELECT}
+     WHERE v.importKey = ?`,
   );
 
   const selectDistinctTags = db.prepare(
@@ -299,25 +338,36 @@ module.exports = function registerVideoRoutes(app, deps) {
   );
 
   const insertUser = db.prepare(
-    `INSERT INTO users (id, username, avatar, createdAt) VALUES (?, ?, ?, ?)`,
+    `INSERT INTO users (id, username, avatar, createdAt, verified) VALUES (?, ?, ?, ?, ?)`,
   );
 
   const updateUserAvatar = db.prepare(
     `UPDATE users SET avatar = ? WHERE id = ?`,
   );
 
-  function resolveAuthorWithAvatar({ username, avatar }) {
+  const markUserVerified = db.prepare(
+    `UPDATE users SET verified = 1 WHERE id = ?`,
+  );
+
+  function resolveAuthorWithAvatar({ username, avatar, verified }) {
+    const isVerified = verified === true;
     const existing = selectUserByUsername.get(username);
     if (!existing) {
       const authorId = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
       const now = new Date().toISOString();
-      insertUser.run(authorId, username, avatar, now);
+      insertUser.run(authorId, username, avatar, now, isVerified ? 1 : 0);
       return { id: authorId, username, avatar };
     }
     // Placeholder authors (created by earlier admin imports/uploads) have no
-    // password or Discord link — refresh their avatar to the real one.
-    // Real registered accounts always keep their own avatar.
-    if (avatar && !existing.passwordHash && !existing.discordId) {
+    // password or Discord link — refresh their avatar to the real one and, if
+    // this import came from a verified account, flag them verified (once set,
+    // it stays — a later failed scrape shouldn't strip the badge). Real
+    // registered accounts always keep their own avatar and badge.
+    const isPlaceholder = !existing.passwordHash && !existing.discordId;
+    if (isPlaceholder && isVerified) {
+      markUserVerified.run(existing.id);
+    }
+    if (isPlaceholder && avatar) {
       updateUserAvatar.run(avatar, existing.id);
       return { id: existing.id, username: existing.username, avatar };
     }
@@ -335,8 +385,10 @@ module.exports = function registerVideoRoutes(app, deps) {
   const deleteVideoById = db.prepare(`DELETE FROM user_videos WHERE id = ?`);
 
   const selectVideoComments = db.prepare(
-    `SELECT c.id, c.content, c.createdAt,
-            u.id AS authorId, u.username AS authorUsername, u.avatar AS authorAvatar
+    `SELECT c.id, c.content, c.createdAt, c.parentId, c.likes,
+            u.id AS authorId, u.username AS authorUsername, u.avatar AS authorAvatar,
+            u.verified AS authorVerified,
+            (SELECT COUNT(*) FROM user_video_comments r WHERE r.parentId = c.id) AS replyCount
      FROM user_video_comments c
      LEFT JOIN users u ON u.id = c.userId
      WHERE c.videoId = ?
@@ -344,8 +396,16 @@ module.exports = function registerVideoRoutes(app, deps) {
   );
 
   const insertVideoComment = db.prepare(
-    `INSERT INTO user_video_comments (id, videoId, userId, content, createdAt)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO user_video_comments (id, videoId, userId, content, parentId, createdAt)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+
+  const updateCommentLikes = db.prepare(
+    `UPDATE user_video_comments SET likes = ? WHERE id = ?`,
+  );
+
+  const deleteRepliesOfComment = db.prepare(
+    `DELETE FROM user_video_comments WHERE parentId = ?`,
   );
 
   const selectCommentById = db.prepare(
@@ -459,14 +519,8 @@ module.exports = function registerVideoRoutes(app, deps) {
       const rawTitle = String(req.body?.title || "").trim();
       const title = rawTitle.slice(0, VIDEO_TITLE_MAX_LENGTH);
 
+      // Tags are optional on every upload path (user, admin, social import).
       const tags = sanitizeTags(req.body?.tags);
-      if (tags.length === 0) {
-        const filePath = path.join(VIDEOS_DIR, req.file.filename);
-        fs.promises.unlink(filePath).catch(() => {});
-        return res
-          .status(400)
-          .json({ error: "At least one tag is required" });
-      }
 
       let durationSeconds = null;
       const rawDuration = Number.parseFloat(req.body?.durationSeconds);
@@ -555,6 +609,7 @@ module.exports = function registerVideoRoutes(app, deps) {
       const authorUser = resolveAuthorWithAvatar({
         username: rawUsername,
         avatar,
+        verified: req.body?.verified === "true" || req.body?.verified === true,
       });
 
       const id = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
@@ -635,29 +690,19 @@ module.exports = function registerVideoRoutes(app, deps) {
   });
 
   // ── Public feed (personalized for authenticated viewers) ──
-  router.get("/feed", (req, res) => {
-    try {
-      const viewer = authFromReq(req);
-      const rows = selectAllVideos.all();
-      const includeId =
-        typeof req.query.include === "string" ? req.query.include : null;
-      const excludeIds = new Set(
-        typeof req.query.exclude === "string"
-          ? req.query.exclude
-              .split(",")
-              .map((id) => id.trim())
-              .filter(Boolean)
-          : [],
-      );
-      const rawLimit = Number.parseInt(String(req.query.limit || "10"), 10);
-      const limit = Math.min(
-        Math.max(Number.isFinite(rawLimit) ? rawLimit : 10, 1),
-        50,
-      );
-      let ordered = rows;
+  // Compute the fully ordered + mapped feed for a viewer (the expensive path).
+  function computeFeed(viewer, includeId, interestTags) {
+    const rows = selectAllVideos.all();
 
+    let ordered = rows;
+    const weights = viewer ? buildViewerTagWeights(viewer.id, rows) : new Map();
+    for (const tag of interestTags) {
+      weights.set(tag, (weights.get(tag) || 0) + TAG_INTEREST_WEIGHT);
+    }
+
+    if (viewer || weights.size > 0) {
+      const seenIds = new Set();
       if (viewer) {
-        const seenIds = new Set();
         for (const row of rows) {
           if (parseLikes(row.likes).includes(viewer.id)) {
             seenIds.add(row.id);
@@ -666,48 +711,242 @@ module.exports = function registerVideoRoutes(app, deps) {
         for (const view of selectViewedVideoIds.all(viewer.id)) {
           seenIds.add(view.videoId);
         }
-        if (includeId) seenIds.delete(includeId);
+      }
+      if (includeId) seenIds.delete(includeId);
 
-        const unwatched = rows.filter((row) => !seenIds.has(row.id));
-        const watched = rows.filter((row) => seenIds.has(row.id));
+      const unwatched = rows.filter((row) => !seenIds.has(row.id));
+      const watched = rows.filter((row) => seenIds.has(row.id));
 
-        const weights = buildViewerTagWeights(viewer.id, rows);
-        if (weights.size > 0) {
-          const scored = unwatched.map((row) => ({
-            row,
-            affinity: tagAffinity(row, weights),
-            score: scoreVideo(row, weights),
-          }));
-          const hasSuitableTags = scored.some(
-            (entry) => entry.affinity > 0,
-          );
-          if (hasSuitableTags) {
-            scored.sort((a, b) => {
-              if (b.score !== a.score) return b.score - a.score;
-              if (a.row.createdAt > b.row.createdAt) return -1;
-              if (a.row.createdAt < b.row.createdAt) return 1;
-              return 0;
-            });
-          }
-          ordered = [...scored.map((entry) => entry.row), ...watched];
-        } else {
-          ordered = [...unwatched, ...watched];
+      if (weights.size > 0) {
+        const scored = unwatched.map((row) => ({
+          row,
+          affinity: tagAffinity(row, weights),
+          score: scoreVideo(row, weights),
+        }));
+        const hasSuitableTags = scored.some((entry) => entry.affinity > 0);
+        if (hasSuitableTags) {
+          scored.sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            if (a.row.createdAt > b.row.createdAt) return -1;
+            if (a.row.createdAt < b.row.createdAt) return 1;
+            return 0;
+          });
         }
+        ordered = [...scored.map((entry) => entry.row), ...watched];
+      } else {
+        ordered = [...unwatched, ...watched];
+      }
+    }
+
+    if (includeId) {
+      ordered = ordered.filter((row) => row.id !== includeId);
+      const includeRow = rows.find((row) => row.id === includeId);
+      if (includeRow) ordered = [includeRow, ...ordered];
+    }
+
+    return ordered.map((row) => mapVideoRow(row, viewer?.id));
+  }
+
+  router.get("/feed", (req, res) => {
+    try {
+      const viewer = authFromReq(req);
+      const includeId =
+        typeof req.query.include === "string" ? req.query.include : null;
+      // Legacy: older clients paginate with an ever-growing `exclude` id list.
+      // New clients send `offset` (see below); both are honoured.
+      const excludeIds = new Set(
+        typeof req.query.exclude === "string"
+          ? req.query.exclude
+              .split(",")
+              .map((id) => id.trim())
+              .filter(Boolean)
+          : [],
+      );
+      const offset = parseListOffset(req.query.offset);
+      const rawLimit = Number.parseInt(String(req.query.limit || "10"), 10);
+      const limit = Math.min(
+        Math.max(Number.isFinite(rawLimit) ? rawLimit : 10, 1),
+        50,
+      );
+      // Onboarding interests: tags the viewer picked before they have any
+      // like/comment history. They also personalize the feed for signed-out
+      // viewers, who otherwise get a purely chronological list.
+      const interestTags = sanitizeTags(
+        typeof req.query.interests === "string"
+          ? req.query.interests.split(",")
+          : [],
+      );
+
+      const cacheKey = `${viewer?.id || "anon"}|${interestTags.join(",")}|${
+        includeId || ""
+      }`;
+      const now = Date.now();
+      let cached = FEED_CACHE.get(cacheKey);
+      // Only reuse the memo mid-scroll (offset > 0); a fresh load always
+      // recomputes so new pixies / likes show up.
+      if (!(offset > 0 && cached && now - cached.at <= FEED_CACHE_TTL_MS)) {
+        cached = { items: computeFeed(viewer, includeId, interestTags), at: now };
+        FEED_CACHE.set(cacheKey, cached);
+        pruneFeedCache(now);
       }
 
-      if (includeId) {
-        ordered = ordered.filter((row) => row.id !== includeId);
-        const includeRow = rows.find((row) => row.id === includeId);
-        if (includeRow) ordered = [includeRow, ...ordered];
+      const source =
+        excludeIds.size > 0
+          ? cached.items.filter((item) => !excludeIds.has(item.id))
+          : cached.items;
+
+      setNoStoreHeaders(res);
+      res.json(source.slice(offset, offset + limit));
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // ── Search pixies by caption, #tag, or @author ──
+  router.get("/search", (req, res) => {
+    try {
+      const viewer = authFromReq(req);
+      const rawQuery = String(req.query.q || "")
+        .trim()
+        .toLowerCase();
+      const rawLimit = Number.parseInt(String(req.query.limit || "10"), 10);
+      const limit = Math.min(
+        Math.max(Number.isFinite(rawLimit) ? rawLimit : 10, 1),
+        50,
+      );
+      const excludeIds = new Set(
+        typeof req.query.exclude === "string"
+          ? req.query.exclude
+              .split(",")
+              .map((id) => id.trim())
+              .filter(Boolean)
+          : [],
+      );
+      const offset = parseListOffset(req.query.offset);
+
+      if (!rawQuery) {
+        setNoStoreHeaders(res);
+        return res.json([]);
       }
 
-      if (excludeIds.size > 0) {
-        ordered = ordered.filter((row) => !excludeIds.has(row.id));
+      const terms = rawQuery.split(/\s+/).filter(Boolean).slice(0, 8);
+      const rows = selectAllVideos.all();
+      const scored = [];
+
+      for (const row of rows) {
+        if (excludeIds.has(row.id)) continue;
+
+        const title = String(row.title || "").toLowerCase();
+        const tags = parseTags(row.tags).map((tag) =>
+          String(tag).toLowerCase(),
+        );
+        const username = String(row.authorUsername || "").toLowerCase();
+
+        let score = 0;
+        let matchedEveryTerm = true;
+        for (const term of terms) {
+          let termScore = 0;
+          if (tags.includes(term)) termScore += 12;
+          else if (tags.some((tag) => tag.includes(term))) termScore += 5;
+          if (username === term) termScore += 10;
+          else if (username.includes(term)) termScore += 6;
+          if (title.includes(term)) termScore += 3;
+          if (termScore === 0) matchedEveryTerm = false;
+          score += termScore;
+        }
+        if (!matchedEveryTerm || score === 0) continue;
+
+        const likes = parseLikes(row.likes).length;
+        const comments = row.commentsCount || 0;
+        score +=
+          ENGAGEMENT_LIKE_WEIGHT * Math.log1p(likes) +
+          ENGAGEMENT_COMMENT_WEIGHT * Math.log1p(comments);
+        scored.push({ row, score });
       }
+
+      scored.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (a.row.createdAt > b.row.createdAt) return -1;
+        if (a.row.createdAt < b.row.createdAt) return 1;
+        return 0;
+      });
 
       setNoStoreHeaders(res);
       res.json(
-        ordered.slice(0, limit).map((row) => mapVideoRow(row, viewer?.id)),
+        scored
+          .slice(offset, offset + limit)
+          .map((entry) => mapVideoRow(entry.row, viewer?.id)),
+      );
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // ── Popular / trending pixies (engagement-ranked, recency-decayed) ──
+  const POPULAR_WINDOWS_MS = {
+    "24h": 24 * 60 * 60 * 1000,
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+    all: null,
+  };
+  const POPULAR_DECAY_DAYS = 30;
+
+  router.get("/popular", (req, res) => {
+    try {
+      const viewer = authFromReq(req);
+      const requestedWindow = String(req.query.window || "7d");
+      const windowKey = Object.prototype.hasOwnProperty.call(
+        POPULAR_WINDOWS_MS,
+        requestedWindow,
+      )
+        ? requestedWindow
+        : "7d";
+      const windowMs = POPULAR_WINDOWS_MS[windowKey];
+      const rawLimit = Number.parseInt(String(req.query.limit || "10"), 10);
+      const limit = Math.min(
+        Math.max(Number.isFinite(rawLimit) ? rawLimit : 10, 1),
+        50,
+      );
+      const excludeIds = new Set(
+        typeof req.query.exclude === "string"
+          ? req.query.exclude
+              .split(",")
+              .map((id) => id.trim())
+              .filter(Boolean)
+          : [],
+      );
+      const offset = parseListOffset(req.query.offset);
+
+      const now = Date.now();
+      const rows = selectAllVideos.all();
+      const scored = [];
+
+      for (const row of rows) {
+        if (excludeIds.has(row.id)) continue;
+        const createdMs = Date.parse(row.createdAt) || 0;
+        if (windowMs != null && now - createdMs > windowMs) continue;
+
+        const likes = parseLikes(row.likes).length;
+        const comments = row.commentsCount || 0;
+        const engagement =
+          ENGAGEMENT_LIKE_WEIGHT * likes + ENGAGEMENT_COMMENT_WEIGHT * comments;
+        const ageDays = Math.max(0, (now - createdMs) / (24 * 60 * 60 * 1000));
+        const score = (engagement + 1) * Math.exp(-ageDays / POPULAR_DECAY_DAYS);
+        scored.push({ row, score });
+      }
+
+      scored.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (a.row.createdAt > b.row.createdAt) return -1;
+        if (a.row.createdAt < b.row.createdAt) return 1;
+        return 0;
+      });
+
+      setNoStoreHeaders(res);
+      res.json(
+        scored
+          .slice(offset, offset + limit)
+          .map((entry) => mapVideoRow(entry.row, viewer?.id)),
       );
     } catch {
       res.status(500).json({ error: "failed" });
@@ -793,21 +1032,22 @@ module.exports = function registerVideoRoutes(app, deps) {
     }
   });
 
-  // ── List comments ──
+  // ── List comments (top-level + one level of replies, flat) ──
   router.get("/:id/comments", (req, res) => {
     try {
+      const viewer = authFromReq(req);
       const video = selectVideoById.get(String(req.params.id));
       if (!video) return res.status(404).json({ error: "not found" });
 
       const rows = selectVideoComments.all(video.id);
       setNoStoreHeaders(res);
-      res.json(rows.map(mapCommentRow));
+      res.json(rows.map((row) => mapCommentRow(row, viewer?.id)));
     } catch {
       res.status(500).json({ error: "failed" });
     }
   });
 
-  // ── Add a comment ──
+  // ── Add a comment or a reply ──
   router.post("/:id/comments", (req, res) => {
     try {
       const user = authFromReq(req);
@@ -824,21 +1064,63 @@ module.exports = function registerVideoRoutes(app, deps) {
         return res.status(400).json({ error: "Comment is too long" });
       }
 
+      let parentId = null;
+      const rawParentId = String(req.body?.parentId || "").trim();
+      if (rawParentId) {
+        const parent = selectCommentById.get(rawParentId);
+        if (!parent || parent.videoId !== video.id) {
+          return res.status(400).json({ error: "Parent comment not found" });
+        }
+        // One level only: a reply to a reply attaches to the same root.
+        parentId = parent.parentId || parent.id;
+      }
+
       const id = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
       const createdAt = new Date().toISOString();
-      insertVideoComment.run(id, video.id, user.id, content, createdAt);
+      insertVideoComment.run(id, video.id, user.id, content, parentId, createdAt);
 
       setNoStoreHeaders(res);
       res.status(201).json({
         id,
         content,
         createdAt,
+        parentId,
+        likesCount: 0,
+        likedByMe: false,
+        replyCount: 0,
         author: {
           id: user.id,
           username: user.username,
           avatar: user.avatar || null,
         },
       });
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // ── Toggle a like on a comment ──
+  router.post("/:id/comments/:commentId/like", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+
+      const comment = selectCommentById.get(String(req.params.commentId));
+      if (!comment) return res.status(404).json({ error: "not found" });
+
+      const likes = parseLikes(comment.likes);
+      const existingIndex = likes.indexOf(user.id);
+      let liked = false;
+      if (existingIndex >= 0) {
+        likes.splice(existingIndex, 1);
+      } else {
+        likes.push(user.id);
+        liked = true;
+      }
+
+      updateCommentLikes.run(JSON.stringify(likes), comment.id);
+      setNoStoreHeaders(res);
+      res.json({ liked, likesCount: likes.length });
     } catch {
       res.status(500).json({ error: "failed" });
     }
@@ -860,6 +1142,8 @@ module.exports = function registerVideoRoutes(app, deps) {
       }
 
       deleteCommentById.run(comment.id);
+      // Deleting a top-level comment removes its replies too.
+      if (!comment.parentId) deleteRepliesOfComment.run(comment.id);
       setNoStoreHeaders(res);
       res.json({ ok: true });
     } catch {
@@ -891,37 +1175,6 @@ module.exports = function registerVideoRoutes(app, deps) {
       res.json({ ok: true });
     } catch {
       res.status(500).json({ error: "failed" });
-    }
-  });
-
-  // ── Resolve TikTok video metadata (owner only) ──
-  router.post("/admin/tiktok-resolve", async (req, res) => {
-    try {
-      const user = authFromReq(req);
-      if (!user) return res.status(401).json({ error: "unauthenticated" });
-      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
-
-      const metadata = await fetchTikTokMetadata(req.body?.url);
-      if (metadata.error) {
-        return res.status(502).json({ error: metadata.error });
-      }
-
-      setNoStoreHeaders(res);
-      res.json({
-        username: metadata.username || "",
-        avatarUrl: metadata.avatarUrl || "",
-        caption: stripHashtags(metadata.caption || ""),
-        hashtags: metadata.tags || [],
-        durationSeconds: metadata.durationSeconds ?? null,
-        coverUrl: metadata.thumbnailUrl || "",
-      });
-    } catch (err) {
-      res.status(502).json({
-        error:
-          err instanceof Error
-            ? err.message
-            : "Failed to resolve TikTok video",
-      });
     }
   });
 
@@ -1059,6 +1312,14 @@ module.exports = function registerVideoRoutes(app, deps) {
   function startJobCreep(job, from, to) {
     job.progress = from;
     const interval = setInterval(() => {
+      // Self-terminate once the job reaches a terminal state, so an early
+      // return/throw in the caller before its `clearInterval` can't leak a
+      // 700 ms timer for the life of the process. Callers still clear it
+      // between stages (clearing twice is a harmless no-op).
+      if (job.state === "done" || job.state === "error") {
+        clearInterval(interval);
+        return;
+      }
       if (job.state !== "running" || job.progress >= to) return;
       job.progress = Math.min(
         to,
@@ -1078,7 +1339,7 @@ module.exports = function registerVideoRoutes(app, deps) {
       progress: Math.round(job.progress),
       error: job.error || null,
       result: job.result || null,
-      reel: job.reel || null,
+      pixie: job.pixie || null,
     };
   }
 
@@ -1105,6 +1366,7 @@ module.exports = function registerVideoRoutes(app, deps) {
           platform: resolved.platform,
           username: resolved.username || "",
           avatarUrl: String(resolved.avatarUrl || "").trim(),
+          verified: resolved.verified === true,
           caption: resolved.caption || "",
           hashtags: resolved.hashtags || [],
           durationSeconds: resolved.durationSeconds ?? null,
@@ -1157,6 +1419,7 @@ module.exports = function registerVideoRoutes(app, deps) {
         MAX_AUTHOR_USERNAME_LENGTH,
       );
       if (!username) {
+        clearInterval(creep);
         Object.assign(job, {
           state: "error",
           error:
@@ -1197,19 +1460,41 @@ module.exports = function registerVideoRoutes(app, deps) {
       const durationSeconds = resolved?.durationSeconds ?? null;
       const id = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
 
-      const authorUser = resolveAuthorWithAvatar({ username, avatar });
+      const authorUser = resolveAuthorWithAvatar({
+        username,
+        avatar,
+        // Trust either the flag the admin saw at fetch time or a fresh positive
+        // from the re-resolve above.
+        verified: body.verified === true || resolved?.verified === true,
+      });
       const createdAt = new Date().toISOString();
-      insertVideo.run(
-        id,
-        authorUser.id,
-        body.title,
-        JSON.stringify(body.tags),
-        path.basename(downloadedFilePath),
-        mimeType,
-        sizeBytes,
-        durationSeconds,
-        createdAt,
-      );
+      let storedId = id;
+      try {
+        insertImportedVideo.run(
+          id,
+          authorUser.id,
+          body.title,
+          JSON.stringify(body.tags),
+          path.basename(downloadedFilePath),
+          mimeType,
+          sizeBytes,
+          durationSeconds,
+          createdAt,
+          body.importKey || null,
+        );
+      } catch (err) {
+        // A concurrent request with the same importKey won the race and already
+        // inserted the row. Drop this download and reuse the existing video.
+        const existing = body.importKey
+          ? selectVideoByImportKey.get(body.importKey)
+          : null;
+        if (!existing) throw err;
+        storedId = existing.id;
+        if (downloadedFilePath) {
+          fs.promises.unlink(downloadedFilePath).catch(() => {});
+          downloadedFilePath = null;
+        }
+      }
 
       clearInterval(creep);
       Object.assign(job, {
@@ -1217,7 +1502,7 @@ module.exports = function registerVideoRoutes(app, deps) {
         stage: "done",
         message: "Video imported!",
         progress: 100,
-        reel: mapVideoRow(selectVideoById.get(id), job.ownerId),
+        pixie: mapVideoRow(selectVideoById.get(storedId), job.ownerId),
         updatedAt: Date.now(),
       });
     } catch (err) {
@@ -1234,13 +1519,6 @@ module.exports = function registerVideoRoutes(app, deps) {
         updatedAt: Date.now(),
       });
     }
-  }
-
-  function destBaseFor(_idPlaceholder, _rawUrl) {
-    return path.join(
-      VIDEOS_DIR,
-      `${Date.now()}-${Math.round(Math.random() * 1e9)}`,
-    );
   }
 
   // ── Import a social video (owner only): starts a background job so the
@@ -1271,6 +1549,8 @@ module.exports = function registerVideoRoutes(app, deps) {
         return res.status(400).json({ error: "Invalid avatar URL" });
       }
 
+      const importKey = String(req.body?.importKey || "").trim().slice(0, 100);
+
       pruneImportJobs();
       importJobSequence += 1;
       const job = {
@@ -1281,11 +1561,30 @@ module.exports = function registerVideoRoutes(app, deps) {
         message: "Starting import…",
         progress: 0,
         error: null,
-        reel: null,
+        pixie: null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
       IMPORT_JOBS.set(job.jobId, job);
+
+      // Idempotency: if a job with this key already finished importing (e.g. the
+      // server restarted after the row was inserted and the client is retrying),
+      // hand back the existing video instead of downloading a second copy.
+      const alreadyImported = importKey
+        ? selectVideoByImportKey.get(importKey)
+        : null;
+      if (alreadyImported) {
+        Object.assign(job, {
+          state: "done",
+          stage: "done",
+          message: "Video imported!",
+          progress: 100,
+          pixie: mapVideoRow(alreadyImported, user.id),
+          updatedAt: Date.now(),
+        });
+        setNoStoreHeaders(res);
+        return res.status(202).json({ jobId: job.jobId });
+      }
 
       const body = {
         url: rawUrl,
@@ -1293,6 +1592,8 @@ module.exports = function registerVideoRoutes(app, deps) {
         avatarUrl: providedAvatar,
         tags: sanitizeTags(req.body?.tags),
         title: String(req.body?.title || "").trim().slice(0, VIDEO_TITLE_MAX_LENGTH),
+        importKey,
+        verified: req.body?.verified === true,
       };
       performImportJob(job, body).catch((err) => {
         Object.assign(job, {
@@ -1324,6 +1625,14 @@ module.exports = function registerVideoRoutes(app, deps) {
       res.status(500).json({ error: "failed" });
     }
   });
+
+  // Mount the API router BEFORE the SPA/share `app.get` routes below, so the
+  // specific API paths (`/pixies/feed`, `/pixies/search`, …) win over the
+  // catch-all `GET /pixies/:videoId` share-link handler. `/pixies` is the
+  // current surface; `/videos` stays as a legacy alias for links already
+  // published (e.g. `og:video` meta URLs, cached app HTML).
+  app.use("/pixies", router);
+  app.use("/videos", router);
 
   // ── Pixies SPA handoffs (humans get the frontend app) ──
   app.get("/pixies", (req, res) => {
@@ -1368,5 +1677,4 @@ module.exports = function registerVideoRoutes(app, deps) {
     }
   });
 
-  app.use("/videos", router);
 };
