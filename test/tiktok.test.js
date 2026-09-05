@@ -102,6 +102,22 @@ test("parseTikTokPage returns null when no item is present", () => {
   assert.equal(parseTikTokPage("<html><body>nothing</body></html>", "123"), null);
 });
 
+test("parseTikTokPage reads the author verified flag", () => {
+  const plain = parseTikTokPage(
+    buildUniversalHtml(buildUniversalItem()),
+    "7351234567890123456",
+  );
+  assert.equal(plain.verified, false);
+
+  const item = buildUniversalItem();
+  item.author.verified = true;
+  const badged = parseTikTokPage(
+    buildUniversalHtml(item),
+    "7351234567890123456",
+  );
+  assert.equal(badged.verified, true);
+});
+
 test("normalizeTikTokQueueEntry accepts objects and plain url strings", () => {
   assert.deepEqual(
     normalizeTikTokQueueEntry({
