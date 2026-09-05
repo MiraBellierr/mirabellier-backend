@@ -503,7 +503,7 @@ module.exports = function registerVideoRoutes(app, deps) {
   });
 
   // ── Admin upload with custom author (owner only) ──
-  router.post("/admin", videoUpload.single("video"), (req, res) => {
+  router.post("/admin", videoUpload.single("video"), async (req, res) => {
     try {
       const user = authFromReq(req);
       if (!user) return res.status(401).json({ error: "unauthenticated" });
@@ -533,7 +533,11 @@ module.exports = function registerVideoRoutes(app, deps) {
           cleanupFile();
           return res.status(400).json({ error: "Invalid avatar URL" });
         }
-        avatar = rawAvatar;
+        // Social CDN avatar links carry expiring tokens that 403 for browsers
+        // later — store a local PNG mirror, just like the social import path.
+        avatar = /^https?:\/\//i.test(rawAvatar)
+          ? await mirrorAvatarToPng(rawAvatar, IMAGES_DIR)
+          : rawAvatar;
       }
 
       const tags = sanitizeTags(req.body?.tags);
@@ -1138,6 +1142,10 @@ module.exports = function registerVideoRoutes(app, deps) {
       creep = startJobCreep(job, 4, 30);
       let resolved = null;
       try {
+        // The form resolved the video moments ago (username, avatar, caption
+        // are known). Re-resolving here refreshes the download address and
+        // fills gaps; the TikTok avatar lookup is a single quick attempt
+        // either way so the bot wall never stalls the download.
         resolved = await resolveSocialVideo(rawUrl);
       } catch {
         resolved = null;
