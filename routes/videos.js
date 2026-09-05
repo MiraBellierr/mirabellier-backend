@@ -363,6 +363,48 @@ module.exports = function registerVideoRoutes(app, deps) {
     `DELETE FROM user_video_comments WHERE videoId = ?`,
   );
 
+  const selectStoredVideoId = db.prepare(
+    `SELECT id FROM user_videos WHERE id = ?`,
+  );
+
+  const updateVideoFile = db.prepare(
+    `UPDATE user_videos SET filename = ?, mimeType = ?, sizeBytes = ? WHERE id = ?`,
+  );
+
+  // Direct uploads are stored as-is so the original quality is never touched,
+  // then this background pass probes the file and — only when needed —
+  // remuxes or re-encodes it (H.264/AAC + faststart, same resolution and
+  // frame rate) so every device can stream it. The DB row is repointed to the
+  // new file when one is produced.
+  function finalizeUploadedVideo(rowId, originalFilePath) {
+    void (async () => {
+      try {
+        const result = await transcodeToH264(originalFilePath);
+        if (!result.converted) return;
+        if (!selectStoredVideoId.get(rowId)) {
+          await fs.promises.unlink(result.filePath).catch(() => {});
+          return;
+        }
+        updateVideoFile.run(
+          path.basename(result.filePath),
+          result.mimeType,
+          result.sizeBytes,
+          rowId,
+        );
+        if (result.filePath !== originalFilePath) {
+          await fs.promises.unlink(originalFilePath).catch(() => {});
+        }
+      } catch (err) {
+        // Keep the original file so nothing is lost; the pixie stays as
+        // uploaded and the repair script can convert it later.
+        console.error(
+          "Could not make uploaded video playable everywhere:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
+  }
+
   function buildViewerTagWeights(viewerId, videoRows) {
     const weights = new Map();
     const addTags = (rawTags, weight) => {
@@ -447,6 +489,8 @@ module.exports = function registerVideoRoutes(app, deps) {
         createdAt,
       );
 
+      finalizeUploadedVideo(id, path.join(VIDEOS_DIR, req.file.filename));
+
       setNoStoreHeaders(res);
       res.status(201).json(mapVideoRow(selectVideoById.get(id), user.id));
     } catch (err) {
@@ -523,6 +567,8 @@ module.exports = function registerVideoRoutes(app, deps) {
         durationSeconds,
         createdAt,
       );
+
+      finalizeUploadedVideo(id, path.join(VIDEOS_DIR, req.file.filename));
 
       setNoStoreHeaders(res);
       res.status(201).json(mapVideoRow(selectVideoById.get(id), user.id));
