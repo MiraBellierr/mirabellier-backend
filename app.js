@@ -307,7 +307,10 @@ app.use("/videos", createStaticMiddleware(uploads.VIDEOS_DIR));
 const WebSocketEvents = require("./lib/websocket-events");
 const { initWebSocketServer } = require("./lib/websocket-server");
 const { startPlaybackFight, advancePlaybackFightTurn, skipPlaybackFightToEnd } = require("./lib/arena/playback");
+const { isArenaFightVerified } = require("./lib/arena-fight-verification");
 const { getCurrentlyWatchingAnimeFeed } = require("./lib/mal-anime");
+
+const ARENA_VERIFICATION_REQUIRED = "ARENA_VERIFICATION_REQUIRED";
 
 // WS auth token endpoint — returns a short-lived token for WebSocket connection
 app.post("/auth/ws-token", (req, res) => {
@@ -328,6 +331,20 @@ const httpServer = http.createServer(app);
 initWebSocketServer(httpServer, {
   db,
   handleMessage(userId, msg, reply) {
+    const isFightMessage =
+      msg.type === WebSocketEvents.C2S.ARENA_FIGHT_START ||
+      msg.type === WebSocketEvents.C2S.ARENA_FIGHT_ADVANCE ||
+      msg.type === WebSocketEvents.C2S.ARENA_FIGHT_SKIP;
+    if (isFightMessage && !isArenaFightVerified(userId)) {
+      reply({
+        type: WebSocketEvents.S2C.ARENA_FIGHT_ERROR,
+        data: {
+          code: ARENA_VERIFICATION_REQUIRED,
+          message: "Complete human verification before fighting.",
+        },
+      });
+      return;
+    }
     switch (msg.type) {
       case WebSocketEvents.C2S.ARENA_FIGHT_START: {
         startPlaybackFight(db, userId).then(

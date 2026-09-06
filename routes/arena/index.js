@@ -32,9 +32,11 @@ const { runFight } = require("../../lib/arena/combat");
 const { isOwner } = require("../../lib/authz");
 const { verifyTurnstileToken } = require("../../lib/turnstile");
 const { checkArenaFightRateLimit } = require("../../lib/arena-fight-guard");
+const { markArenaFightVerified } = require("../../lib/arena-fight-verification");
 const {
   handleArenaError,
   requireAuthUser,
+  requireArenaFightVerified,
   setNoStoreHeaders,
 } = require("./http");
 
@@ -116,7 +118,9 @@ module.exports = function registerArenaRoutes(app, deps) {
 
   router.post("/verify", async (req, res) => {
     try {
+      const user = requireAuthUser(req, authFromReq);
       await verifyTurnstileToken(req, req.body?.turnstileToken, "arena_fight");
+      markArenaFightVerified(user.id);
       setNoStoreHeaders(res);
       res.json({ ok: true });
     } catch (error) {
@@ -340,6 +344,7 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.post("/fight", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
+      requireArenaFightVerified(user.id);
       if (hasActiveFight(db, user.id)) {
         throw new ArenaHttpError(
           409,
@@ -368,6 +373,7 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.post("/fight/start", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
+      requireArenaFightVerified(user.id);
       const rateLimit = checkArenaFightRateLimit(req, user.id);
       if (!rateLimit.allowed) {
         throw new ArenaHttpError(
@@ -399,6 +405,7 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.post("/fight/advance", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
+      requireArenaFightVerified(user.id);
       const payload = advancePlaybackFightTurn(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
@@ -410,6 +417,7 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.post("/fight/skip", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
+      requireArenaFightVerified(user.id);
       const payload = skipPlaybackFightToEnd(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);

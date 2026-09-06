@@ -1,5 +1,10 @@
 const { ArenaHttpError } = require("../../lib/arena/utils");
 const { TurnstileError } = require("../../lib/turnstile");
+const { isArenaFightVerified } = require("../../lib/arena-fight-verification");
+
+const VERIFICATION_REQUIRED_CODE = "ARENA_VERIFICATION_REQUIRED";
+const VERIFICATION_REQUIRED_MESSAGE =
+  "Complete human verification before fighting.";
 
 function setNoStoreHeaders(res) {
   res.setHeader(
@@ -17,6 +22,18 @@ function requireAuthUser(req, authFromReq) {
     throw new ArenaHttpError(401, "Authentication required.", "ARENA_UNAUTHENTICATED");
   }
   return user;
+}
+
+// Every fight entry point (HTTP and WebSocket) must confirm the user cleared
+// Turnstile via POST /arena/verify first. Without this the gate is client-only.
+function requireArenaFightVerified(userId) {
+  if (!isArenaFightVerified(userId)) {
+    throw new ArenaHttpError(
+      403,
+      VERIFICATION_REQUIRED_MESSAGE,
+      VERIFICATION_REQUIRED_CODE,
+    );
+  }
 }
 
 function handleArenaError(error, res) {
@@ -56,5 +73,8 @@ function handleArenaError(error, res) {
 module.exports = {
   handleArenaError,
   requireAuthUser,
+  requireArenaFightVerified,
   setNoStoreHeaders,
+  VERIFICATION_REQUIRED_CODE,
+  VERIFICATION_REQUIRED_MESSAGE,
 };
