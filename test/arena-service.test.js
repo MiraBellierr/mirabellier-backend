@@ -52,6 +52,7 @@ const {
   toRecordedIso,
   finalizePlaybackFightRewards,
   fodderEquipmentPiece,
+  getFodderRefund,
   loadCombatSnapshot,
   acceptTradeRequest,
   applyFightEffectUsage,
@@ -2409,6 +2410,36 @@ test("buying rolled gear consumes coins and stores an equipment piece", () => {
       (piece) => piece.id === bought.rolledPieceId && piece.slot === "weapon",
     ),
   );
+});
+
+test("scrap payout is server-derived and identical for every screen", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 10,
+    coins: 5000,
+    selectedCard: makeCard(1, "C"),
+  });
+
+  const bought = buyShopItem(db, "u1", "weapon_roll");
+  const expected = getFodderRefund("weapon");
+
+  // Shop reward modal path: the buy response carries the authoritative number.
+  assert.equal(bought.rolledPiece.fodderRefund, expected);
+
+  // Inventory path: every serialized piece carries the same number.
+  const piece = bought.shop.profile.equipmentPieces.find(
+    (p) => p.id === bought.rolledPieceId,
+  );
+  assert.equal(piece.fodderRefund, expected);
+
+  // A body-supplied refund is ignored; the actual credit matches the derived value.
+  const coinsBefore = bought.shop.profile.coins;
+  const result = fodderEquipmentPiece(db, "u1", bought.rolledPieceId, 999999);
+  assert.equal(result.coinsGained, expected);
+
+  const after = getArenaShopPayload(db, "u1");
+  assert.equal(after.profile.coins, coinsBefore + expected);
 });
 
 test("owned rolled gear can be re-equipped from inventory", () => {
