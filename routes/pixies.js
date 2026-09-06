@@ -20,6 +20,7 @@ const {
   extractPosterFrame,
 } = require("../lib/social");
 const { mirrorAvatarToPng } = require("../lib/avatar-png");
+const { createPixieImportQueue } = require("../lib/pixie-import-queue");
 const {
   createPixieNotification,
   getPixieNotifications,
@@ -1570,23 +1571,47 @@ module.exports = function registerPixieRoutes(app, deps) {
     }
   }
 
-  async function performImportJob(job, body) {
-    const update = (stage, message, progress) => {
-      Object.assign(job, {
-        state: "running",
-        stage,
-        message,
-        progress,
-        updatedAt: Date.now(),
-      });
-    };
-    let creep = null;
+  // Run one social import to completion. Reports progress through
+  // `onProgress({ stage, message, progress })` and returns { videoId } on
+  // success; throws on failure. Used by the durable import queue below.
+  async function runSocialImport(params, onProgress = () => {}) {
+    const rawUrl = String(params.url || "").trim();
+    let progress = 0;
+    let curStage = "queued";
+    let curMessage = "Starting import…";
+    let creepTimer = null;
 
-    const rawUrl = String(body.url || "").trim();
+    const emit = () => {
+      onProgress({ stage: curStage, message: curMessage, progress });
+    };
+    const step = (stage, message, value) => {
+      stopCreep();
+      curStage = stage;
+      curMessage = message;
+      progress = value;
+      emit();
+    };
+    // Ease progress toward `to` inside a slow stage so the bar never looks
+    // frozen while a platform throttles the scrape / download.
+    const creepTo = (to) => {
+      stopCreep();
+      creepTimer = setInterval(() => {
+        if (progress >= to) return;
+        progress = Math.min(to, progress + 0.6 + Math.random() * 1.1);
+        emit();
+      }, 800);
+    };
+    function stopCreep() {
+      if (creepTimer) {
+        clearInterval(creepTimer);
+        creepTimer = null;
+      }
+    }
+
     let downloadedFilePath = null;
     try {
-      update("resolve", "Fetching video details…", 4);
-      creep = startJobCreep(job, 4, 30);
+      step("resolve", "Fetching video details…", 4);
+      creepTo(30);
       let resolved = null;
       try {
         // The form resolved the video moments ago (username, avatar, caption
@@ -1599,23 +1624,18 @@ module.exports = function registerPixieRoutes(app, deps) {
       }
 
       const username = truncateCodePoints(
-        String(body.username || "").trim() ||
+        String(params.username || "").trim() ||
           String(resolved?.username || "").trim(),
         MAX_AUTHOR_USERNAME_LENGTH,
       );
       if (!username) {
-        clearInterval(creep);
-        Object.assign(job, {
-          state: "error",
-          error:
-            "Could not determine an author username — fill in the username field",
-        });
-        return;
+        throw new Error(
+          "Could not determine an author username — set the username and retry",
+        );
       }
 
-      clearInterval(creep);
-      update("download", "Downloading video…", 34);
-      creep = startJobCreep(job, 34, 82);
+      step("download", "Downloading video…", 34);
+      creepTo(82);
       const destBase = path.join(
         VIDEOS_DIR,
         `${Date.now()}-${Math.round(Math.random() * 1e9)}`,
@@ -1625,9 +1645,8 @@ module.exports = function registerPixieRoutes(app, deps) {
       });
       downloadedFilePath = downloaded.filePath;
 
-      clearInterval(creep);
-      update("process", "Making the video playable on every device…", 86);
-      creep = startJobCreep(job, 86, 94);
+      step("process", "Making the video playable on every device…", 86);
+      creepTo(94);
       const converted = await transcodeToH264(downloaded.filePath);
       if (converted.converted && converted.filePath !== downloaded.filePath) {
         await fs.promises.unlink(downloaded.filePath).catch(() => {});
@@ -1636,7 +1655,7 @@ module.exports = function registerPixieRoutes(app, deps) {
       const sizeBytes = converted.sizeBytes;
       const mimeType = converted.mimeType;
       let avatar =
-        String(body.avatarUrl || "").trim() ||
+        String(params.avatarUrl || "").trim() ||
         String(resolved?.avatarUrl || "").trim() ||
         null;
       if (avatar && /^https?:\/\//i.test(avatar)) {
@@ -1650,7 +1669,7 @@ module.exports = function registerPixieRoutes(app, deps) {
         avatar,
         // Trust either the flag the admin saw at fetch time or a fresh positive
         // from the re-resolve above.
-        verified: body.verified === true || resolved?.verified === true,
+        verified: params.verified === true || resolved?.verified === true,
       });
       const createdAt = new Date().toISOString();
       let storedId = id;
@@ -1658,20 +1677,20 @@ module.exports = function registerPixieRoutes(app, deps) {
         insertImportedVideo.run(
           id,
           authorUser.id,
-          body.title,
-          JSON.stringify(body.tags),
+          String(params.title || ""),
+          JSON.stringify(Array.isArray(params.tags) ? params.tags : []),
           path.basename(downloadedFilePath),
           mimeType,
           sizeBytes,
           durationSeconds,
           createdAt,
-          body.importKey || null,
+          params.importKey || null,
         );
       } catch (err) {
-        // A concurrent request with the same importKey won the race and already
-        // inserted the row. Drop this download and reuse the existing video.
-        const existing = body.importKey
-          ? selectVideoByImportKey.get(body.importKey)
+        // A retry (or a crash after the insert) with the same importKey — the
+        // row is already there. Drop this download and reuse the existing video.
+        const existing = params.importKey
+          ? selectVideoByImportKey.get(params.importKey)
           : null;
         if (!existing) throw err;
         storedId = existing.id;
@@ -1682,44 +1701,58 @@ module.exports = function registerPixieRoutes(app, deps) {
       }
 
       // First-frame poster for a freshly imported clip (skipped when an
-      // importKey race made us reuse an existing row above).
+      // importKey collision made us reuse an existing row above).
       if (storedId === id && downloadedFilePath) {
         await attachPosterFrame(id, downloadedFilePath);
       }
 
-      clearInterval(creep);
-      Object.assign(job, {
-        state: "done",
-        stage: "done",
-        message: "Video imported!",
-        progress: 100,
-        pixie: mapVideoRow(selectVideoById.get(storedId), job.ownerId),
-        updatedAt: Date.now(),
-      });
+      stopCreep();
+      step("done", "Video imported!", 100);
+      return { videoId: storedId };
     } catch (err) {
-      clearInterval(creep);
+      stopCreep();
       if (downloadedFilePath) {
         fs.promises.unlink(downloadedFilePath).catch(() => {});
       }
-      const message =
-        err instanceof Error ? err.message : "Import failed";
-      Object.assign(job, {
-        state: "error",
-        error: message,
-        message: "Import failed",
-        updatedAt: Date.now(),
-      });
+      throw err instanceof Error ? err : new Error("Import failed");
     }
   }
 
-  // ── Import a social video (owner only): starts a background job so the
-  // admin form can stream progress. Poll GET /admin/import/status/:jobId. ──
-  router.post("/admin/import", async (req, res) => {
-    try {
-      const user = authFromReq(req);
-      if (!user) return res.status(401).json({ error: "unauthenticated" });
-      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+  // ── Durable "download & import" queue (owner only) ──────────────────────
+  // The admin adds links to this queue and can then close or refresh the
+  // page — imports run one at a time in the background, their progress is
+  // persisted per row, and a backend restart re-queues whatever was mid-run.
+  const importQueue = createPixieImportQueue({
+    db,
+    runImport: (params, onProgress) => runSocialImport(params, onProgress),
+  });
+  importQueue.recover();
 
+  function requireOwner(req, res) {
+    const user = authFromReq(req);
+    if (!user) {
+      res.status(401).json({ error: "unauthenticated" });
+      return null;
+    }
+    if (!isOwner(user)) {
+      res.status(403).json({ error: "forbidden" });
+      return null;
+    }
+    return user;
+  }
+
+  // List the queue (running + waiting first, then recently finished).
+  router.get("/admin/import/queue", (req, res) => {
+    if (!requireOwner(req, res)) return;
+    setNoStoreHeaders(res);
+    res.json({ items: importQueue.list(50) });
+  });
+
+  // Add a link to the queue.
+  router.post("/admin/import/queue", (req, res) => {
+    const user = requireOwner(req, res);
+    if (!user) return;
+    try {
       const rawUrl = String(req.body?.url || "").trim();
       const platform = classifyPlatform(rawUrl);
       if (!platform) {
@@ -1730,91 +1763,62 @@ module.exports = function registerPixieRoutes(app, deps) {
       }
 
       const providedUsername = String(req.body?.username || "").trim();
-      const providedUsernameError = validateAuthorUsername(providedUsername);
-      if (providedUsername && providedUsernameError) {
-        return res.status(400).json({ error: providedUsernameError });
-      }
+      const usernameError = providedUsername
+        ? validateAuthorUsername(providedUsername)
+        : null;
+      if (usernameError) return res.status(400).json({ error: usernameError });
 
       const providedAvatar = String(req.body?.avatarUrl || "").trim();
       if (providedAvatar && !isValidAvatarUrl(providedAvatar)) {
         return res.status(400).json({ error: "Invalid avatar URL" });
       }
 
-      const importKey = String(req.body?.importKey || "").trim().slice(0, 100);
+      const importKey = String(req.body?.importKey || "")
+        .trim()
+        .slice(0, 100);
 
-      pruneImportJobs();
-      importJobSequence += 1;
-      const job = {
-        jobId: `import-${Date.now()}-${importJobSequence}`,
-        ownerId: user.id,
-        state: "queued",
-        stage: "queued",
-        message: "Starting import…",
-        progress: 0,
-        error: null,
-        pixie: null,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      IMPORT_JOBS.set(job.jobId, job);
-
-      // Idempotency: if a job with this key already finished importing (e.g. the
-      // server restarted after the row was inserted and the client is retrying),
-      // hand back the existing video instead of downloading a second copy.
-      const alreadyImported = importKey
-        ? selectVideoByImportKey.get(importKey)
-        : null;
-      if (alreadyImported) {
-        Object.assign(job, {
-          state: "done",
-          stage: "done",
-          message: "Video imported!",
-          progress: 100,
-          pixie: mapVideoRow(alreadyImported, user.id),
-          updatedAt: Date.now(),
-        });
-        setNoStoreHeaders(res);
-        return res.status(202).json({ jobId: job.jobId });
-      }
-
-      const body = {
+      const item = importQueue.enqueue({
         url: rawUrl,
+        platform,
+        title: String(req.body?.title || "")
+          .trim()
+          .slice(0, VIDEO_TITLE_MAX_LENGTH),
+        tags: sanitizeTags(req.body?.tags),
         username: providedUsername,
         avatarUrl: providedAvatar,
-        tags: sanitizeTags(req.body?.tags),
-        title: String(req.body?.title || "").trim().slice(0, VIDEO_TITLE_MAX_LENGTH),
-        importKey,
         verified: req.body?.verified === true,
-      };
-      performImportJob(job, body).catch((err) => {
-        Object.assign(job, {
-          state: "error",
-          error: err instanceof Error ? err.message : "Import failed",
-          updatedAt: Date.now(),
-        });
+        importKey: importKey || null,
+        enqueuedBy: user.id,
       });
 
       setNoStoreHeaders(res);
-      res.status(202).json({ jobId: job.jobId });
+      res.status(202).json({ item });
     } catch {
-      res.status(500).json({ error: "Import failed" });
+      res.status(500).json({ error: "Could not queue the import" });
     }
   });
 
-  // ── Import job status (owner only) ──
-  router.get("/admin/import/status/:jobId", (req, res) => {
-    try {
-      const user = authFromReq(req);
-      if (!user) return res.status(401).json({ error: "unauthenticated" });
-      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+  router.post("/admin/import/queue/:id/cancel", (req, res) => {
+    if (!requireOwner(req, res)) return;
+    const item = importQueue.cancel(req.params.id);
+    if (!item) return res.status(404).json({ error: "Not found" });
+    setNoStoreHeaders(res);
+    res.json({ item });
+  });
 
-      const job = IMPORT_JOBS.get(String(req.params.jobId));
-      if (!job) return res.status(404).json({ error: "Job not found" });
-      setNoStoreHeaders(res);
-      res.json(importJobSnapshot(job));
-    } catch {
-      res.status(500).json({ error: "failed" });
-    }
+  router.post("/admin/import/queue/:id/retry", (req, res) => {
+    if (!requireOwner(req, res)) return;
+    const item = importQueue.retry(req.params.id);
+    if (!item) return res.status(404).json({ error: "Not found" });
+    setNoStoreHeaders(res);
+    res.json({ item });
+  });
+
+  // Drop every finished / failed / canceled row.
+  router.post("/admin/import/queue/clear", (req, res) => {
+    if (!requireOwner(req, res)) return;
+    setNoStoreHeaders(res);
+    res.json({ removed: importQueue.clearFinished() });
   });
 
   // Mount the API router BEFORE the SPA/share `app.get` routes below, so the
