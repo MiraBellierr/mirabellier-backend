@@ -13,6 +13,11 @@ const {
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
 const { getUserPermissions, getUserRoles } = require("../lib/authz");
+const {
+  FollowError,
+  getFollowState,
+  toggleFollow,
+} = require("../lib/user-follows");
 
 function configureDiscordStrategy(findOrCreateDiscordUser) {
   passport.use(
@@ -453,6 +458,35 @@ module.exports = function registerAuthRoutes(app, deps) {
       res.json(userPublic(user));
     } catch {
       res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // ── Follow graph ──
+  function handleFollowError(err, res) {
+    if (err instanceof FollowError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    return res.status(500).json({ error: "failed" });
+  }
+
+  app.get("/user/:id/follow", (req, res) => {
+    try {
+      const viewer = authFromReq(req);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(getFollowState(db, viewer, req.params.id));
+    } catch (err) {
+      handleFollowError(err, res);
+    }
+  });
+
+  app.post("/user/:id/follow", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      res.setHeader("Cache-Control", "no-store");
+      res.json(toggleFollow(db, user, req.params.id));
+    } catch (err) {
+      handleFollowError(err, res);
     }
   });
 
