@@ -3,7 +3,7 @@ const { ArenaHttpError } = require("../../lib/arena/utils");
 const { acceptTradeRequest, cancelTradeRequest, cancelTradeSession, confirmTrade,
   createArenaTradeListing, cancelArenaTradeListing, denyTradeRequest,
   getArenaTradeListings, getIncomingTradeRequests, getMyArenaTradeListings,
-  getTradeSession, offerCardInTrade, removeCardFromTrade, offerCoinInTrade,
+  getTradeRequestForUser, getTradeSession, offerCardInTrade, removeCardFromTrade, offerCoinInTrade,
   removeCoinFromTrade, sendTradeRequest, unconfirmTrade } = require("../../lib/arena/trade");
 const { searchArenaTradeCards, searchArenaUsers } = require("../../lib/arena/archive");
 const { advancePlaybackFightTurn, getPlaybackFightState, hasActiveFight,
@@ -31,7 +31,7 @@ const { getLeaderboard } = require("../../lib/arena/leaderboard");
 const { runFight } = require("../../lib/arena/combat");
 const { isOwner } = require("../../lib/authz");
 const { verifyTurnstileToken } = require("../../lib/turnstile");
-const { checkArenaFightRateLimit } = require("../../lib/arena-fight-guard");
+const { checkArenaFightRateLimit, checkArenaPlaybackRateLimit } = require("../../lib/arena-fight-guard");
 const { markArenaFightVerified } = require("../../lib/arena-fight-verification");
 const {
   handleArenaError,
@@ -406,6 +406,15 @@ module.exports = function registerArenaRoutes(app, deps) {
     try {
       const user = requireAuthUser(req, authFromReq);
       requireArenaFightVerified(user.id);
+      const rateLimit = checkArenaPlaybackRateLimit(req, user.id);
+      if (!rateLimit.allowed) {
+        throw new ArenaHttpError(
+          429,
+          "Too many fight actions. Please slow down.",
+          "ARENA_FIGHT_RATE_LIMIT",
+          { retryAfterMs: rateLimit.retryAfterMs },
+        );
+      }
       const payload = advancePlaybackFightTurn(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
@@ -418,6 +427,15 @@ module.exports = function registerArenaRoutes(app, deps) {
     try {
       const user = requireAuthUser(req, authFromReq);
       requireArenaFightVerified(user.id);
+      const rateLimit = checkArenaPlaybackRateLimit(req, user.id);
+      if (!rateLimit.allowed) {
+        throw new ArenaHttpError(
+          429,
+          "Too many fight actions. Please slow down.",
+          "ARENA_FIGHT_RATE_LIMIT",
+          { retryAfterMs: rateLimit.retryAfterMs },
+        );
+      }
       const payload = skipPlaybackFightToEnd(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
@@ -823,31 +841,9 @@ module.exports = function registerArenaRoutes(app, deps) {
   router.get("/trade/request/:requestId", (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
-      const row = db
-        .prepare(
-          `SELECT r.*, s.id AS sessionId
-           FROM arena_trade_requests r
-           LEFT JOIN arena_trade_sessions s ON s.requestId = r.id
-           WHERE r.id = ? AND (r.askerId = ? OR r.responderId = ?)
-           LIMIT 1`,
-        )
-        .get(req.params.requestId, user.id, user.id);
-      if (!row) {
-        throw new ArenaHttpError(
-          404,
-          "Trade request not found.",
-          "ARENA_TRADE_REQUEST_NOT_FOUND",
-        );
-      }
+      const payload = getTradeRequestForUser(db, user.id, req.params.requestId);
       setNoStoreHeaders(res);
-      res.json({
-        id: row.id,
-        askerId: row.askerId,
-        responderId: row.responderId,
-        status: row.status,
-        createdAt: row.createdAt,
-        sessionId: row.sessionId || null,
-      });
+      res.json(payload);
     } catch (error) {
       handleArenaError(error, res);
     }
@@ -1090,5 +1086,4 @@ module.exports = function registerArenaRoutes(app, deps) {
   });
 
   app.use("/arena", router);
-  app.use("/ar", router);
 };
