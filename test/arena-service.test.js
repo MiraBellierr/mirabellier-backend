@@ -2496,7 +2496,7 @@ test("equipment saved in a loadout cannot be scrapped directly", () => {
   const { protectedFodder } = makeLoadoutProtectedWeaponFodder(db);
 
   assert.throws(
-    () => fodderEquipmentPiece(db, "u1", protectedFodder.rolledPieceId, 500),
+    () => fodderEquipmentPiece(db, "u1", protectedFodder.rolledPieceId),
     (error) => error instanceof ArenaHttpError && error.code === "ARENA_PIECE_IN_LOADOUT",
   );
 });
