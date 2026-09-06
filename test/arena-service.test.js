@@ -30,6 +30,7 @@ const {
   createArenaUpdate,
   deleteArenaUpdate,
   drawDailyCard,
+  drawArenaPack,
   enhanceEquipmentPiece,
   equipShopItem,
   ensureArenaProfile,
@@ -76,6 +77,9 @@ const {
 } = require("../lib/arena");
 const registerArenaRoutes = require("../routes/arena");
 const registerAdminRoutes = require("../routes/admin");
+const {
+  resetArenaFightVerifications,
+} = require("../lib/arena-fight-verification");
 const { initializeSchema } = require("../lib/db");
 const { readArenaMetrics } = require("../lib/arena-monitoring");
 const { CATALOG_VERSION, SHOP_ITEMS, SUB_STAT_POOL } = require("../lib/arena-constants");
@@ -3127,6 +3131,30 @@ test("daily draw is limited to ten cards per day", async () => {
   );
 });
 
+test("draw-pack only reports the cards it actually granted near the daily limit", async () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1" });
+
+  // Burn 8 of the 10 daily draws.
+  for (let index = 0; index < 8; index += 1) {
+    await drawDailyCard(db, "u1");
+  }
+
+  // Ask for a 5-card pack with only 2 draws left.
+  const result = await drawArenaPack(db, "u1", 5);
+
+  assert.equal(result.cards.length, 2);
+  assert.equal(result.profile.dailyDrawsUsed, 10);
+  assert.equal(result.profile.dailyDrawsRemaining, 0);
+  for (const card of result.cards) {
+    assert.ok(card.ownedCount >= 1);
+  }
+
+  // Exactly 8 + 2 cards were ever inserted — nothing phantom.
+  const collection = getArenaCollectionPayload(db, "u1");
+  assert.equal(collection.total, 10);
+});
+
 test("collection card can be selected as active card", async () => {
   const db = createTestDb();
   insertProfile(db, {
@@ -3872,6 +3900,54 @@ test("arena routes remain registered through compatibility entry", async () => {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
+  }
+});
+
+test("fight endpoints reject callers who have not cleared Turnstile", async () => {
+  resetArenaFightVerifications();
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "R") });
+
+  const app = express();
+  app.use(express.json());
+  registerArenaRoutes(app, { db, authFromReq: () => ({ id: "u1" }) });
+  const server = app.listen(0);
+
+  try {
+    await new Promise((resolve) => server.once("listening", resolve));
+    const { port } = server.address();
+    const call = (path) =>
+      fetch(`http://127.0.0.1:${port}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+
+    for (const path of [
+      "/arena/fight",
+      "/arena/fight/start",
+      "/arena/fight/advance",
+      "/arena/fight/skip",
+    ]) {
+      const res = await call(path);
+      const body = await res.json();
+      assert.equal(res.status, 403, `${path} should be gated`);
+      assert.equal(body.code, "ARENA_VERIFICATION_REQUIRED", `${path} code`);
+    }
+
+    // Clearing verification (dev bypass in tests) opens the gate.
+    const verifyRes = await call("/arena/verify");
+    assert.equal(verifyRes.status, 200);
+
+    const afterVerify = await call("/arena/fight/start");
+    const afterBody = await afterVerify.json();
+    assert.notEqual(afterVerify.status, 403);
+    assert.notEqual(afterBody.code, "ARENA_VERIFICATION_REQUIRED");
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+    resetArenaFightVerifications();
   }
 });
 
