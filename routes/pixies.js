@@ -19,9 +19,24 @@ const {
   transcodeToH264,
 } = require("../lib/social");
 const { mirrorAvatarToPng } = require("../lib/avatar-png");
+const {
+  createPixieNotification,
+  getPixieNotifications,
+  getPixieNotificationUnreadCount,
+  markPixieNotificationRead,
+  markAllPixieNotificationsRead,
+} = require("../lib/pixie-notifications");
+const {
+  PixieCommentError,
+  listPixieComments,
+  createPixieComment,
+  togglePixieCommentLike,
+  deletePixieComment,
+  deletePixieCommentsForVideo,
+} = require("../lib/pixie-comments");
+const { getFollowingIds } = require("../lib/user-follows");
 
 const VIDEO_TITLE_MAX_LENGTH = 4000;
-const COMMENT_MAX_LENGTH = 500;
 const MAX_VIDEO_TAGS = 10;
 const MAX_TAG_LENGTH = 20;
 const MAX_AUTHOR_USERNAME_LENGTH = 32;
@@ -146,25 +161,6 @@ function mapVideoRow(row, viewerId) {
   };
 }
 
-function mapCommentRow(row, viewerId) {
-  const likes = parseLikes(row.likes);
-  return {
-    id: row.id,
-    content: String(row.content || ""),
-    createdAt: row.createdAt,
-    parentId: row.parentId || null,
-    likesCount: likes.length,
-    likedByMe: Boolean(viewerId && likes.includes(viewerId)),
-    replyCount: row.replyCount || 0,
-    author: {
-      id: row.authorId,
-      username: row.authorUsername || "unknown",
-      avatar: row.authorAvatar || null,
-      verified: row.authorVerified === 1,
-    },
-  };
-}
-
 function setNoStoreHeaders(res) {
   res.setHeader("Cache-Control", "no-store");
 }
@@ -258,6 +254,60 @@ ${imageTags}
 module.exports = function registerPixieRoutes(app, deps) {
   const { db, authFromReq, VIDEOS_DIR, IMAGES_DIR, videoUpload } = deps;
   const router = express.Router();
+
+  // ── Inbox: real-time notifications (likes, comments, replies, moderation) ──
+  // Declared before the `/:id/*` routes below so `/notifications*` can never be
+  // captured as a video id.
+
+  router.get("/notifications", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      const payload = getPixieNotifications(db, user.id, {
+        page: req.query?.page,
+        limit: req.query?.limit,
+      });
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  router.get("/notifications/unread-count", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      setNoStoreHeaders(res);
+      res.json({ count: getPixieNotificationUnreadCount(db, user.id) });
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  router.post("/notifications/read-all", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      setNoStoreHeaders(res);
+      res.json(markAllPixieNotificationsRead(db, user.id));
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  router.post("/notifications/:notificationId/read", (req, res) => {
+    try {
+      const user = authFromReq(req);
+      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      setNoStoreHeaders(res);
+      res.json(
+        markPixieNotificationRead(db, user.id, String(req.params.notificationId)),
+      );
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
 
   function isValidAvatarUrl(raw) {
     const value = String(raw || "").trim();
@@ -384,44 +434,8 @@ module.exports = function registerPixieRoutes(app, deps) {
 
   const deleteVideoById = db.prepare(`DELETE FROM user_videos WHERE id = ?`);
 
-  const selectVideoComments = db.prepare(
-    `SELECT c.id, c.content, c.createdAt, c.parentId, c.likes,
-            u.id AS authorId, u.username AS authorUsername, u.avatar AS authorAvatar,
-            u.verified AS authorVerified,
-            (SELECT COUNT(*) FROM user_video_comments r WHERE r.parentId = c.id) AS replyCount
-     FROM user_video_comments c
-     LEFT JOIN users u ON u.id = c.userId
-     WHERE c.videoId = ?
-     ORDER BY c.createdAt DESC`,
-  );
-
-  const insertVideoComment = db.prepare(
-    `INSERT INTO user_video_comments (id, videoId, userId, content, parentId, createdAt)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  );
-
-  const updateCommentLikes = db.prepare(
-    `UPDATE user_video_comments SET likes = ? WHERE id = ?`,
-  );
-
-  const deleteRepliesOfComment = db.prepare(
-    `DELETE FROM user_video_comments WHERE parentId = ?`,
-  );
-
-  const selectCommentById = db.prepare(
-    `SELECT c.*, v.userId AS videoOwnerId
-     FROM user_video_comments c
-     LEFT JOIN user_videos v ON v.id = c.videoId
-     WHERE c.id = ?`,
-  );
-
-  const deleteCommentById = db.prepare(
-    `DELETE FROM user_video_comments WHERE id = ?`,
-  );
-
-  const deleteVideoComments = db.prepare(
-    `DELETE FROM user_video_comments WHERE videoId = ?`,
-  );
+  // Comment CRUD lives in ../lib/pixie-comments.js (same style as the inbox
+  // module) — the routes below are thin wrappers around it.
 
   const selectStoredVideoId = db.prepare(
     `SELECT id FROM user_videos WHERE id = ?`,
@@ -953,6 +967,42 @@ module.exports = function registerPixieRoutes(app, deps) {
     }
   });
 
+  // ── Following feed: newest clips from accounts the viewer follows ──
+  router.get("/following", (req, res) => {
+    try {
+      const viewer = authFromReq(req);
+      if (!viewer) return res.status(401).json({ error: "unauthenticated" });
+
+      const offset = parseListOffset(req.query.offset);
+      const rawLimit = Number.parseInt(String(req.query.limit || "10"), 10);
+      const limit = Math.min(
+        Math.max(Number.isFinite(rawLimit) ? rawLimit : 10, 1),
+        50,
+      );
+
+      const followingIds = getFollowingIds(db, viewer.id);
+      if (followingIds.length === 0) {
+        setNoStoreHeaders(res);
+        return res.json([]);
+      }
+
+      const placeholders = followingIds.map(() => "?").join(",");
+      const rows = db
+        .prepare(
+          `${VIDEO_ROW_SELECT}
+           WHERE v.userId IN (${placeholders})
+           ORDER BY v.createdAt DESC
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...followingIds, limit, offset);
+
+      setNoStoreHeaders(res);
+      res.json(rows.map((row) => mapVideoRow(row, viewer.id)));
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
   // ── Tag suggestions (video-only corpus) ──
   router.get("/tags", (_req, res) => {
     try {
@@ -1025,6 +1075,22 @@ module.exports = function registerPixieRoutes(app, deps) {
       }
 
       updateVideoLikes.run(JSON.stringify(likes), row.id);
+
+      // Only notify on a fresh like (not on unlike), and never self-notify.
+      if (liked && row.userId && row.userId !== user.id) {
+        try {
+          createPixieNotification(db, {
+            userId: row.userId,
+            type: "like",
+            actor: { id: user.id, username: user.username, avatar: user.avatar },
+            videoId: row.id,
+            preview: row.title,
+          });
+        } catch {
+          // A notification failure must never fail the like itself.
+        }
+      }
+
       setNoStoreHeaders(res);
       res.json({ liked, likesCount: likes.length });
     } catch {
@@ -1032,18 +1098,26 @@ module.exports = function registerPixieRoutes(app, deps) {
     }
   });
 
+  // Map a thrown PixieCommentError to its HTTP status; anything else is a 500.
+  function handleCommentError(err, res) {
+    if (err instanceof PixieCommentError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    return res.status(500).json({ error: "failed" });
+  }
+
   // ── List comments (top-level + one level of replies, flat) ──
   router.get("/:id/comments", (req, res) => {
     try {
       const viewer = authFromReq(req);
-      const video = selectVideoById.get(String(req.params.id));
-      if (!video) return res.status(404).json({ error: "not found" });
-
-      const rows = selectVideoComments.all(video.id);
+      const comments = listPixieComments(db, {
+        videoId: req.params.id,
+        viewerId: viewer?.id ?? null,
+      });
       setNoStoreHeaders(res);
-      res.json(rows.map((row) => mapCommentRow(row, viewer?.id)));
-    } catch {
-      res.status(500).json({ error: "failed" });
+      res.json(comments);
+    } catch (err) {
+      handleCommentError(err, res);
     }
   });
 
@@ -1053,49 +1127,16 @@ module.exports = function registerPixieRoutes(app, deps) {
       const user = authFromReq(req);
       if (!user) return res.status(401).json({ error: "unauthenticated" });
 
-      const video = selectVideoById.get(String(req.params.id));
-      if (!video) return res.status(404).json({ error: "not found" });
-
-      const content = String(req.body?.content || "").trim();
-      if (!content) {
-        return res.status(400).json({ error: "Comment cannot be empty" });
-      }
-      if (content.length > COMMENT_MAX_LENGTH) {
-        return res.status(400).json({ error: "Comment is too long" });
-      }
-
-      let parentId = null;
-      const rawParentId = String(req.body?.parentId || "").trim();
-      if (rawParentId) {
-        const parent = selectCommentById.get(rawParentId);
-        if (!parent || parent.videoId !== video.id) {
-          return res.status(400).json({ error: "Parent comment not found" });
-        }
-        // One level only: a reply to a reply attaches to the same root.
-        parentId = parent.parentId || parent.id;
-      }
-
-      const id = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-      const createdAt = new Date().toISOString();
-      insertVideoComment.run(id, video.id, user.id, content, parentId, createdAt);
-
-      setNoStoreHeaders(res);
-      res.status(201).json({
-        id,
-        content,
-        createdAt,
-        parentId,
-        likesCount: 0,
-        likedByMe: false,
-        replyCount: 0,
-        author: {
-          id: user.id,
-          username: user.username,
-          avatar: user.avatar || null,
-        },
+      const comment = createPixieComment(db, {
+        videoId: req.params.id,
+        user,
+        content: req.body?.content,
+        parentId: req.body?.parentId,
       });
-    } catch {
-      res.status(500).json({ error: "failed" });
+      setNoStoreHeaders(res);
+      res.status(201).json(comment);
+    } catch (err) {
+      handleCommentError(err, res);
     }
   });
 
@@ -1105,24 +1146,14 @@ module.exports = function registerPixieRoutes(app, deps) {
       const user = authFromReq(req);
       if (!user) return res.status(401).json({ error: "unauthenticated" });
 
-      const comment = selectCommentById.get(String(req.params.commentId));
-      if (!comment) return res.status(404).json({ error: "not found" });
-
-      const likes = parseLikes(comment.likes);
-      const existingIndex = likes.indexOf(user.id);
-      let liked = false;
-      if (existingIndex >= 0) {
-        likes.splice(existingIndex, 1);
-      } else {
-        likes.push(user.id);
-        liked = true;
-      }
-
-      updateCommentLikes.run(JSON.stringify(likes), comment.id);
+      const result = togglePixieCommentLike(db, {
+        commentId: req.params.commentId,
+        user,
+      });
       setNoStoreHeaders(res);
-      res.json({ liked, likesCount: likes.length });
-    } catch {
-      res.status(500).json({ error: "failed" });
+      res.json(result);
+    } catch (err) {
+      handleCommentError(err, res);
     }
   });
 
@@ -1132,22 +1163,14 @@ module.exports = function registerPixieRoutes(app, deps) {
       const user = authFromReq(req);
       if (!user) return res.status(401).json({ error: "unauthenticated" });
 
-      const comment = selectCommentById.get(String(req.params.commentId));
-      if (!comment) return res.status(404).json({ error: "not found" });
-
-      const isAuthor = comment.userId === user.id;
-      const isVideoOwner = comment.videoOwnerId === user.id;
-      if (!isAuthor && !isVideoOwner && !isOwner(user)) {
-        return res.status(403).json({ error: "forbidden" });
-      }
-
-      deleteCommentById.run(comment.id);
-      // Deleting a top-level comment removes its replies too.
-      if (!comment.parentId) deleteRepliesOfComment.run(comment.id);
+      const result = deletePixieComment(db, {
+        commentId: req.params.commentId,
+        user,
+      });
       setNoStoreHeaders(res);
-      res.json({ ok: true });
-    } catch {
-      res.status(500).json({ error: "failed" });
+      res.json(result);
+    } catch (err) {
+      handleCommentError(err, res);
     }
   });
 
@@ -1166,10 +1189,30 @@ module.exports = function registerPixieRoutes(app, deps) {
       }
 
       deleteVideoById.run(row.id);
-      deleteVideoComments.run(row.id);
+      deletePixieCommentsForVideo(db, row.id);
 
       const filePath = path.join(VIDEOS_DIR, row.filename);
       fs.promises.unlink(filePath).catch(() => {});
+
+      // A moderator (site owner) removing someone else's clip — let the author
+      // know, with an optional reason. Self-deletes stay silent.
+      if (!isVideoOwner && row.userId) {
+        const rawReason = String(req.body?.reason || req.query?.reason || "").trim();
+        try {
+          createPixieNotification(db, {
+            userId: row.userId,
+            type: "video_removed",
+            actor: { id: user.id, username: user.username, avatar: user.avatar },
+            videoId: row.id,
+            preview:
+              rawReason ||
+              String(row.title || "").trim() ||
+              "This clip did not meet the community guidelines.",
+          });
+        } catch {
+          // Non-fatal.
+        }
+      }
 
       setNoStoreHeaders(res);
       res.json({ ok: true });
