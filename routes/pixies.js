@@ -190,6 +190,16 @@ function trimSeoCaption(raw) {
     : collapsed;
 }
 
+// Short-form pixies are shot vertical; these defaults let Discord / X render an
+// inline player even though we don't persist the exact frame size.
+const SEO_VIDEO_WIDTH = 720;
+const SEO_VIDEO_HEIGHT = 1280;
+
+function isoDuration(seconds) {
+  const n = Math.max(0, Math.round(Number(seconds) || 0));
+  return n > 0 ? `PT${n}S` : "";
+}
+
 function buildVideoSeoPage({ row, protocol, host, requestPath }) {
   const username = String(row.authorUsername || "unknown");
   const pageTitle = `@${username} · Pixies`;
@@ -199,6 +209,35 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
   const pageUrl = `${protocol}://${host}${requestPath}`;
   const videoUrl = `${protocol}://${host}/videos/${row.filename}`;
   const mimeType = row.mimeType || "video/mp4";
+  const tags = parseTags(row.tags);
+  const publishedAt = row.createdAt
+    ? new Date(row.createdAt).toISOString()
+    : "";
+  const duration = isoDuration(row.durationSeconds);
+  const videoWidth = row.width && row.width > 0 ? row.width : SEO_VIDEO_WIDTH;
+  const videoHeight =
+    row.height && row.height > 0 ? row.height : SEO_VIDEO_HEIGHT;
+  const keywords = ["pixies", "mirabellier", `@${username}`, ...tags].join(", ");
+  const tagMeta = tags
+    .map(
+      (tag) =>
+        `    <meta property="og:video:tag" content="${escapeHtml(tag)}" />`,
+    )
+    .join("\n");
+  const videoMeta = [
+    `    <meta property="og:video" content="${escapeHtml(videoUrl)}" />`,
+    `    <meta property="og:video:url" content="${escapeHtml(videoUrl)}" />`,
+    `    <meta property="og:video:secure_url" content="${escapeHtml(videoUrl)}" />`,
+    `    <meta property="og:video:type" content="${escapeHtml(mimeType)}" />`,
+    `    <meta property="og:video:width" content="${videoWidth}" />`,
+    `    <meta property="og:video:height" content="${videoHeight}" />`,
+    publishedAt
+      ? `    <meta property="og:video:release_date" content="${escapeHtml(publishedAt)}" />`
+      : "",
+    tagMeta,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const rawAvatar = String(row.authorAvatar || "");
   const avatarUrl = rawAvatar
@@ -206,7 +245,7 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
       ? rawAvatar
       : `${protocol}://${host}${rawAvatar}`
     : "";
-  const imageUrl = avatarUrl || `${protocol}://${host}/background.jpg`;
+  const imageUrl = avatarUrl || `${protocol}://${host}/pixies.png`;
   const imageAlt = `@${username} on Pixies`;
 
   const imageTags = `    <meta property="og:image" content="${escapeHtml(imageUrl)}" />
@@ -221,8 +260,18 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
     description,
     thumbnailUrl: imageUrl,
     contentUrl: videoUrl,
+    embedUrl: pageUrl,
     uploadDate: String(row.createdAt || "").slice(0, 10),
+    ...(duration ? { duration } : {}),
+    ...(tags.length ? { keywords: tags.join(", ") } : {}),
+    width: videoWidth,
+    height: videoHeight,
     author: { "@type": "Person", name: username },
+    publisher: {
+      "@type": "Organization",
+      name: "Mirabellier",
+      url: `${protocol}://${host}`,
+    },
   });
 
   return `<!doctype html>
@@ -232,18 +281,70 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>${escapeHtml(pageTitle)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
+    <meta name="keywords" content="${escapeHtml(keywords)}" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-video-preview:-1" />
+    <meta name="theme-color" content="#ec4899" />
     <meta property="og:type" content="video.other" />
     <meta property="og:site_name" content="Mirabellier" />
     <meta property="og:title" content="${escapeHtml(pageTitle)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
     <meta property="og:url" content="${escapeHtml(pageUrl)}" />
-    <meta property="og:video" content="${escapeHtml(videoUrl)}" />
-    <meta property="og:video:secure_url" content="${escapeHtml(videoUrl)}" />
-    <meta property="og:video:type" content="${escapeHtml(mimeType)}" />
+${videoMeta}
+${
+  publishedAt
+    ? `    <meta property="article:published_time" content="${escapeHtml(publishedAt)}" />`
+    : ""
+}
 ${imageTags}
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@mirabellier" />
     <meta name="twitter:title" content="${escapeHtml(pageTitle)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
+    <link rel="canonical" href="${escapeHtml(pageUrl)}" />
+    <script type="application/ld+json">${escapeHtml(structuredData)}</script>
+  </head>
+  <body></body>
+</html>`;
+}
+
+// Crawler-facing SEO shell for the Pixies feed itself (`/pixies`).
+function buildPixiesFeedSeoPage({ protocol, host }) {
+  const pageUrl = `${protocol}://${host}/pixies`;
+  const imageUrl = `${protocol}://${host}/pixies.png`;
+  const title = "Pixies · Mirabellier";
+  const description = "Pixies - Short videos and clips from the community";
+  const structuredData = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "CollectionPage",
+    name: title,
+    description,
+    url: pageUrl,
+    isPartOf: {
+      "@type": "WebSite",
+      name: "Mirabellier",
+      url: `${protocol}://${host}`,
+    },
+  });
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}" />
+    <meta name="keywords" content="pixies, mirabellier, short video, clips, feed" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta name="theme-color" content="#ec4899" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Mirabellier" />
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:url" content="${escapeHtml(pageUrl)}" />
+    <meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:description" content="${escapeHtml(description)}" />
+    <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
     <link rel="canonical" href="${escapeHtml(pageUrl)}" />
     <script type="application/ld+json">${escapeHtml(structuredData)}</script>
   </head>
@@ -1679,6 +1780,15 @@ module.exports = function registerPixieRoutes(app, deps) {
 
   // ── Pixies SPA handoffs (humans get the frontend app) ──
   app.get("/pixies", (req, res) => {
+    // Crawlers / link unfurlers get a lightweight SEO shell for the feed.
+    if (isLikelyCrawler(req.get("user-agent"))) {
+      const protocol =
+        req.headers["x-forwarded-proto"] || req.protocol || "http";
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      return res.send(
+        buildPixiesFeedSeoPage({ protocol, host: req.get("host") }),
+      );
+    }
     if (handleHumanSpaRequest(req, res, "/pixies")) return;
     sendFrontendRedirectConfigError(req, res, "/pixies");
   });
