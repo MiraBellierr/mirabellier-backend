@@ -19,6 +19,8 @@
     "migrate:equipment-substat-ranges": "node scripts/reroll-equipment-substat-ranges.cjs --apply --only-out-of-range",
     "migrate:equipment-substat-ranges:dry": "node scripts/reroll-equipment-substat-ranges.cjs --dry-run --only-out-of-range",
     "repair:videos": "node scripts/repair-nonplayable-videos.cjs",
+    "normalize:pixies": "node scripts/normalize-pixie-encoding.cjs --apply",
+    "normalize:pixies:dry": "node scripts/normalize-pixie-encoding.cjs --dry-run",
     "refund:gear": "node scripts/refund-gear.js",
     "refund:gear:dry": "node scripts/refund-gear.js --dry",
     "backfill:card-from": "node scripts/backfill-card-from.js",
