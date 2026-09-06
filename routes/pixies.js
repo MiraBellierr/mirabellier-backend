@@ -17,6 +17,7 @@ const {
   resolveSocialVideo,
   downloadSocialVideo,
   transcodeToH264,
+  extractPosterFrame,
 } = require("../lib/social");
 const { mirrorAvatarToPng } = require("../lib/avatar-png");
 const {
@@ -150,6 +151,8 @@ function mapVideoRow(row, viewerId) {
     // Raw media stays under /videos/ (a namespace with no route collisions);
     // only the JSON API moved to /pixies.
     url: `/videos/${row.filename}`,
+    // First-frame still, shown by the player until the video paints a frame.
+    poster: row.posterFilename ? `/videos/${row.posterFilename}` : null,
     mimeType: row.mimeType || "video/mp4",
     sizeBytes: row.sizeBytes || 0,
     durationSeconds: row.durationSeconds ?? null,
@@ -245,7 +248,12 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
       ? rawAvatar
       : `${protocol}://${host}${rawAvatar}`
     : "";
-  const imageUrl = avatarUrl || `${protocol}://${host}/pixies.png`;
+  // Prefer the clip's own first-frame poster for the social card; fall back
+  // to the author avatar, then the generic Pixies image.
+  const posterUrl = row.posterFilename
+    ? `${protocol}://${host}/videos/${row.posterFilename}`
+    : "";
+  const imageUrl = posterUrl || avatarUrl || `${protocol}://${host}/pixies.png`;
   const imageAlt = `@${username} on Pixies`;
 
   const imageTags = `    <meta property="og:image" content="${escapeHtml(imageUrl)}" />
@@ -425,7 +433,7 @@ module.exports = function registerPixieRoutes(app, deps) {
   // Shared projection for a "video row" — the 14 columns `mapVideoRow` reads
   // plus the correlated comment count. Only the WHERE / ORDER BY tail varies.
   const VIDEO_ROW_SELECT = `
-    SELECT v.id, v.userId, v.title, v.tags, v.filename, v.mimeType, v.sizeBytes, v.durationSeconds, v.likes, v.createdAt,
+    SELECT v.id, v.userId, v.title, v.tags, v.filename, v.posterFilename, v.mimeType, v.sizeBytes, v.durationSeconds, v.likes, v.createdAt,
            u.id AS authorId, u.username AS authorUsername, u.avatar AS authorAvatar, u.bio AS authorBio,
            u.verified AS authorVerified,
            (SELECT COUNT(*) FROM user_video_comments c WHERE c.videoId = v.id) AS commentsCount
@@ -546,28 +554,55 @@ module.exports = function registerPixieRoutes(app, deps) {
     `UPDATE user_videos SET filename = ?, mimeType = ?, sizeBytes = ? WHERE id = ?`,
   );
 
+  const updateVideoPoster = db.prepare(
+    `UPDATE user_videos SET posterFilename = ? WHERE id = ?`,
+  );
+
+  // Extract a first-frame poster for `videoPath` and attach it to the row.
+  // Best-effort: a failure just leaves the row with no poster (the player
+  // falls back to its own first painted frame), and the backfill script can
+  // fill it in later.
+  async function attachPosterFrame(rowId, videoPath) {
+    try {
+      const poster = await extractPosterFrame(videoPath);
+      if (!selectStoredVideoId.get(rowId)) {
+        await fs.promises.unlink(poster.filePath).catch(() => {});
+        return;
+      }
+      updateVideoPoster.run(poster.filename, rowId);
+    } catch (err) {
+      console.error(
+        "Could not generate a poster frame:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   // Direct uploads are stored as-is so the original quality is never touched,
   // then this background pass probes the file and — only when needed —
   // remuxes or re-encodes it (H.264/AAC + faststart, same resolution and
   // frame rate) so every device can stream it. The DB row is repointed to the
-  // new file when one is produced.
+  // new file when one is produced, and a first-frame poster is attached.
   function finalizeUploadedVideo(rowId, originalFilePath) {
     void (async () => {
+      let storedFilePath = originalFilePath;
       try {
         const result = await transcodeToH264(originalFilePath);
-        if (!result.converted) return;
-        if (!selectStoredVideoId.get(rowId)) {
-          await fs.promises.unlink(result.filePath).catch(() => {});
-          return;
-        }
-        updateVideoFile.run(
-          path.basename(result.filePath),
-          result.mimeType,
-          result.sizeBytes,
-          rowId,
-        );
-        if (result.filePath !== originalFilePath) {
-          await fs.promises.unlink(originalFilePath).catch(() => {});
+        if (result.converted) {
+          if (!selectStoredVideoId.get(rowId)) {
+            await fs.promises.unlink(result.filePath).catch(() => {});
+            return;
+          }
+          updateVideoFile.run(
+            path.basename(result.filePath),
+            result.mimeType,
+            result.sizeBytes,
+            rowId,
+          );
+          storedFilePath = result.filePath;
+          if (result.filePath !== originalFilePath) {
+            await fs.promises.unlink(originalFilePath).catch(() => {});
+          }
         }
       } catch (err) {
         // Keep the original file so nothing is lost; the pixie stays as
@@ -577,6 +612,7 @@ module.exports = function registerPixieRoutes(app, deps) {
           err instanceof Error ? err.message : err,
         );
       }
+      await attachPosterFrame(rowId, storedFilePath);
     })();
   }
 
@@ -1294,6 +1330,11 @@ module.exports = function registerPixieRoutes(app, deps) {
 
       const filePath = path.join(VIDEOS_DIR, row.filename);
       fs.promises.unlink(filePath).catch(() => {});
+      if (row.posterFilename) {
+        fs.promises
+          .unlink(path.join(VIDEOS_DIR, row.posterFilename))
+          .catch(() => {});
+      }
 
       // A moderator (site owner) removing someone else's clip — let the author
       // know, with an optional reason. Self-deletes stay silent.
@@ -1638,6 +1679,12 @@ module.exports = function registerPixieRoutes(app, deps) {
           fs.promises.unlink(downloadedFilePath).catch(() => {});
           downloadedFilePath = null;
         }
+      }
+
+      // First-frame poster for a freshly imported clip (skipped when an
+      // importKey race made us reuse an existing row above).
+      if (storedId === id && downloadedFilePath) {
+        await attachPosterFrame(id, downloadedFilePath);
       }
 
       clearInterval(creep);

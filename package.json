@@ -21,6 +21,7 @@
     "repair:videos": "node scripts/repair-nonplayable-videos.cjs",
     "normalize:pixies": "node scripts/normalize-pixie-encoding.cjs --apply",
     "normalize:pixies:dry": "node scripts/normalize-pixie-encoding.cjs --dry-run",
+    "posters:pixies": "node scripts/normalize-pixie-encoding.cjs --posters-only --apply",
     "refund:gear": "node scripts/refund-gear.js",
     "refund:gear:dry": "node scripts/refund-gear.js --dry",
     "backfill:card-from": "node scripts/backfill-card-from.js",

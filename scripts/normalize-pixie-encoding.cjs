@@ -15,6 +15,11 @@
 // PQ/HLG, Opus/…) is re-encoded. The user_videos row(s) pointing at the file
 // are then repointed at the normalized file.
 //
+// It also backfills the first-frame poster (<base>.poster.jpg next to the
+// clip, stored in user_videos.posterFilename) for any row that is missing
+// one or whose poster file has gone away — matching lib/social.js
+// extractPosterFrame, which the upload/import paths run on new clips.
+//
 // Dry-run by default (reports the plan only). Add --apply to convert + write.
 //
 //   node scripts/normalize-pixie-encoding.cjs [flags]
@@ -27,6 +32,8 @@
 //   --keep-mp3-audio     Treat an existing MP3 track as acceptable
 //   --force-reencode     Re-encode every clip that has a video stream, even
 //                        ones already matching the target
+//   --posters-only       Skip the encode pass; only backfill missing posters
+//   --no-posters         Skip poster backfill; only normalize encodes
 //   --preset <name>      x264 preset for re-encodes (default: slow; use
 //                        veryfast / faster on a low-power VPS)
 //   --crf <n>            x264 quality for re-encodes, 0-51 (default: 18)
@@ -127,6 +134,8 @@ function parseArgs(argv) {
     verify: false,
     keepMp3Audio: false,
     forceReencode: false,
+    postersOnly: false,
+    posters: true,
     preset: "slow",
     crf: 18,
     threads: 0,
@@ -155,6 +164,8 @@ function parseArgs(argv) {
     else if (arg === "--verify") options.verify = true;
     else if (arg === "--keep-mp3-audio") options.keepMp3Audio = true;
     else if (arg === "--force-reencode") options.forceReencode = true;
+    else if (arg === "--posters-only") options.postersOnly = true;
+    else if (arg === "--no-posters") options.posters = false;
     else if (arg === "--preset" || arg.startsWith("--preset=")) {
       const value = takeValue("--preset").trim().toLowerCase();
       if (!X264_PRESETS.has(value)) {
@@ -187,6 +198,10 @@ function parseArgs(argv) {
     } else {
       throw new Error(`Unknown flag: ${arg}`);
     }
+  }
+
+  if (options.postersOnly && !options.posters) {
+    throw new Error("--posters-only and --no-posters are mutually exclusive.");
   }
 
   return options;
@@ -603,6 +618,45 @@ async function convert(action, filePath, probe, isHdr, opts) {
   throw new Error(`nothing to do for action "${action}"`);
 }
 
+const POSTER_MAX_DIMENSION = 1080;
+
+function posterPathFor(videoPath) {
+  const dir = path.dirname(videoPath);
+  const base = path.basename(videoPath, path.extname(videoPath));
+  return path.join(dir, `${base}.poster.jpg`);
+}
+
+// First-frame JPEG next to the clip. Kept in step with
+// lib/social.js -> extractPosterFrame (same scale / quality).
+async function extractPoster(videoPath, opts) {
+  const outPath = posterPathFor(videoPath);
+  inFlightTemp = outPath;
+  const args = [
+    "-nostdin", "-y", "-v", "error",
+    ...threadArgs(opts),
+    "-i", videoPath,
+    "-frames:v", "1",
+    "-vf", `scale='min(${POSTER_MAX_DIMENSION},iw)':-2:flags=lanczos`,
+    "-q:v", "3",
+    "-f", "image2",
+    outPath,
+  ];
+  try {
+    await runFfmpeg(args);
+  } catch (err) {
+    await fs.promises.unlink(outPath).catch(() => {});
+    inFlightTemp = null;
+    throw err;
+  }
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
+    await fs.promises.unlink(outPath).catch(() => {});
+    inFlightTemp = null;
+    throw new Error("ffmpeg produced an empty poster");
+  }
+  inFlightTemp = null;
+  return { filePath: outPath, filename: path.basename(outPath) };
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 const formatMb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 
@@ -664,9 +718,17 @@ async function main() {
   db.pragma("busy_timeout = 30000");
   db.pragma("journal_mode = WAL");
 
+  // The backend adds this on startup; do it here too so the script works
+  // against a database whose backend hasn't been redeployed yet.
+  try {
+    db.prepare("ALTER TABLE user_videos ADD COLUMN posterFilename TEXT").run();
+  } catch {
+    // Column already exists.
+  }
+
   const rows = db
     .prepare(
-      "SELECT id, filename, mimeType, sizeBytes FROM user_videos ORDER BY createdAt DESC",
+      "SELECT id, filename, posterFilename, mimeType, sizeBytes FROM user_videos ORDER BY createdAt DESC",
     )
     .all();
 
@@ -706,6 +768,9 @@ async function main() {
   const updateRow = db.prepare(
     "UPDATE user_videos SET filename = ?, mimeType = ?, sizeBytes = ? WHERE id = ?",
   );
+  const updatePoster = db.prepare(
+    "UPDATE user_videos SET posterFilename = ? WHERE id = ?",
+  );
 
   const files = Array.from(rowsByFilename.entries());
   const summary = {
@@ -717,6 +782,10 @@ async function main() {
     failed: [],
     missing: [],
     skipped: [],
+    postersOk: 0,
+    posters: [],
+    postersPlanned: [],
+    posterFailed: [],
   };
 
   let worked = 0;
@@ -739,103 +808,172 @@ async function main() {
       continue;
     }
 
-    const layout = TARGET_CONTAINER_RE.test(sourcePath)
-      ? inspectMp4Layout(sourcePath)
-      : { looksLikeMp4: false, moovBeforeMdat: null };
+    // The file the row ends up pointing at — the source, unless this run
+    // normalizes it under --apply.
+    let finalVideoPath = sourcePath;
+    let finalFilename = filename;
+    let renamed = false;
+    let didWork = false;
 
-    const { action, reasons, isHdr } = planForFile(
-      sourcePath,
-      probe,
-      layout,
-      opts,
-    );
+    // ── Encode pass ─────────────────────────────────────────────────────
+    if (!opts.postersOnly) {
+      const layout = TARGET_CONTAINER_RE.test(sourcePath)
+        ? inspectMp4Layout(sourcePath)
+        : { looksLikeMp4: false, moovBeforeMdat: null };
 
-    if (action === "none") {
-      summary.alreadyOk += 1;
-      continue;
-    }
-    if (action === "skip") {
-      summary.skipped.push(`${filename}: ${reasons.join(", ")}`);
-      continue;
-    }
-
-    worked += 1;
-    const tag =
-      action === "remux"
-        ? "remux (stream copy)"
-        : action === "audio"
-          ? "audio → aac"
-          : "re-encode → h264/aac";
-    console.log(
-      `[${index + 1}/${files.length}] ${filename}\n` +
-        `    ${formatMb(fs.statSync(sourcePath).size)} · ${tag}\n` +
-        `    reasons: ${reasons.join("; ")}`,
-    );
-
-    const shouldRun = opts.apply || opts.verify;
-    if (!shouldRun) {
-      (action === "remux"
-        ? summary.remuxed
-        : action === "audio"
-          ? summary.audio
-          : summary.reencoded
-      ).push({ filename, rowCount: rowGroup.length, reasons });
-      continue;
-    }
-
-    // The conversion writes a second copy alongside the original before the
-    // old file is removed. Bail on this file (not the whole run) if the disk
-    // clearly can't hold it.
-    const sourceBytes = fs.statSync(sourcePath).size;
-    const freeBytes = freeBytesFor(opts.videosDir);
-    if (freeBytes !== null && freeBytes < sourceBytes * 1.5 + 50 * 1024 * 1024) {
-      summary.failed.push(
-        `${filename}: skipped — only ${formatMb(freeBytes)} free on the ` +
-          `videos disk, need ~${formatMb(sourceBytes * 1.5)}`,
+      const { action, reasons, isHdr } = planForFile(
+        sourcePath,
+        probe,
+        layout,
+        opts,
       );
-      continue;
+
+      if (action === "skip") {
+        // No video stream — nothing to normalize, and no poster to make.
+        summary.skipped.push(`${filename}: ${reasons.join(", ")}`);
+        continue;
+      }
+
+      if (action === "none") {
+        summary.alreadyOk += 1;
+      } else {
+        const tag =
+          action === "remux"
+            ? "remux (stream copy)"
+            : action === "audio"
+              ? "audio → aac"
+              : "re-encode → h264/aac";
+        console.log(
+          `[${index + 1}/${files.length}] ${filename}\n` +
+            `    ${formatMb(fs.statSync(sourcePath).size)} · ${tag}\n` +
+            `    reasons: ${reasons.join("; ")}`,
+        );
+
+        const bucket =
+          action === "remux"
+            ? summary.remuxed
+            : action === "audio"
+              ? summary.audio
+              : summary.reencoded;
+
+        if (!(opts.apply || opts.verify)) {
+          bucket.push({ filename, rowCount: rowGroup.length, reasons });
+          worked += 1;
+          didWork = true;
+        } else {
+          // The conversion writes a second copy next to the original before
+          // the old file is removed. Bail on this file (not the whole run)
+          // if the disk clearly can't hold it.
+          const sourceBytes = fs.statSync(sourcePath).size;
+          const freeBytes = freeBytesFor(opts.videosDir);
+          if (
+            freeBytes !== null &&
+            freeBytes < sourceBytes * 1.5 + 50 * 1024 * 1024
+          ) {
+            summary.failed.push(
+              `${filename}: skipped — only ${formatMb(freeBytes)} free on the ` +
+                `videos disk, need ~${formatMb(sourceBytes * 1.5)}`,
+            );
+            continue;
+          }
+
+          const startedAt = Date.now();
+          let outPath;
+          try {
+            outPath = await convert(action, sourcePath, probe, isHdr, opts);
+          } catch (err) {
+            summary.failed.push(
+              `${filename}: ${action} failed — ${err.message}`,
+            );
+            continue;
+          }
+
+          const newSize = fs.statSync(outPath).size;
+          const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+          console.log(
+            `    → ${path.basename(outPath)} (${formatMb(newSize)}) in ${secs}s`,
+          );
+
+          const record = {
+            filename,
+            newFilename: path.basename(outPath),
+            rowCount: rowGroup.length,
+            oldSize: rowGroup[0].sizeBytes || fs.statSync(sourcePath).size,
+            newSize,
+            reasons,
+          };
+          bucket.push(record);
+          worked += 1;
+          didWork = true;
+
+          if (opts.apply) {
+            for (const row of rowGroup) {
+              updateRow.run(record.newFilename, "video/mp4", newSize, row.id);
+            }
+            if (outPath !== sourcePath) {
+              fs.promises.unlink(sourcePath).catch(() => {});
+            }
+            finalVideoPath = outPath;
+            finalFilename = record.newFilename;
+            renamed = record.newFilename !== filename;
+          } else {
+            // --verify dry run: throw the proof-of-work file away.
+            fs.promises.unlink(outPath).catch(() => {});
+          }
+        }
+      }
     }
 
-    const startedAt = Date.now();
-    let outPath;
-    try {
-      outPath = await convert(action, sourcePath, probe, isHdr, opts);
-    } catch (err) {
-      summary.failed.push(`${filename}: ${action} failed — ${err.message}`);
-      continue;
-    }
+    // ── Poster pass ─────────────────────────────────────────────────────
+    // Backfill user_videos.posterFilename for any row missing a poster (or
+    // whose poster file is gone, or was invalidated by a rename above).
+    if (opts.posters && probe.hasVideo && (didWork || worked < opts.limit)) {
+      const posterGone = (name) =>
+        !name || !fs.existsSync(path.join(opts.videosDir, name));
+      const needsPoster =
+        renamed || rowGroup.some((row) => posterGone(row.posterFilename));
 
-    const newSize = fs.statSync(outPath).size;
-    const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
-    console.log(
-      `    → ${path.basename(outPath)} (${formatMb(newSize)}) in ${secs}s`,
-    );
-
-    const record = {
-      filename,
-      newFilename: path.basename(outPath),
-      rowCount: rowGroup.length,
-      oldSize: rowGroup[0].sizeBytes || fs.statSync(sourcePath).size,
-      newSize,
-      reasons,
-    };
-    (action === "remux"
-      ? summary.remuxed
-      : action === "audio"
-        ? summary.audio
-        : summary.reencoded
-    ).push(record);
-
-    if (opts.apply) {
-      for (const row of rowGroup) {
-        updateRow.run(record.newFilename, "video/mp4", newSize, row.id);
+      if (!needsPoster) {
+        summary.postersOk += 1;
+      } else if (!opts.apply) {
+        summary.postersPlanned.push({
+          filename: finalFilename,
+          rowCount: rowGroup.length,
+        });
+        if (!didWork) {
+          worked += 1;
+          didWork = true;
+        }
+      } else {
+        try {
+          const started = Date.now();
+          const poster = await extractPoster(finalVideoPath, opts);
+          const secs = ((Date.now() - started) / 1000).toFixed(1);
+          console.log(
+            `[${index + 1}/${files.length}] ${finalFilename}\n` +
+              `    → ${poster.filename} in ${secs}s (poster)`,
+          );
+          for (const row of rowGroup) {
+            if (row.posterFilename && row.posterFilename !== poster.filename) {
+              fs.promises
+                .unlink(path.join(opts.videosDir, row.posterFilename))
+                .catch(() => {});
+            }
+            updatePoster.run(poster.filename, row.id);
+          }
+          summary.posters.push({
+            filename: finalFilename,
+            posterName: poster.filename,
+            rowCount: rowGroup.length,
+          });
+          if (!didWork) {
+            worked += 1;
+            didWork = true;
+          }
+        } catch (err) {
+          summary.posterFailed.push(`${finalFilename}: ${err.message}`);
+        }
       }
-      if (outPath !== sourcePath) {
-        fs.promises.unlink(sourcePath).catch(() => {});
-      }
-    } else {
-      // --verify dry run: throw the proof-of-work file away.
-      fs.promises.unlink(outPath).catch(() => {});
     }
   }
 
@@ -843,12 +981,30 @@ async function main() {
 
   const changed =
     summary.remuxed.length + summary.audio.length + summary.reencoded.length;
-  console.log(
-    `\nScanned ${summary.scanned} file(s): ${summary.alreadyOk} already match ` +
-      `the target, ${changed} need work ` +
-      `(${summary.remuxed.length} remux, ${summary.audio.length} audio, ` +
-      `${summary.reencoded.length} re-encode).`,
-  );
+  const postersNeeded =
+    summary.posters.length + summary.postersPlanned.length;
+
+  if (!opts.postersOnly) {
+    console.log(
+      `\nScanned ${summary.scanned} file(s): ${summary.alreadyOk} already ` +
+        `match the target, ${changed} need work ` +
+        `(${summary.remuxed.length} remux, ${summary.audio.length} audio, ` +
+        `${summary.reencoded.length} re-encode).`,
+    );
+  } else {
+    console.log(`\nScanned ${summary.scanned} file(s) for posters.`);
+  }
+
+  if (opts.posters) {
+    console.log(
+      `Posters: ${summary.postersOk} present, ${postersNeeded} ` +
+        `${opts.apply ? "generated" : "missing"}` +
+        (summary.posterFailed.length
+          ? `, ${summary.posterFailed.length} failed`
+          : "") +
+        ".",
+    );
+  }
 
   if (summary.skipped.length) {
     console.log("\nSkipped (no video stream):");
@@ -862,24 +1018,33 @@ async function main() {
     console.log("\nFailures (originals left untouched):");
     summary.failed.forEach((s) => console.log("  " + s));
   }
+  if (summary.posterFailed.length) {
+    console.log("\nPoster failures (clip left without a poster):");
+    summary.posterFailed.forEach((s) => console.log("  " + s));
+  }
 
   if (!opts.apply) {
     console.log(
       `\nDry run — no files or database rows changed.${
         opts.verify ? " (--verify: conversions were run and discarded)" : ""
-      }\nRe-run with --apply to convert and repoint the database.`,
+      }\nRe-run with --apply to convert, repoint, and attach posters.`,
     );
   } else {
+    const rowsRepointed =
+      summary.remuxed.reduce((n, r) => n + r.rowCount, 0) +
+      summary.audio.reduce((n, r) => n + r.rowCount, 0) +
+      summary.reencoded.reduce((n, r) => n + r.rowCount, 0);
+    const posterRows = summary.posters.reduce((n, r) => n + r.rowCount, 0);
     console.log(
-      `\nApplied: ${changed} file(s) normalized; ${
-        summary.remuxed.reduce((n, r) => n + r.rowCount, 0) +
-        summary.audio.reduce((n, r) => n + r.rowCount, 0) +
-        summary.reencoded.reduce((n, r) => n + r.rowCount, 0)
-      } database row(s) repointed.`,
+      `\nApplied: ${changed} file(s) normalized (${rowsRepointed} row(s) ` +
+        `repointed); ${summary.posters.length} poster(s) attached ` +
+        `(${posterRows} row(s)).`,
     );
   }
 
-  if (summary.failed.length) process.exitCode = 1;
+  if (summary.failed.length || summary.posterFailed.length) {
+    process.exitCode = 1;
+  }
 }
 
 if (require.main === module) {
