@@ -69,6 +69,7 @@ const {
   saveEquipmentLoadout,
   selectCollectionCard,
   sendTradeRequest,
+  getTradeRequestForUser,
   skipPlaybackFightToEnd,
   startPlaybackFight,
   upsertInventoryItem,
@@ -83,7 +84,7 @@ const {
 } = require("../lib/arena-fight-verification");
 const { initializeSchema } = require("../lib/db");
 const { readArenaMetrics } = require("../lib/arena-monitoring");
-const { CATALOG_VERSION, SHOP_ITEMS, SUB_STAT_POOL } = require("../lib/arena-constants");
+const { CATALOG_VERSION, SHOP_ITEMS, SHOP_RECIPES, SHOP_TIERS, SUB_STAT_POOL } = require("../lib/arena-constants");
 
 const {
   buildPassiveRuntime,
@@ -3546,6 +3547,41 @@ test("trade listings can request a specific card", () => {
   assert.equal(row.askerCardInstanceId, matchingOffer.cardInstanceId);
 });
 
+test("getTradeRequestForUser returns the request to either party and 404s strangers", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 1000 });
+  insertProfile(db, { userId: "u2", coins: 1000 });
+  insertProfile(db, { userId: "u3", coins: 1000 });
+
+  const listedCard = makeCard(21, "SR");
+  const offeredCard = { ...makeCard(1, "R"), cardInstanceId: "card-1-u2" };
+  insertCollectionCardFixture(db, "u1", listedCard);
+  insertCollectionCardFixture(db, "u2", offeredCard);
+
+  const listing = createArenaTradeListing(db, "u1", {
+    cardInstanceId: listedCard.cardInstanceId,
+  });
+  const request = sendTradeRequest(db, "u2", "u1", offeredCard.cardInstanceId, {
+    listingId: listing.listing.id,
+  });
+
+  for (const party of ["u1", "u2"]) {
+    const payload = getTradeRequestForUser(db, party, request.requestId);
+    assert.equal(payload.id, request.requestId);
+    assert.equal(payload.askerId, "u2");
+    assert.equal(payload.responderId, "u1");
+    assert.equal(payload.status, "pending");
+    assert.equal(payload.sessionId, null);
+  }
+
+  assert.throws(
+    () => getTradeRequestForUser(db, "u3", request.requestId),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_TRADE_REQUEST_NOT_FOUND",
+  );
+});
+
 test("accepting a listing trade with both cards completes the swap", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", coins: 1000 });
@@ -3911,7 +3947,7 @@ test("arena routes remain registered through compatibility entry", async () => {
     ["GET", "/arena/mint/duplicates"],
     ["POST", "/arena/mint"],
     ["POST", "/arena/notifications/read-all"],
-    ["GET", "/ar/archive"],
+    ["GET", "/arena/hall-of-fame"],
   ];
 
   try {
@@ -3927,6 +3963,10 @@ test("arena routes remain registered through compatibility entry", async () => {
       });
       assert.notEqual(response.status, 404, `${method} ${path} should be registered`);
     }
+
+    // The dead `/ar` alias mount is gone; only `/arena` is served.
+    const legacyAlias = await fetch(`http://127.0.0.1:${address.port}/ar/archive`);
+    assert.equal(legacyAlias.status, 404);
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
@@ -4263,6 +4303,49 @@ test("consumable recipes are not level locked", () => {
 
   assert.equal(result.outputItemId, "chrono_vial");
   assert.equal(result.shop.recipes.find((recipe) => recipe.id === "cosmic_cons_3")?.unlocked, true);
+});
+
+test("every craft recipe has a positive per-tier coin cost", () => {
+  const expectedByTier = {
+    Rookie: 200,
+    Bronze: 800,
+    Silver: 3200,
+    Gold: 10000,
+    Mythic: 36000,
+    Cosmic: 120000,
+  };
+
+  // Every configured tier is priced (guards against a new tier silently
+  // crafting for free once CRAFT_COIN_COSTS is keyed by name).
+  for (const tier of SHOP_TIERS) {
+    assert.ok(expectedByTier[tier] > 0, `tier ${tier} has no craft cost`);
+  }
+
+  assert.ok(SHOP_RECIPES.length > 0);
+  for (const recipe of SHOP_RECIPES) {
+    assert.equal(
+      recipe.coinCost,
+      expectedByTier[recipe.tier],
+      `${recipe.id} coinCost`,
+    );
+    assert.ok(Number.isInteger(recipe.coinCost) && recipe.coinCost > 0);
+  }
+});
+
+test("every tier's consumables and recipes are unlocked at level 1", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 1, coins: 0, selectedCard: makeCard(1, "C") });
+
+  const payload = getArenaShopPayload(db, "u1");
+  const consumables = payload.shop.flatMap((tier) => tier.items);
+
+  assert.ok(consumables.length > 0);
+  for (const item of consumables) {
+    assert.equal(item.unlocked, true, `${item.id} should be unlocked at level 1`);
+  }
+  for (const recipe of payload.recipes) {
+    assert.equal(recipe.unlocked, true, `${recipe.id} should be unlocked at level 1`);
+  }
 });
 
 test("consumable inventory is capped per item", () => {

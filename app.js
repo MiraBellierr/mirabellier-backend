@@ -162,8 +162,12 @@ function registerMiddlewares(app) {
   app.use(normalizeApiPrefixMiddleware);
   app.use(createCorsMiddleware());
   app.use(varyUserAgentForSpaPreviewRoutes);
-  app.use(bodyParser.json({ limit: "1gb" }));
-  app.use(bodyParser.urlencoded({ limit: "1gb", extended: true }));
+  // Generous headroom for the largest real payload (a rich-text blog post — its
+  // images are uploaded separately as URLs) without leaving a "buffer up to 1GB
+  // per POST" DoS surface. A route that genuinely needs more can mount its own
+  // express.json({ limit }) ahead of its handler.
+  app.use(bodyParser.json({ limit: "2mb" }));
+  app.use(bodyParser.urlencoded({ limit: "2mb", extended: true }));
   app.use(passport.initialize());
   app.use(serverTimingMiddleware);
 }
@@ -308,9 +312,11 @@ const WebSocketEvents = require("./lib/websocket-events");
 const { initWebSocketServer } = require("./lib/websocket-server");
 const { startPlaybackFight, advancePlaybackFightTurn, skipPlaybackFightToEnd } = require("./lib/arena/playback");
 const { isArenaFightVerified } = require("./lib/arena-fight-verification");
+const { checkArenaFightRateLimit, checkArenaPlaybackRateLimit } = require("./lib/arena-fight-guard");
 const { getCurrentlyWatchingAnimeFeed } = require("./lib/mal-anime");
 
 const ARENA_VERIFICATION_REQUIRED = "ARENA_VERIFICATION_REQUIRED";
+const ARENA_FIGHT_RATE_LIMIT = "ARENA_FIGHT_RATE_LIMIT";
 
 // WS auth token endpoint — returns a short-lived token for WebSocket connection
 app.post("/auth/ws-token", (req, res) => {
@@ -344,6 +350,23 @@ initWebSocketServer(httpServer, {
         },
       });
       return;
+    }
+    if (isFightMessage) {
+      const rateLimit =
+        msg.type === WebSocketEvents.C2S.ARENA_FIGHT_START
+          ? checkArenaFightRateLimit(null, userId)
+          : checkArenaPlaybackRateLimit(null, userId);
+      if (!rateLimit.allowed) {
+        reply({
+          type: WebSocketEvents.S2C.ARENA_FIGHT_ERROR,
+          data: {
+            code: ARENA_FIGHT_RATE_LIMIT,
+            message: "Too many fight actions. Please slow down.",
+            retryAfterMs: rateLimit.retryAfterMs,
+          },
+        });
+        return;
+      }
     }
     switch (msg.type) {
       case WebSocketEvents.C2S.ARENA_FIGHT_START: {
