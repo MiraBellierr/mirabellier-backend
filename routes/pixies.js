@@ -19,7 +19,10 @@ const {
   transcodeToH264,
   extractPosterFrame,
 } = require("../lib/social");
-const { mirrorAvatarToPng } = require("../lib/avatar-png");
+const {
+  mirrorAvatarToPng,
+  localAvatarOrNull,
+} = require("../lib/avatar-png");
 const { createPixieImportQueue } = require("../lib/pixie-import-queue");
 const {
   createPixieNotification,
@@ -137,7 +140,7 @@ function mapAuthor(row) {
   return {
     id: row.authorId,
     username: row.authorUsername || "unknown",
-    avatar: row.authorAvatar || null,
+    avatar: localAvatarOrNull(row.authorAvatar),
     bio: row.authorBio || null,
     verified: row.authorVerified === 1,
   };
@@ -245,12 +248,10 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
     .filter(Boolean)
     .join("\n");
 
-  const rawAvatar = String(row.authorAvatar || "");
-  const avatarUrl = rawAvatar
-    ? /^https?:\/\//i.test(rawAvatar)
-      ? rawAvatar
-      : `${protocol}://${host}${rawAvatar}`
-    : "";
+  // Only a locally-hosted avatar is safe for the social card; an un-mirrored
+  // social-CDN link 403s for crawlers just as it does in the browser.
+  const localAvatar = localAvatarOrNull(row.authorAvatar);
+  const avatarUrl = localAvatar ? `${protocol}://${host}${localAvatar}` : "";
   // Prefer the clip's own first-frame poster for the social card; fall back
   // to the author avatar, then the generic Pixies image.
   const posterUrl = row.posterFilename
