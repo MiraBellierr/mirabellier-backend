@@ -157,6 +157,8 @@ function mapVideoRow(row, viewerId) {
     mimeType: row.mimeType || "video/mp4",
     sizeBytes: row.sizeBytes || 0,
     durationSeconds: row.durationSeconds ?? null,
+    width: row.width || null,
+    height: row.height || null,
     likesCount: likes.length,
     likedByMe: Boolean(viewerId && likes.includes(viewerId)),
     commentsCount: row.commentsCount || 0,
@@ -431,10 +433,10 @@ module.exports = function registerPixieRoutes(app, deps) {
     }
   }
 
-  // Shared projection for a "video row" — the 14 columns `mapVideoRow` reads
+  // Shared projection for a "video row" — the columns `mapVideoRow` reads
   // plus the correlated comment count. Only the WHERE / ORDER BY tail varies.
   const VIDEO_ROW_SELECT = `
-    SELECT v.id, v.userId, v.title, v.tags, v.filename, v.posterFilename, v.mimeType, v.sizeBytes, v.durationSeconds, v.likes, v.createdAt,
+    SELECT v.id, v.userId, v.title, v.tags, v.filename, v.posterFilename, v.mimeType, v.sizeBytes, v.durationSeconds, v.width, v.height, v.likes, v.createdAt,
            u.id AS authorId, u.username AS authorUsername, u.avatar AS authorAvatar, u.bio AS authorBio,
            u.verified AS authorVerified,
            (SELECT COUNT(*) FROM user_video_comments c WHERE c.videoId = v.id) AS commentsCount
@@ -559,6 +561,16 @@ module.exports = function registerPixieRoutes(app, deps) {
     `UPDATE user_videos SET posterFilename = ? WHERE id = ?`,
   );
 
+  // Frame size + duration of the stored rendition, learned from ffprobe once
+  // the delivery encode has settled. COALESCE keeps an existing value when a
+  // later probe comes back blank.
+  const updateVideoDimensions = db.prepare(
+    `UPDATE user_videos
+        SET width = ?, height = ?,
+            durationSeconds = COALESCE(?, durationSeconds)
+      WHERE id = ?`,
+  );
+
   // Extract a first-frame poster for `videoPath` and attach it to the row.
   // Best-effort: a failure just leaves the row with no poster (the player
   // falls back to its own first painted frame), and the backfill script can
@@ -589,11 +601,13 @@ module.exports = function registerPixieRoutes(app, deps) {
       let storedFilePath = originalFilePath;
       try {
         const result = await transcodeToH264(originalFilePath);
-        if (result.converted) {
-          if (!selectStoredVideoId.get(rowId)) {
+        if (!selectStoredVideoId.get(rowId)) {
+          if (result.converted) {
             await fs.promises.unlink(result.filePath).catch(() => {});
-            return;
           }
+          return;
+        }
+        if (result.converted) {
           updateVideoFile.run(
             path.basename(result.filePath),
             result.mimeType,
@@ -604,6 +618,14 @@ module.exports = function registerPixieRoutes(app, deps) {
           if (result.filePath !== originalFilePath) {
             await fs.promises.unlink(originalFilePath).catch(() => {});
           }
+        }
+        if (result.width && result.height) {
+          updateVideoDimensions.run(
+            result.width,
+            result.height,
+            result.durationSeconds ?? null,
+            rowId,
+          );
         }
       } catch (err) {
         // Keep the original file so nothing is lost; the pixie stays as
@@ -1661,7 +1683,8 @@ module.exports = function registerPixieRoutes(app, deps) {
       if (avatar && /^https?:\/\//i.test(avatar)) {
         avatar = await mirrorAvatarToPng(avatar, IMAGES_DIR);
       }
-      const durationSeconds = resolved?.durationSeconds ?? null;
+      const durationSeconds =
+        resolved?.durationSeconds ?? converted.durationSeconds ?? null;
       const id = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
 
       const authorUser = resolveAuthorWithAvatar({
@@ -1703,6 +1726,14 @@ module.exports = function registerPixieRoutes(app, deps) {
       // First-frame poster for a freshly imported clip (skipped when an
       // importKey collision made us reuse an existing row above).
       if (storedId === id && downloadedFilePath) {
+        if (converted.width && converted.height) {
+          updateVideoDimensions.run(
+            converted.width,
+            converted.height,
+            durationSeconds,
+            id,
+          );
+        }
         await attachPosterFrame(id, downloadedFilePath);
       }
 

@@ -1,5 +1,6 @@
 const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, ".env") });
+const fs = require("fs");
 const http = require("http");
 const express = require("express");
 const bodyParser = require("body-parser");
@@ -175,6 +176,7 @@ function registerMiddlewares(app) {
 const { db } = require("./lib/db");
 const users = require("./lib/users");
 const uploads = require("./lib/uploads");
+const { isOwner } = require("./lib/authz");
 const { generateSitemap } = require("./lib/sitemap");
 const { ensureIndexNowKeyFile } = require("./lib/indexnow");
 const { startQuoteOfTheDayScheduler } = require("./lib/quote-of-the-day");
@@ -195,6 +197,16 @@ function authFromReq(req) {
   const cookieToken = getSessionCookieTokenFromReq(req);
   if (!cookieToken) return null;
   return users.getUserByToken(cookieToken);
+}
+
+// Gate a route on the site owner. Must run *before* any multer middleware so an
+// unauthenticated request is rejected before anything is written to disk.
+function requireOwner(req, res, next) {
+  const user = authFromReq(req);
+  if (!user) return res.status(401).json({ error: "unauthorized" });
+  if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+  req.authUser = user;
+  next();
 }
 
 function registerRoutes(app) {
@@ -277,6 +289,7 @@ function createStaticMiddleware(directory) {
     immutable: true,
     setHeaders: (res) => {
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      res.setHeader("X-Content-Type-Options", "nosniff");
     },
   });
 }
@@ -295,10 +308,24 @@ if (indexNowKeyResult.ok === false) {
   console.warn(`[indexnow] ${indexNowKeyResult.error}`);
 }
 
-// Image upload endpoint for blog posts with optimization
-app.post("/posts-img", uploads.imageUpload.single("image"), imageUploadHandler);
+// Image upload endpoint for blog posts with optimization. Auth is checked before
+// multer touches disk; multer errors (bad type, oversize) unlink any partial
+// file and return without falling through to the handler.
+app.post("/posts-img", requireOwner, (req, res) => {
+  uploads.imageUpload.single("image")(req, res, (err) => {
+    if (err) {
+      if (req.file && req.file.path) {
+        fs.promises.unlink(req.file.path).catch(() => {});
+      }
+      const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+      return res.status(status).json({ error: err.message || "Upload failed" });
+    }
+    return imageUploadHandler(req, res);
+  });
+});
 
-// Serve static files with long cache headers
+// Serve static files with long cache headers. `nosniff` keeps the browser from
+// re-interpreting an uploaded file as HTML/script regardless of its extension.
 app.use("/images", createStaticMiddleware(uploads.IMAGES_DIR));
 
 // Serve uploaded pixie video files with range request support. These live under

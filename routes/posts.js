@@ -1,4 +1,5 @@
 const { generateSitemap } = require("../lib/sitemap");
+const { isOwner } = require("../lib/authz");
 const {
   getWebsiteBase,
   queueIndexNowSubmission,
@@ -636,7 +637,13 @@ module.exports = function registerPostsRoutes(app, deps) {
   app.post("/posts", (req, res) => {
     try {
       const userFromToken = authFromReq(req);
-      const userId = userFromToken ? userFromToken.id : req.body.userId;
+      if (!userFromToken) {
+        return res.status(401).json({ error: "unauthorized" });
+      }
+      if (!isOwner(userFromToken)) {
+        return res.status(403).json({ error: "forbidden" });
+      }
+      const userId = userFromToken.id;
 
       const id = Date.now().toString();
       const title = req.body.title || req.body.name || "Untitled";
@@ -654,8 +661,8 @@ module.exports = function registerPostsRoutes(app, deps) {
         id,
         title,
         JSON.stringify(contentObj),
-        userId || null,
-        req.body.author || null,
+        userId,
+        null,
         shortDescription,
         thumbnail,
         JSON.stringify(tags),
@@ -665,7 +672,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         updatedAt,
       );
 
-      const user = userId ? getUserById(userId) : null;
+      const user = getUserById(userId);
       const response = {
         id,
         title,
@@ -675,13 +682,9 @@ module.exports = function registerPostsRoutes(app, deps) {
         tags,
         likes: [],
         comments: [],
-        userId: userId || null,
-        author: userId
-          ? user
-            ? user.username
-            : req.body.author || "Unknown"
-          : req.body.author || "Unknown",
-        authorAvatar: userId ? (user ? user.avatar : null) : null,
+        userId,
+        author: user ? user.username : "Unknown",
+        authorAvatar: user ? user.avatar : null,
         createdAt,
         updatedAt,
       };
