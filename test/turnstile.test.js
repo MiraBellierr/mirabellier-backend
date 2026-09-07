@@ -105,3 +105,41 @@ test("Turnstile verification rejects a mismatched action", async (t) => {
       error.code === "TURNSTILE_ACTION_MISMATCH",
   );
 });
+
+test("Turnstile does not bypass just because NODE_ENV is not production", async (t) => {
+  const previousSecret = process.env.TURNSTILE_SECRET_KEY;
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousBypass = process.env.TURNSTILE_DEV_BYPASS;
+  t.after(() => {
+    restoreEnv("TURNSTILE_SECRET_KEY", previousSecret);
+    restoreEnv("NODE_ENV", previousNodeEnv);
+    restoreEnv("TURNSTILE_DEV_BYPASS", previousBypass);
+  });
+
+  process.env.NODE_ENV = "development";
+  delete process.env.TURNSTILE_DEV_BYPASS;
+  delete process.env.TURNSTILE_SECRET_KEY;
+
+  await assert.rejects(
+    verifyTurnstileToken(makeRequest(), "token", "guestbook"),
+    (error) =>
+      error instanceof TurnstileError &&
+      error.code === "TURNSTILE_NOT_CONFIGURED",
+  );
+});
+
+test("Turnstile bypasses only with an explicit TURNSTILE_DEV_BYPASS opt-in", async (t) => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousBypass = process.env.TURNSTILE_DEV_BYPASS;
+  t.after(() => {
+    restoreEnv("NODE_ENV", previousNodeEnv);
+    restoreEnv("TURNSTILE_DEV_BYPASS", previousBypass);
+  });
+
+  process.env.NODE_ENV = "production";
+  process.env.TURNSTILE_DEV_BYPASS = "true";
+
+  const result = await verifyTurnstileToken(makeRequest(), "", "guestbook");
+  assert.equal(result.success, true);
+  assert.equal(result.devBypass, true);
+});

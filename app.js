@@ -7,6 +7,9 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 const passport = require("passport");
 const compression = require("compression");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const { DEV_ORIGINS, devOriginsEnabled } = require("./lib/dev-origins");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -51,8 +54,9 @@ function createCorsMiddleware() {
     ...configuredFrontendUrls,
     "https://mirabellier.com",
     "https://www.mirabellier.com",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
+    // Local dev servers are only trusted when ALLOW_DEV_ORIGINS=true, so a page
+    // on a victim's localhost cannot make credentialed calls to production.
+    ...(devOriginsEnabled() ? DEV_ORIGINS : []),
   ].filter(Boolean));
 
   return cors({
@@ -157,11 +161,64 @@ function getSessionCookieTokenFromReq(req) {
   return readCookieValue(req, SESSION_COOKIE_NAME);
 }
 
+const TRUST_PROXY_HOPS = (() => {
+  const raw = Number.parseInt(process.env.TRUST_PROXY_HOPS || "", 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 1;
+})();
+
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(value || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+// Baseline per-IP ceiling for every request, plus a much tighter one for
+// mutations (login, profile edits, comments, guestbook, uploads, follows, TCG).
+// In-memory store: counters reset on restart and are not shared across nodes —
+// fine for the single-node deployment, revisit before scaling out.
+function createGlobalRateLimiter() {
+  return rateLimit({
+    windowMs: 60_000,
+    max: parsePositiveInt(process.env.RATE_LIMIT_GLOBAL_PER_MIN, 600),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "rate_limited" },
+  });
+}
+
+function createWriteRateLimiter() {
+  return rateLimit({
+    windowMs: 60_000,
+    max: parsePositiveInt(process.env.RATE_LIMIT_WRITE_PER_MIN, 60),
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) =>
+      req.method === "GET" ||
+      req.method === "HEAD" ||
+      req.method === "OPTIONS",
+    message: { error: "rate_limited" },
+  });
+}
+
 function registerMiddlewares(app) {
+  // Behind Cloudflare (+ any reverse proxy): trust exactly the configured hop
+  // count so req.ip is the real client and rate-limit buckets are per-visitor.
+  app.set("trust proxy", TRUST_PROXY_HOPS);
   app.use(createCompressionMiddleware());
   app.use(keepAliveMiddleware);
   app.use(normalizeApiPrefixMiddleware);
   app.use(createCorsMiddleware());
+  app.use(
+    helmet({
+      // API and server-rendered share this origin; a strict default CSP would
+      // break the SSR embed / SPA-entry HTML. nosniff, HSTS, frameguard,
+      // Referrer-Policy etc. still apply.
+      contentSecurityPolicy: false,
+      // The frontend loads /images and /videos from this (cross-origin) API.
+      crossOriginResourcePolicy: { policy: "cross-origin" },
+    }),
+  );
+  app.use(createGlobalRateLimiter());
+  app.use(createWriteRateLimiter());
   app.use(varyUserAgentForSpaPreviewRoutes);
   // Generous headroom for the largest real payload (a rich-text blog post — its
   // images are uploaded separately as URLs) without leaving a "buffer up to 1GB
@@ -217,7 +274,11 @@ function registerRoutes(app) {
     authFromReq,
   });
 
-  require("./routes/images")(app, { IMAGES_DIR: uploads.IMAGES_DIR });
+  require("./routes/images")(app, {
+    IMAGES_DIR: uploads.IMAGES_DIR,
+    authFromReq,
+    isOwner,
+  });
   require("./routes/pixies")(app, {
     db,
     authFromReq,
@@ -234,6 +295,7 @@ function registerRoutes(app) {
     optimizeImage: uploads.optimizeImage,
     makeToken: users.makeToken,
     createSession: users.createSession,
+    deleteSession: users.deleteSession,
     getUserByUsername: users.getUserByUsername,
     getUserById: users.getUserById,
     getUserByToken: users.getUserByToken,
@@ -290,6 +352,9 @@ function createStaticMiddleware(directory) {
     setHeaders: (res) => {
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       res.setHeader("X-Content-Type-Options", "nosniff");
+      // Force a download rather than inline rendering if the URL is opened
+      // directly, so an uploaded file can never execute as a page on this origin.
+      res.setHeader("Content-Disposition", "attachment");
     },
   });
 }

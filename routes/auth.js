@@ -1,4 +1,5 @@
 const path = require("path");
+const crypto = require("crypto");
 const passport = require("passport");
 const DiscordStrategy = require("passport-discord").Strategy;
 const {
@@ -13,6 +14,7 @@ const {
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
 const { getUserPermissions, getUserRoles } = require("../lib/authz");
+const { devOriginsEnabled } = require("../lib/dev-origins");
 const {
   FollowError,
   getFollowState,
@@ -61,30 +63,44 @@ function parseJsonArray(value) {
   }
 }
 
-function countLikesForUser(postRows, userId) {
-  let count = 0;
+// `/user/:id/stats` is unauthenticated and used to scan every row of `posts`
+// (all likes/comments blobs) on every request. Aggregate the per-user like /
+// comment counts in a single pass and memoize for a short window so the scan
+// happens at most once per TTL regardless of how many profiles are requested.
+const USER_STATS_AGGREGATE_TTL_MS = 60_000;
+let userStatsAggregateCache = null;
 
-  postRows.forEach((post) => {
-    if (parseJsonArray(post.likes).includes(userId)) {
-      count++;
+function computePostInteractionAggregate(db) {
+  const rows = db.prepare("SELECT likes, comments FROM posts").all();
+  const byUser = new Map();
+  const bump = (userId, field) => {
+    if (!userId) return;
+    const entry = byUser.get(userId) || { likesCount: 0, commentsCount: 0 };
+    entry[field] += 1;
+    byUser.set(userId, entry);
+  };
+
+  for (const row of rows) {
+    for (const likerId of parseJsonArray(row.likes)) bump(likerId, "likesCount");
+    for (const comment of parseJsonArray(row.comments)) {
+      if (comment && comment.userId) bump(comment.userId, "commentsCount");
     }
-  });
+  }
 
-  return count;
+  return byUser;
 }
 
-function countCommentsForUser(postRows, userId) {
-  let count = 0;
-
-  postRows.forEach((post) => {
-    parseJsonArray(post.comments).forEach((comment) => {
-      if (comment && comment.userId === userId) {
-        count++;
-      }
-    });
-  });
-
-  return count;
+function getPostInteractionAggregate(db, now = Date.now()) {
+  if (
+    !userStatsAggregateCache ||
+    now - userStatsAggregateCache.computedAt >= USER_STATS_AGGREGATE_TTL_MS
+  ) {
+    userStatsAggregateCache = {
+      computedAt: now,
+      byUser: computePostInteractionAggregate(db),
+    };
+  }
+  return userStatsAggregateCache.byUser;
 }
 
 function buildProfileSeoPage({
@@ -174,11 +190,19 @@ function resolveFrontendOrigin(rawOrigin, fallbackFrontendUrl) {
     return requested.origin;
   }
 
-  if (isLocalhostHost(requested.hostname)) {
+  if (isLocalhostHost(requested.hostname) && devOriginsEnabled()) {
     return requested.origin;
   }
 
   return fallbackOrigin || "http://localhost:5173";
+}
+
+// Constant-time string compare for the OAuth state nonce.
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a || ""));
+  const bufB = Buffer.from(String(b || ""));
+  if (bufA.length === 0 || bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 const OAUTH_ORIGIN_COOKIE = "oauth_frontend_origin";
@@ -243,11 +267,30 @@ function appendSetCookieHeader(res, cookieValue) {
   res.setHeader("Set-Cookie", [existing, cookieValue]);
 }
 
-function setOauthOriginCookie(req, res, origin) {
+// The OAuth cookie carries a per-request CSRF nonce alongside the redirect
+// origin (`<nonce>|<origin>`). The nonce is echoed back through the provider's
+// `state` param and must match on callback, so a login flow the user did not
+// start (Discord login CSRF) is rejected.
+function setOauthOriginCookie(req, res, nonce, origin) {
   appendSetCookieHeader(
     res,
-    buildCookieString(req, OAUTH_ORIGIN_COOKIE, origin, 600),
+    buildCookieString(
+      req,
+      OAUTH_ORIGIN_COOKIE,
+      `${nonce}|${origin}`,
+      600,
+    ),
   );
+}
+
+function parseOauthOriginCookie(req) {
+  const raw = readCookieValue(req, OAUTH_ORIGIN_COOKIE);
+  const separatorIndex = raw.indexOf("|");
+  if (separatorIndex === -1) return { nonce: "", origin: raw };
+  return {
+    nonce: raw.slice(0, separatorIndex),
+    origin: raw.slice(separatorIndex + 1),
+  };
 }
 
 function clearOauthOriginCookie(req, res) {
@@ -364,6 +407,7 @@ module.exports = function registerAuthRoutes(app, deps) {
     optimizeImage,
     makeToken,
     createSession,
+    deleteSession,
     getUserByUsername,
     getUserById,
     updateUserById,
@@ -384,9 +428,10 @@ module.exports = function registerAuthRoutes(app, deps) {
       rawRequestedOrigin,
       configuredFrontendUrl,
     );
-    setOauthOriginCookie(req, res, frontendOrigin);
+    const stateNonce = crypto.randomBytes(16).toString("hex");
+    setOauthOriginCookie(req, res, stateNonce, frontendOrigin);
 
-    return passport.authenticate("discord", { state: frontendOrigin })(
+    return passport.authenticate("discord", { state: stateNonce })(
       req,
       res,
       next,
@@ -409,14 +454,20 @@ module.exports = function registerAuthRoutes(app, deps) {
 
         const configuredFrontendUrl =
           process.env.FRONTEND_URL || "http://localhost:5173";
-        const stateOrigin =
+        const returnedState =
           typeof req.query.state === "string" ? req.query.state : "";
-        const cookieOrigin = readCookieValue(req, OAUTH_ORIGIN_COOKIE);
+        const { nonce: cookieNonce, origin: cookieOrigin } =
+          parseOauthOriginCookie(req);
+        clearOauthOriginCookie(req, res);
+
+        if (!safeEqual(cookieNonce, returnedState)) {
+          return res.redirect("/login?error=auth_state_mismatch");
+        }
+
         const frontendOrigin = resolveFrontendOrigin(
-          stateOrigin || cookieOrigin,
+          cookieOrigin,
           configuredFrontendUrl,
         );
-        clearOauthOriginCookie(req, res);
 
         res.redirect(`${frontendOrigin}/auth/callback`);
       } catch {
@@ -510,9 +561,8 @@ module.exports = function registerAuthRoutes(app, deps) {
         return res.status(401).json({ error: "unauthenticated" });
       }
 
-      const removeSession = db.prepare("DELETE FROM sessions WHERE token = ?");
       for (const token of tokens) {
-        removeSession.run(token);
+        deleteSession(token);
       }
 
       clearSessionCookie(req, res);
@@ -582,11 +632,10 @@ module.exports = function registerAuthRoutes(app, deps) {
           .prepare("SELECT COUNT(*) as count FROM posts WHERE userId = ?")
           .get(id)?.count || 0;
 
-      const postInteractions = db
-        .prepare("SELECT likes, comments FROM posts")
-        .all();
-      const likesCount = countLikesForUser(postInteractions, id);
-      const commentsCount = countCommentsForUser(postInteractions, id);
+      const interactions = getPostInteractionAggregate(db).get(id) || {
+        likesCount: 0,
+        commentsCount: 0,
+      };
 
       const recentPosts = db
         .prepare(
@@ -594,10 +643,11 @@ module.exports = function registerAuthRoutes(app, deps) {
         )
         .all(id);
 
+      res.setHeader("Cache-Control", "public, max-age=60");
       res.json({
         postsCount,
-        likesCount,
-        commentsCount,
+        likesCount: interactions.likesCount,
+        commentsCount: interactions.commentsCount,
         recentPosts,
       });
     } catch {

@@ -100,3 +100,28 @@ test("playback guard works without a request object (websocket path)", () => {
     false,
   );
 });
+
+test("websocket path (no request) limits per account, not one shared IP bucket", () => {
+  resetArenaFightRateLimits();
+  const now = Date.now();
+
+  // Two different accounts on the WS path (req === null). Before the fix both
+  // shared the `fight:ip:ws` bucket and the second user was locked out after
+  // the first exhausted 30 fights. Now each account has its own budget.
+  for (let index = 0; index < 30; index += 1) {
+    assert.equal(
+      checkArenaFightRateLimit(null, "ws-user-a", now + index).allowed,
+      true,
+    );
+  }
+  assert.equal(
+    checkArenaFightRateLimit(null, "ws-user-a", now + 31).allowed,
+    false,
+    "user A is limited by their own account window",
+  );
+  assert.equal(
+    checkArenaFightRateLimit(null, "ws-user-b", now + 32).allowed,
+    true,
+    "user B is unaffected by user A hitting the limit",
+  );
+});

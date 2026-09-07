@@ -4,6 +4,7 @@ const {
   TurnstileError,
   verifyTurnstileToken,
 } = require("../lib/turnstile");
+const { sanitizeWebsite } = require("../lib/sanitize-website");
 
 const MAX_ENTRIES = 100;
 const MAX_NAME_LENGTH = 40;
@@ -45,23 +46,6 @@ function sanitizeMessage(value) {
 function sanitizeMood(value) {
   const normalized = collapseWhitespace(value).toLowerCase();
   return ALLOWED_MOODS.has(normalized) ? normalized : "sparkly";
-}
-
-function sanitizeWebsite(value) {
-  const trimmed = collapseWhitespace(value);
-  if (!trimmed) return null;
-
-  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-
-  try {
-    const url = new URL(candidate);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return null;
-    }
-    return url.toString().slice(0, 200);
-  } catch {
-    return null;
-  }
 }
 
 function clampNumber(value, min, max) {
