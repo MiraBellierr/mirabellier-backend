@@ -36,6 +36,14 @@ test("classifyPlatform detects each supported platform", () => {
   assert.equal(classifyPlatform(""), null);
 });
 
+test("classifyPlatform rejects non-http(s) schemes on an allowlisted host", () => {
+  assert.equal(classifyPlatform("file://youtube.com/etc/passwd"), null);
+  assert.equal(classifyPlatform("ftp://www.tiktok.com/x"), null);
+  assert.equal(classifyPlatform("javascript:alert(1)"), null);
+  // http is still accepted (it is upgraded / handled downstream).
+  assert.equal(classifyPlatform("http://www.youtube.com/watch?v=abc"), "youtube");
+});
+
 test("canonicalizeYouTubeUrl normalizes shorts, youtu.be, and embed links", () => {
   assert.equal(
     canonicalizeYouTubeUrl("https://www.youtube.com/shorts/AbCd1234"),
