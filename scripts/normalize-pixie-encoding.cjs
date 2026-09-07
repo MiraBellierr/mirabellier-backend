@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 
-// Normalizes every stored pixie (user_videos) to the encode the upload
-// pipeline is supposed to produce (see lib/social.js -> transcodeToH264):
+// Normalizes every stored pixie (user_videos) to the short-form delivery
+// encode the upload pipeline produces (see lib/social.js -> transcodeToH264
+// / planDeliveryEncode / buildDeliveryEncodeArgs):
 //
 //   container : MP4, with the moov atom before mdat (-movflags +faststart)
-//   video     : H.264, 8-bit yuv420p, profile High, SDR (BT.709) — original
-//               resolution and frame rate preserved
-//   audio     : AAC (kept as-is when already AAC; mp3 re-encoded unless
-//               --keep-mp3-audio); silent clips stay silent
+//   video     : H.264 High, 8-bit yuv420p, SDR (BT.709), capped at 1080 on
+//               the short edge / 1920 on the long edge and 60 fps, 2s
+//               keyframe cadence, per-tier bitrate ceiling
+//               (1080p ≤6M · 720p ≤3M · 480p ≤1.5M · ≤360p ≤0.8M)
+//   audio     : AAC 160k, loudness-normalized to -14 LUFS (kept only when
+//               --keep-mp3-audio and already MP3); silent clips stay silent
 //
-// Files that already match are left untouched. Files that only sit in the
-// wrong container or lack faststart are stream-copied (lossless, fast).
-// Anything else (HEVC/AV1/VP9, H.264 High10 / 4:2:2 / 4:4:4, 10-bit, HDR
-// PQ/HLG, Opus/…) is re-encoded. The user_videos row(s) pointing at the file
-// are then repointed at the normalized file.
+// Files already inside the profile are left untouched. Files that only sit
+// in the wrong container or lack faststart are stream-copied (lossless).
+// Anything else (HEVC/AV1/VP9, High10 / 4:2:2 / 4:4:4, 10-bit, HDR PQ/HLG,
+// Opus, over-size, over-60fps, over-bitrate) is re-encoded, then the
+// user_videos row(s) pointing at the file are repointed and their
+// width/height recorded. Pass --no-downscale to keep the source resolution
+// and frame rate (bitrate cap + keyframes + loudnorm + faststart still
+// applied).
 //
 // It also backfills the first-frame poster (<base>.poster.jpg next to the
 // clip, stored in user_videos.posterFilename) for any row that is missing
@@ -32,11 +38,14 @@
 //   --keep-mp3-audio     Treat an existing MP3 track as acceptable
 //   --force-reencode     Re-encode every clip that has a video stream, even
 //                        ones already matching the target
+//   --no-downscale       Keep source resolution + frame rate (skip the
+//                        1080p / 60fps ceiling); still cap bitrate + loudnorm
 //   --posters-only       Skip the encode pass; only backfill missing posters
 //   --no-posters         Skip poster backfill; only normalize encodes
 //   --preset <name>      x264 preset for re-encodes (default: slow; use
 //                        veryfast / faster on a low-power VPS)
-//   --crf <n>            x264 quality for re-encodes, 0-51 (default: 18)
+//   --crf <n>            Override the per-tier x264 CRF, 0-51 (default: the
+//                        ladder value for the output size, 20-23)
 //   --threads <n>        cap ffmpeg worker threads (default: all cores)
 //   --only <videoId>     Restrict to the file backing this user_videos.id
 //   --limit <n>          Process at most n files needing work
@@ -109,6 +118,42 @@ const HDR_TO_SDR_FILTER =
   "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709," +
   "tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
 
+// Short-form delivery ceiling — kept in step with lib/social.js
+// (DELIVERY_* constants + planDeliveryEncode + buildDeliveryEncodeArgs).
+const MAX_SHORT_EDGE = 1080;
+const MAX_LONG_EDGE = 1920;
+const MAX_FPS = 60;
+const KEYFRAME_SECONDS = 2;
+const AUDIO_BITRATE = "160k";
+const LOUDNORM_FILTER = "loudnorm=I=-14:TP=-1.5:LRA=11";
+// Re-encode for bitrate only when the source clearly overshoots its tier.
+const BITRATE_SLACK = 1.35;
+// Tightest tier whose short edge is >= the output's short edge wins.
+const LADDER = [
+  { shortEdge: 360, crf: 23, maxrateK: 800, bufsizeK: 1600 },
+  { shortEdge: 480, crf: 22, maxrateK: 1500, bufsizeK: 3000 },
+  { shortEdge: 720, crf: 21, maxrateK: 3000, bufsizeK: 6000 },
+  { shortEdge: 1080, crf: 20, maxrateK: 6000, bufsizeK: 12000 },
+];
+function tierForShortEdge(px) {
+  return LADDER.find((t) => px <= t.shortEdge) || LADDER[LADDER.length - 1];
+}
+function evenDown(value) {
+  const n = Math.max(2, Math.floor(Number(value) || 0));
+  return n % 2 === 0 ? n : n - 1;
+}
+// "30000/1001" → 29.97; "" / "0/0" → null
+function parseFrameRate(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  const [num, den] = text.split("/");
+  const n = Number.parseFloat(num);
+  const d = den === undefined ? 1 : Number.parseFloat(den);
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0) return null;
+  const fps = n / d;
+  return Number.isFinite(fps) && fps > 0 ? fps : null;
+}
+
 const NORMALIZED_SUFFIX = ".normalized.mp4";
 
 // ── CLI ────────────────────────────────────────────────────────────────────
@@ -136,8 +181,11 @@ function parseArgs(argv) {
     forceReencode: false,
     postersOnly: false,
     posters: true,
+    downscale: true,
     preset: "slow",
-    crf: 18,
+    // null → each re-encode uses its ladder tier's CRF (20-23). A number
+    // from --crf overrides every tier.
+    crf: null,
     threads: 0,
     only: "",
     limit: Infinity,
@@ -164,6 +212,7 @@ function parseArgs(argv) {
     else if (arg === "--verify") options.verify = true;
     else if (arg === "--keep-mp3-audio") options.keepMp3Audio = true;
     else if (arg === "--force-reencode") options.forceReencode = true;
+    else if (arg === "--no-downscale") options.downscale = false;
     else if (arg === "--posters-only") options.postersOnly = true;
     else if (arg === "--no-posters") options.posters = false;
     else if (arg === "--preset" || arg.startsWith("--preset=")) {
@@ -355,6 +404,7 @@ async function probeVideo(filePath) {
     "-print_format",
     "json",
     "-show_streams",
+    "-show_format",
     filePath,
   ]);
   let parsed = null;
@@ -364,6 +414,9 @@ async function probeVideo(filePath) {
     parsed = null;
   }
   const streams = Array.isArray(parsed?.streams) ? parsed.streams : [];
+  const format = parsed?.format && typeof parsed.format === "object"
+    ? parsed.format
+    : {};
   const video = streams.find((s) => String(s.codec_type) === "video");
   const audio = streams.find((s) => String(s.codec_type) === "audio");
 
@@ -376,6 +429,21 @@ async function probeVideo(filePath) {
       (depthMatch ? Number.parseInt(depthMatch[1], 10) : 8)
     : null;
 
+  const width = video ? Number.parseInt(video.width, 10) || 0 : 0;
+  const height = video ? Number.parseInt(video.height, 10) || 0 : 0;
+  const fps = video
+    ? parseFrameRate(video.avg_frame_rate) ||
+      parseFrameRate(video.r_frame_rate)
+    : null;
+  const bitsPerSecond =
+    Number.parseInt(video?.bit_rate, 10) ||
+    Number.parseInt(format.bit_rate, 10) ||
+    0;
+  const durationRaw =
+    Number.parseFloat(video?.duration) ||
+    Number.parseFloat(format.duration) ||
+    0;
+
   return {
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
@@ -387,6 +455,11 @@ async function probeVideo(filePath) {
     colorTransfer: video
       ? String(video.color_transfer || "").toLowerCase()
       : "",
+    width,
+    height,
+    fps,
+    bitRateKbps: bitsPerSecond > 0 ? Math.round(bitsPerSecond / 1000) : null,
+    durationSeconds: durationRaw > 0 ? durationRaw : null,
   };
 }
 
@@ -452,12 +525,64 @@ function planForFile(filePath, probe, layout, opts) {
   const isHdr =
     probe.bitDepth > 8 && HDR_TRANSFER_CODES.has(probe.colorTransfer);
 
+  // ── Delivery ceiling (skipped with --no-downscale) ──────────────────────
+  const srcW = probe.width || 0;
+  const srcH = probe.height || 0;
+  const haveDims = probe.hasVideo && srcW > 0 && srcH > 0;
+  const srcShort = haveDims ? Math.min(srcW, srcH) : 0;
+  const srcLong = haveDims ? Math.max(srcW, srcH) : 0;
+
+  let scaleFactor = 1;
+  if (
+    opts.downscale &&
+    haveDims &&
+    (srcShort > MAX_SHORT_EDGE || srcLong > MAX_LONG_EDGE)
+  ) {
+    scaleFactor = Math.min(
+      MAX_SHORT_EDGE / srcShort,
+      MAX_LONG_EDGE / srcLong,
+      1,
+    );
+  }
+  const needsScale = scaleFactor < 1;
+  const targetWidth = haveDims
+    ? needsScale ? evenDown(srcW * scaleFactor) : srcW
+    : 0;
+  const targetHeight = haveDims
+    ? needsScale ? evenDown(srcH * scaleFactor) : srcH
+    : 0;
+  if (needsScale) {
+    reasons.push(`${srcW}x${srcH} → ${targetWidth}x${targetHeight}`);
+  }
+
+  const srcFps = probe.fps || null;
+  const needsFpsCap =
+    opts.downscale && Boolean(srcFps && srcFps > MAX_FPS + 0.5);
+  const targetFps = needsFpsCap ? MAX_FPS : srcFps;
+  if (needsFpsCap) reasons.push(`${srcFps.toFixed(2)}fps → ${MAX_FPS}fps`);
+
+  const outShort =
+    targetWidth && targetHeight
+      ? Math.min(targetWidth, targetHeight)
+      : MAX_SHORT_EDGE;
+  const tier = tierForShortEdge(outShort);
+
+  const overBitrate =
+    probe.bitRateKbps != null &&
+    probe.bitRateKbps > tier.maxrateK * BITRATE_SLACK;
+  if (overBitrate) {
+    reasons.push(`${probe.bitRateKbps}kbps → ≤${tier.maxrateK}kbps`);
+  }
+
   const videoBad =
     !probe.hasVideo ||
     probe.videoCodec !== TARGET_VIDEO_CODEC ||
     probe.pixelFormat !== TARGET_PIXEL_FORMAT ||
     probe.bitDepth > 8 ||
-    isHdr;
+    isHdr ||
+    needsScale ||
+    needsFpsCap ||
+    overBitrate;
 
   if (!probe.hasVideo) reasons.push("no video stream");
   else {
@@ -500,7 +625,16 @@ function planForFile(filePath, probe, layout, opts) {
     reasons.push("forced re-encode");
   }
 
-  return { action, reasons, isHdr };
+  return {
+    action,
+    reasons,
+    isHdr,
+    tier,
+    needsScale,
+    targetWidth,
+    targetHeight,
+    targetFps,
+  };
 }
 
 // ── Conversions ────────────────────────────────────────────────────────────
@@ -556,8 +690,9 @@ async function transcodeAudioOnly(filePath, probe, opts) {
   return outPath;
 }
 
-async function reencode(filePath, probe, isHdr, opts) {
+async function reencode(filePath, probe, plan, opts) {
   const outPath = outPathFor(filePath);
+  const { isHdr, needsScale, targetWidth, targetHeight, targetFps, tier } = plan;
   const usesToneMap = isHdr && (await ffmpegHasZscale());
 
   const args = [
@@ -567,13 +702,30 @@ async function reencode(filePath, probe, isHdr, opts) {
     "-map", "0:v:0",
   ];
   if (probe.hasAudio) args.push("-map", "0:a:0");
+
+  const filters = [];
+  if (usesToneMap) filters.push(HDR_TO_SDR_FILTER);
+  if (needsScale) filters.push(`scale=${targetWidth}:${targetHeight}:flags=lanczos`);
+  if (filters.length) args.push("-vf", filters.join(","));
+
+  const crf = opts.crf != null ? opts.crf : tier.crf;
   args.push(
     "-c:v", "libx264",
     "-preset", opts.preset,
-    "-crf", String(opts.crf),
+    "-profile:v", "high",
+    "-pix_fmt", "yuv420p",
+    "-crf", String(crf),
+    "-maxrate", `${tier.maxrateK}k`,
+    "-bufsize", `${tier.bufsizeK}k`,
   );
-  if (usesToneMap) args.push("-vf", HDR_TO_SDR_FILTER);
-  args.push("-pix_fmt", "yuv420p", "-profile:v", "high");
+
+  const gopFps = Math.round(targetFps || probe.fps || 30);
+  const gop = Math.max(2, gopFps * KEYFRAME_SECONDS);
+  args.push("-g", String(gop), "-keyint_min", String(gop), "-sc_threshold", "0");
+  if (targetFps && probe.fps && probe.fps > targetFps + 0.5) {
+    args.push("-r", String(targetFps));
+  }
+
   if (isHdr) {
     args.push(
       "-color_primaries", "bt709",
@@ -582,14 +734,25 @@ async function reencode(filePath, probe, isHdr, opts) {
     );
   }
   if (probe.hasAudio) {
-    if (probe.audioCodec === "aac") args.push("-c:a", "copy");
-    else if (opts.keepMp3Audio && probe.audioCodec === "mp3")
+    if (opts.keepMp3Audio && probe.audioCodec === "mp3") {
       args.push("-c:a", "copy");
-    else args.push("-c:a", "aac", "-b:a", "192k");
+    } else {
+      args.push(
+        "-c:a", "aac",
+        "-b:a", AUDIO_BITRATE,
+        "-ar", "48000",
+        "-af", LOUDNORM_FILTER,
+      );
+    }
   } else {
     args.push("-an");
   }
-  args.push("-movflags", "+faststart", outPath);
+  args.push(
+    "-movflags", "+faststart",
+    "-map_metadata", "-1",
+    "-map_chapters", "-1",
+    outPath,
+  );
   await ffmpegOrCleanup(args, outPath);
   return outPath;
 }
@@ -611,10 +774,10 @@ async function ffmpegOrCleanup(args, outPath) {
   inFlightTemp = null;
 }
 
-async function convert(action, filePath, probe, isHdr, opts) {
+async function convert(action, filePath, probe, plan, opts) {
   if (action === "remux") return remux(filePath, probe, opts);
   if (action === "audio") return transcodeAudioOnly(filePath, probe, opts);
-  if (action === "reencode") return reencode(filePath, probe, isHdr, opts);
+  if (action === "reencode") return reencode(filePath, probe, plan, opts);
   throw new Error(`nothing to do for action "${action}"`);
 }
 
@@ -718,17 +881,23 @@ async function main() {
   db.pragma("busy_timeout = 30000");
   db.pragma("journal_mode = WAL");
 
-  // The backend adds this on startup; do it here too so the script works
+  // The backend adds these on startup; do it here too so the script works
   // against a database whose backend hasn't been redeployed yet.
-  try {
-    db.prepare("ALTER TABLE user_videos ADD COLUMN posterFilename TEXT").run();
-  } catch {
-    // Column already exists.
+  for (const ddl of [
+    "ALTER TABLE user_videos ADD COLUMN posterFilename TEXT",
+    "ALTER TABLE user_videos ADD COLUMN width INTEGER",
+    "ALTER TABLE user_videos ADD COLUMN height INTEGER",
+  ]) {
+    try {
+      db.prepare(ddl).run();
+    } catch {
+      // Column already exists.
+    }
   }
 
   const rows = db
     .prepare(
-      "SELECT id, filename, posterFilename, mimeType, sizeBytes FROM user_videos ORDER BY createdAt DESC",
+      "SELECT id, filename, posterFilename, mimeType, sizeBytes, width, height FROM user_videos ORDER BY createdAt DESC",
     )
     .all();
 
@@ -771,11 +940,15 @@ async function main() {
   const updatePoster = db.prepare(
     "UPDATE user_videos SET posterFilename = ? WHERE id = ?",
   );
+  const updateDims = db.prepare(
+    "UPDATE user_videos SET width = ?, height = ? WHERE id = ?",
+  );
 
   const files = Array.from(rowsByFilename.entries());
   const summary = {
     scanned: 0,
     alreadyOk: 0,
+    downscaled: 0,
     remuxed: [],
     audio: [],
     reencoded: [],
@@ -821,12 +994,8 @@ async function main() {
         ? inspectMp4Layout(sourcePath)
         : { looksLikeMp4: false, moovBeforeMdat: null };
 
-      const { action, reasons, isHdr } = planForFile(
-        sourcePath,
-        probe,
-        layout,
-        opts,
-      );
+      const plan = planForFile(sourcePath, probe, layout, opts);
+      const { action, reasons } = plan;
 
       if (action === "skip") {
         // No video stream — nothing to normalize, and no poster to make.
@@ -834,8 +1003,22 @@ async function main() {
         continue;
       }
 
+      if (plan.needsScale) summary.downscaled += 1;
+
       if (action === "none") {
         summary.alreadyOk += 1;
+        // Backfill a frame size for an already-compliant clip that never had
+        // one recorded (cheap; keeps the SEO card + ladder logic honest).
+        if (
+          opts.apply &&
+          probe.width &&
+          probe.height &&
+          rowGroup.some((row) => !row.width || !row.height)
+        ) {
+          for (const row of rowGroup) {
+            updateDims.run(probe.width, probe.height, row.id);
+          }
+        }
       } else {
         const tag =
           action === "remux"
@@ -880,7 +1063,7 @@ async function main() {
           const startedAt = Date.now();
           let outPath;
           try {
-            outPath = await convert(action, sourcePath, probe, isHdr, opts);
+            outPath = await convert(action, sourcePath, probe, plan, opts);
           } catch (err) {
             summary.failed.push(
               `${filename}: ${action} failed — ${err.message}`,
@@ -907,8 +1090,11 @@ async function main() {
           didWork = true;
 
           if (opts.apply) {
+            const outW = plan.needsScale ? plan.targetWidth : probe.width || 0;
+            const outH = plan.needsScale ? plan.targetHeight : probe.height || 0;
             for (const row of rowGroup) {
               updateRow.run(record.newFilename, "video/mp4", newSize, row.id);
+              if (outW && outH) updateDims.run(outW, outH, row.id);
             }
             if (outPath !== sourcePath) {
               fs.promises.unlink(sourcePath).catch(() => {});
@@ -989,7 +1175,8 @@ async function main() {
       `\nScanned ${summary.scanned} file(s): ${summary.alreadyOk} already ` +
         `match the target, ${changed} need work ` +
         `(${summary.remuxed.length} remux, ${summary.audio.length} audio, ` +
-        `${summary.reencoded.length} re-encode).`,
+        `${summary.reencoded.length} re-encode` +
+        `${summary.downscaled ? `, ${summary.downscaled} downscaled` : ""}).`,
     );
   } else {
     console.log(`\nScanned ${summary.scanned} file(s) for posters.`);
