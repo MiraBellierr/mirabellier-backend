@@ -4,7 +4,9 @@ const path = require("path");
 const Database = require("better-sqlite3");
 const fs = require("fs");
 
-const ELEMENTS = ["Fire", "Water", "Earth", "Wind", "Light", "Dark"];
+// Combat Styles (formerly elements). Legacy one-time backfill — kept in sync with
+// `lib/arena-constants.js` so a re-run produces current-format values.
+const ELEMENTS = ["Might", "Swift", "Skill", "Ruse", "Surge", "Ward"];
 
 const DEFAULT_DB_FILE = path.resolve(__dirname, "..", "database.sqlite3");
 const DEFAULT_CATALOG_FILE = path.resolve(
