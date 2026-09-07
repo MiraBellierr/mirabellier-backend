@@ -9,10 +9,11 @@ const { searchArenaTradeCards, searchArenaUsers } = require("../../lib/arena/arc
 const { advancePlaybackFightTurn, getPlaybackFightState, hasActiveFight,
   skipPlaybackFightToEnd, startPlaybackFight } = require("../../lib/arena/playback");
 const { activateArenaSkill, getArenaSkillTreePayload, resetArenaSkills } = require("../../lib/arena/skill-tree");
+const { getArenaTitlesPayload, buyArenaTitle, setActiveArenaTitle } = require("../../lib/arena/titles");
 const { buyArenaMarketListing, cancelArenaMarketListing, createArenaMarketListing,
   getArenaMarketListings, getArenaMarketPriceGuide, getMyArenaMarketListings } = require("../../lib/arena/market");
 const { buyArenaShopCard, getArenaCardShopPayload, drawDailyCard, drawArenaPack } = require("../../lib/arena/card-shop");
-const { buyShopItem, craftShopRecipe, equipShopItem, getArenaShopPayload,
+const { buyShopItem, equipShopItem, getArenaShopPayload,
   useConsumable } = require("../../lib/arena/shop");
 const { unequipEquipmentSlot, fodderEquipmentPiece, lockEquipmentPiece, unlockEquipmentPiece,
   getEquipmentLoadouts, saveEquipmentLoadout, restoreEquipmentLoadout,
@@ -513,7 +514,7 @@ module.exports = function registerArenaRoutes(app, deps) {
         throw new ArenaHttpError(400, "itemId is required.", "ARENA_ITEM_REQUIRED");
       }
 
-      const payload = buyShopItem(db, user.id, itemId);
+      const payload = buyShopItem(db, user.id, itemId, req.body?.quantity);
       setNoStoreHeaders(res);
       res.json(payload);
     } catch (error) {
@@ -627,6 +628,45 @@ module.exports = function registerArenaRoutes(app, deps) {
     }
   });
 
+  router.get("/shop/titles", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const payload = getArenaTitlesPayload(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/titles/buy", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const titleId = String(req.body?.titleId || "").trim();
+      if (!titleId) {
+        throw new ArenaHttpError(400, "titleId is required.", "ARENA_TITLE_REQUIRED");
+      }
+      const payload = buyArenaTitle(db, user.id, titleId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/shop/titles/activate", async (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      // Empty / null titleId clears the active title.
+      const titleId = String(req.body?.titleId || "").trim();
+      const payload = setActiveArenaTitle(db, user.id, titleId);
+      setNoStoreHeaders(res);
+      res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
   router.post("/loadout/save", async (req, res) => {
     try {
       const user = requireAuthUser(req, authFromReq);
@@ -697,23 +737,6 @@ module.exports = function registerArenaRoutes(app, deps) {
       const result = unlockEquipmentPiece(db, user.id, pieceId);
       setNoStoreHeaders(res);
       res.json(result);
-    } catch (error) {
-      handleArenaError(error, res);
-    }
-  });
-
-  router.post("/shop/craft", async (req, res) => {
-    try {
-      const user = requireAuthUser(req, authFromReq);
-      const recipeId = String(req.body?.recipeId || "").trim();
-      const quantity = req.body?.quantity;
-      if (!recipeId) {
-        throw new ArenaHttpError(400, "recipeId is required.", "ARENA_RECIPE_REQUIRED");
-      }
-
-      const payload = craftShopRecipe(db, user.id, recipeId, quantity);
-      setNoStoreHeaders(res);
-      res.json(payload);
     } catch (error) {
       handleArenaError(error, res);
     }

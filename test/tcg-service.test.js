@@ -14,7 +14,7 @@ function createTestDb() {
   return db;
 }
 
-function makeCard(id, element = "Fire", iv = {}) {
+function makeCard(id, element = "Might", iv = {}) {
   return {
     cardInstanceId: `card-${id}`,
     malId: id,
@@ -43,8 +43,8 @@ function boardCard(card, input = {}) {
 }
 
 function baseState(input = {}) {
-  const p1Attacker = boardCard(makeCard(1, "Fire", { power: 24, speed: 12 }));
-  const p2Attacker = boardCard(makeCard(2, "Earth", { power: 16, guard: 4, speed: 8 }));
+  const p1Attacker = boardCard(makeCard(1, "Might", { power: 24, speed: 12 }));
+  const p2Attacker = boardCard(makeCard(2, "Ward", { power: 16, guard: 4, speed: 8 }));
   return {
     players: {
       p1: {
@@ -81,7 +81,7 @@ function baseState(input = {}) {
     lastAction: null,
     turnStartedAt: input.turnStartedAt ?? Date.now(),
     mode: "pvp",
-    elementPools: { p1: ["Fire", "Water"], p2: ["Fire", "Water"] },
+    elementPools: { p1: ["Might", "Swift"], p2: ["Might", "Swift"] },
     ...input.state,
   };
 }
@@ -119,9 +119,9 @@ function readStoredState(db, gameId = "tcg-test") {
 test("eligible TCG cards include the full player collection beyond the first page", () => {
   const db = createTestDb();
   for (let id = 1; id <= 125; id += 1) {
-    insertCollectionCard(db, "u1", makeCard(id, id % 2 === 0 ? "Fire" : "Water"), id);
+    insertCollectionCard(db, "u1", makeCard(id, id % 2 === 0 ? "Might" : "Swift"), id);
   }
-  insertCollectionCard(db, "u1", { ...makeCard(126, "Fire"), element: null }, 126);
+  insertCollectionCard(db, "u1", { ...makeCard(126, "Might"), element: null }, 126);
 
   const cards = getEligibleCards(db, "u1");
 
@@ -131,8 +131,8 @@ test("eligible TCG cards include the full player collection beyond the first pag
 });
 
 test("AI draw stores a full card object in hand instead of a raw draw-pile id", () => {
-  const drawnCard = makeCard(9, "Water");
-  const aiAttacker = boardCard(makeCard(8, "Fire"));
+  const drawnCard = makeCard(9, "Swift");
+  const aiAttacker = boardCard(makeCard(8, "Might"));
   const state = baseState({
     currentPlayer: "p2",
     p2: {
@@ -156,7 +156,7 @@ test("empty draw pile does not block attacking", () => {
   const state = baseState({
     p1: {
       board: {
-        attacker: boardCard(makeCard(1, "Fire", { power: 12, speed: 8 }), { assignedElements: ["Fire", "Fire"] }),
+        attacker: boardCard(makeCard(1, "Might", { power: 12, speed: 8 }), { assignedElements: ["Might", "Might"] }),
         support: [null, null, null],
       },
       drawPile: [],
@@ -193,13 +193,13 @@ test("KO of a player with no remaining cards finishes cleanly", () => {
   const state = baseState({
     p1: {
       board: {
-        attacker: boardCard(makeCard(1, "Fire", { power: 100, speed: 20 }), { assignedElements: ["Fire", "Fire"] }),
+        attacker: boardCard(makeCard(1, "Might", { power: 100, speed: 20 }), { assignedElements: ["Might", "Might"] }),
         support: [null, null, null],
       },
     },
     p2: {
       board: {
-        attacker: boardCard(makeCard(2, "Earth", { guard: 0 }), { currentHp: 5, maxHp: 40 }),
+        attacker: boardCard(makeCard(2, "Ward", { guard: 0 }), { currentHp: 5, maxHp: 40 }),
         support: [null, null, null],
       },
       hand: [],
@@ -237,7 +237,7 @@ test("off-element energy assignment succeeds", () => {
   const db = createTestDb();
   const state = baseState({
     p1: {
-      elementPool: ["Water"],
+      elementPool: ["Swift"],
     },
   });
   const gameId = insertGame(db, state);
@@ -245,7 +245,7 @@ test("off-element energy assignment succeeds", () => {
   submitAction(db, gameId, "u1", { type: "assign", slot: "attacker" });
   const stored = readStoredState(db, gameId);
 
-  assert.deepEqual(stored.players.p1.board.attacker.assignedElements, ["Water"]);
+  assert.deepEqual(stored.players.p1.board.attacker.assignedElements, ["Swift"]);
 });
 
 test("off-element energy cannot attack", () => {
@@ -253,7 +253,7 @@ test("off-element energy cannot attack", () => {
   const state = baseState({
     p1: {
       board: {
-        attacker: boardCard(makeCard(1, "Fire"), { assignedElements: ["Water", "Water"] }),
+        attacker: boardCard(makeCard(1, "Might"), { assignedElements: ["Swift", "Swift"] }),
         support: [null, null, null],
       },
     },
@@ -268,8 +268,8 @@ test("off-element energy cannot attack", () => {
 
 test("off-element energy can be consumed to switch", () => {
   const db = createTestDb();
-  const attacker = boardCard(makeCard(1, "Fire"), { assignedElements: ["Water"] });
-  const support = boardCard(makeCard(3, "Water"));
+  const attacker = boardCard(makeCard(1, "Might"), { assignedElements: ["Swift"] });
+  const support = boardCard(makeCard(3, "Swift"));
   const state = baseState({
     p1: {
       board: { attacker, support: [support, null, null] },

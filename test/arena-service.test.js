@@ -13,7 +13,6 @@ const {
   buyShopItem,
   cancelArenaMarketListing,
   calculateCardSacrificePayout,
-  craftShopRecipe,
   calculateRoundPower,
   computeElementMultiplier,
   computeEvasionChance,
@@ -25,6 +24,9 @@ const {
   calculateWinCoins,
   calculateWinXp,
   createArenaMarketListing,
+  getArenaMarketPriceGuide,
+  marketListingFee,
+  getMaxListingPrice,
   createArenaCompensation,
   createArenaTradeListing,
   createArenaUpdate,
@@ -44,6 +46,10 @@ const {
   getArenaTradeListings,
   getArenaUpdates,
   getCardAffinity,
+  getArenaNotifications,
+  getArenaTitlesPayload,
+  buyArenaTitle,
+  setActiveArenaTitle,
   getLeaderboard,
   getPlaybackFightState,
   incrementDailyOpponentCount,
@@ -53,6 +59,13 @@ const {
   finalizePlaybackFightRewards,
   fodderEquipmentPiece,
   getFodderRefund,
+  getGearRollPrice,
+  getRerollSubStatCost,
+  computeEquipmentStats,
+  rollEquipmentPiece,
+  insertEquipmentPiece,
+  enhancedMainStatValue,
+  subStatBoostAmount,
   loadCombatSnapshot,
   acceptTradeRequest,
   applyFightEffectUsage,
@@ -76,6 +89,8 @@ const {
   useConsumable,
   xpToNext,
   DAILY_OPPONENT_LIMIT_MIN,
+  EFFECT_DURATION_LIMITS,
+  NPC_REWARD_SCALE,
 } = require("../lib/arena");
 const registerArenaRoutes = require("../routes/arena");
 const registerAdminRoutes = require("../routes/admin");
@@ -84,7 +99,7 @@ const {
 } = require("../lib/arena-fight-verification");
 const { initializeSchema } = require("../lib/db");
 const { readArenaMetrics } = require("../lib/arena-monitoring");
-const { CATALOG_VERSION, SHOP_ITEMS, SHOP_RECIPES, SHOP_TIERS, SUB_STAT_POOL } = require("../lib/arena-constants");
+const { CATALOG_VERSION, CONSUMABLE_TIER_PRICES, SHOP_ITEMS, SHOP_TIERS, SUB_STAT_POOL, TIER_UNLOCK_LEVELS, TITLE_CATALOG, EQUIPMENT_SET_BY_ID, ELEMENT_EFFECTIVENESS, ELEMENTS } = require("../lib/arena-constants");
 
 const {
   buildPassiveRuntime,
@@ -455,17 +470,17 @@ function insertEquippedEquipmentPiece(db, userId, input = {}) {
 }
 
 test("xp formula and reward formulas stay stable", () => {
-  assert.equal(xpToNext(1), 105);
-  assert.equal(xpToNext(10), 2580);
-  assert.equal(calculateWinXp(20, 2, 3), 70);
-  assert.equal(calculateWinCoins(20, 12), 130);
+  assert.equal(xpToNext(1), 98);
+  assert.equal(xpToNext(10), 1354);
+  assert.equal(calculateWinXp(20, 2, 3), 99);
+  assert.equal(calculateWinCoins(20, 12), 131);
 });
 
 test("day 3 balance formulas cap snowballing and reward max-level overflow", () => {
   assert.equal(computeMaxHp({ hp: 100, power: 50, guard: 50, speed: 50 }), 230);
-  assert.equal(calculateWinXp(20, 2, 127), 71);
-  assert.equal(calculateWinXp(70, 3, 127), 198);
-  assert.equal(calculateWinCoins(20, 12, 20), 169);
+  assert.equal(calculateWinXp(20, 2, 127), 117);
+  assert.equal(calculateWinXp(70, 3, 127), 370);
+  assert.equal(calculateWinCoins(20, 12, 20), 170);
   assert.equal(
     computeElementMultiplier(1.3, { effectHit: 100 }, { effectHit: 0 }),
     1.8,
@@ -482,6 +497,56 @@ test("day 3 balance formulas cap snowballing and reward max-level overflow", () 
   assert.equal(profile.xp, 0);
   assert.equal(profile.coins, 133);
   assert.equal(profile.lifetimeCoinsEarned, 148);
+});
+
+test("computeElementMultiplier scales from its baseElementMult argument", () => {
+  // Base 1.3, +2 from attacker effectHit(100), -0 from defender -> clamped to 1.8.
+  assert.equal(computeElementMultiplier(1.3, { effectHit: 25 }, { effectHit: 0 }), 1.8);
+  // A future 1.5x matchup must scale from 1.5, not a hardcoded 1.3.
+  assert.equal(computeElementMultiplier(1.5, { effectHit: 5 }, { effectHit: 0 }), 1.6);
+  assert.equal(computeElementMultiplier(1.5, { effectHit: 0 }, { effectHit: 0 }), 1.5);
+  // Neutral / not-very-effective pass through untouched.
+  assert.equal(computeElementMultiplier(1, { effectHit: 99 }, { effectHit: 0 }), 1);
+  assert.equal(computeElementMultiplier(0.7, { effectHit: 99 }, { effectHit: 0 }), 0.7);
+});
+
+test("the element wheel gives every element 2 strengths and 2 weaknesses, symmetrically", () => {
+  for (const attacker of ELEMENTS) {
+    const row = ELEMENT_EFFECTIVENESS[attacker];
+    const strong = ELEMENTS.filter((d) => row[d] > 1);
+    const weak = ELEMENTS.filter((d) => row[d] < 1);
+    assert.equal(strong.length, 2, `${attacker} should have 2 strengths`);
+    assert.equal(weak.length, 2, `${attacker} should have 2 weaknesses`);
+    assert.equal(row[attacker], 1, `${attacker} vs itself is neutral`);
+    // A > B implies B < A.
+    for (const d of strong) {
+      assert.ok(ELEMENT_EFFECTIVENESS[d][attacker] < 1, `${d} should be weak to ${attacker}`);
+    }
+  }
+});
+
+test("super-effective hits crit at full chance (no element penalty) and effectHit adds accuracy + true damage", () => {
+  const base = {
+    attackerStats: { power: 40, guard: 10, speed: 20, effectHit: 40 },
+    defenderStats: { power: 10, guard: 20, speed: 20, effectHit: 0 },
+    attackerRarity: "C",
+    defenderRarity: "C",
+    bonusCritChancePct: 95, // near-guaranteed crit
+    randomFn: () => 0.5, // above evasion, below crit chance
+  };
+  const neutral = calculateAttackOutcome({ ...base, elementMult: 1 });
+  const superEff = calculateAttackOutcome({ ...base, elementMult: 1.3 });
+  assert.equal(neutral.critical, true);
+  assert.equal(superEff.critical, true, "element advantage no longer halves crit chance");
+
+  // effectHit 40 -> floor(40 * 0.15) = 6 true damage on every hit.
+  assert.equal(neutral.trueDamage, 6);
+
+  // Attacker effectHit shaves the defender's evade chance.
+  const evadeNoAcc = computeEvasionChance({ speed: 0, effectHit: 0 }, { speed: 100 });
+  const evadeWithAcc = computeEvasionChance({ speed: 0, effectHit: 100 }, { speed: 100 });
+  assert.ok(evadeWithAcc < evadeNoAcc);
+  assert.ok(evadeNoAcc - evadeWithAcc > 0.05); // ~0.06 for 100 effectHit
 });
 
 test("round power includes metadata and rarity modifiers", () => {
@@ -771,13 +836,15 @@ test("card affinity is exposed and contributes as card IV bonus", () => {
   assert.equal(profile.selectedCard.affinity.level, 5);
   assert.deepEqual(profile.stats.affinity, {
     hp: 0,
-    power: 2,
-    guard: 1,
-    speed: 1,
-    effectHit: 1,
+    power: 6,
+    guard: 3,
+    speed: 3,
+    effectHit: 3,
   });
-  assert.equal(profile.stats.total.power, 19);
-  assert.equal(profile.stats.total.effectHit, 13);
+  // Affinity is a direct stat bonus now, not routed through the /3 card-IV path
+  // (improve.md §11): power = 12 base + 6 card IV + 6 affinity.
+  assert.equal(profile.stats.total.power, 24);
+  assert.equal(profile.stats.total.effectHit, 15);
 
   const collection = getArenaCollectionPayload(db, "u1");
   assert.equal(collection.cards[0].affinity.level, 5);
@@ -904,7 +971,10 @@ test("Fuse Bomb true damage bypasses reductions and critical scaling", () => {
   assert.equal(normal.critical, true);
   assert.equal(bomb.critical, true);
   assert.equal(bomb.damage, normal.damage);
-  assert.equal(bomb.trueDamage, 25);
+  // effectHit 10 adds a floor(10 * 0.15) = 1 true-damage trickle to every hit;
+  // the bomb's 25 stacks on top of that.
+  assert.equal(normal.trueDamage, 1);
+  assert.equal(bomb.trueDamage - normal.trueDamage, 25);
 });
 
 test("Verdant Core restores actual battle HP after damage", async () => {
@@ -970,15 +1040,15 @@ test("legacy active consumable durations are clamped to tactical maxima", () => 
     doublePassiveTriggerFightsRemaining: 8,
   });
 
-  assert.equal(effects.expBoostWinsRemaining, 50);
+  assert.equal(effects.expBoostWinsRemaining, 40);
   assert.equal(effects.coinBoostWinsRemaining, 40);
   assert.equal(effects.rerollKeepHigherCharges, 4);
   assert.equal(effects.streakShieldCharges, 6);
   assert.equal(effects.upgradeLowestRarityCharges, 6);
   assert.equal(effects.guaranteeSsrPlusCharges, 6);
-  assert.equal(effects.fightStartShieldCharges, 50);
-  assert.equal(effects.evadeBoostFightsRemaining, 50);
-  assert.equal(effects.firstHitTrueDamageCharges, 8);
+  assert.equal(effects.fightStartShieldCharges, 24);
+  assert.equal(effects.evadeBoostFightsRemaining, 24);
+  assert.equal(effects.firstHitTrueDamageCharges, 6);
   assert.equal(effects.higherRarityDamageBonusPctCharges, 8);
   assert.equal(effects.gateKeyCharges, 4);
   assert.equal(effects.doublePassiveTriggerFightsRemaining, 8);
@@ -1266,7 +1336,7 @@ test("60-turn timeout tiebreak compares remaining HP percentage", async () => {
   assert.equal(result.playerWon, true);
 });
 
-test("skill points are retroactive and bank beyond the initial tree", () => {
+test("skill points are retroactive and scale at half the player level", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 1 });
   assert.equal(getArenaSkillTreePayload(db, "u1").earnedPoints, 0);
@@ -1275,17 +1345,27 @@ test("skill points are retroactive and bank beyond the initial tree", () => {
   assert.equal(getArenaSkillTreePayload(db, "u1").earnedPoints, 1);
 
   db.prepare("UPDATE arena_profiles SET level = 20 WHERE userId = ?").run("u1");
-  assert.equal(getArenaSkillTreePayload(db, "u1").earnedPoints, 19);
+  assert.equal(getArenaSkillTreePayload(db, "u1").earnedPoints, 10);
 
+  // floor(49 * 0.5) = 24, no milestones yet.
+  db.prepare("UPDATE arena_profiles SET level = 49 WHERE userId = ?").run("u1");
+  assert.equal(getArenaSkillTreePayload(db, "u1").earnedPoints, 24);
+
+  // Hitting level 50 hands out floor(50 * 0.5) = 25 plus the first +1 milestone.
   db.prepare("UPDATE arena_profiles SET level = 50 WHERE userId = ?").run("u1");
   const levelFifty = getArenaSkillTreePayload(db, "u1");
-  assert.equal(levelFifty.earnedPoints, 49);
-  assert.equal(levelFifty.availablePoints, 49);
+  assert.equal(levelFifty.earnedPoints, 26);
+  assert.equal(levelFifty.availablePoints, 26);
+
+  // At the cap: 35 from the drip + a milestone point each at 50/60/70 = 38,
+  // still short of the 45 needed to light every node.
+  db.prepare("UPDATE arena_profiles SET level = 70 WHERE userId = ?").run("u1");
+  assert.equal(getArenaSkillTreePayload(db, "u1").earnedPoints, 38);
 });
 
 test("skill activation enforces points, prerequisites, duplicates, and allows branch mixing", () => {
   const db = createTestDb();
-  insertProfile(db, { userId: "u1", level: 4 });
+  insertProfile(db, { userId: "u1", level: 6 }); // floor(6 * 0.5) = 3 points
 
   assert.throws(
     () => activateArenaSkill(db, "u1", "offense_might_2"),
@@ -1316,7 +1396,7 @@ test("skill activation enforces points, prerequisites, duplicates, and allows br
 
 test("skill stats and passives are derived into arena profiles", () => {
   const db = createTestDb();
-  insertProfile(db, { userId: "u1", level: 5 });
+  insertProfile(db, { userId: "u1", level: 8 }); // floor(8 * 0.5) = 4 points
 
   activateArenaSkill(db, "u1", "offense_might_1");
   activateArenaSkill(db, "u1", "defense_vitality_1");
@@ -1344,7 +1424,7 @@ test("skill stats and passives are derived into arena profiles", () => {
   );
 });
 
-test("skill reset charges 100 coins per level and refunds allocations", () => {
+test("skill reset charges 300 coins per level and refunds allocations", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 10, coins: 999 });
   activateArenaSkill(db, "u1", "offense_might_1");
@@ -1356,17 +1436,116 @@ test("skill reset charges 100 coins per level and refunds allocations", () => {
       error.code === "ARENA_SKILL_RESET_COINS",
   );
 
-  db.prepare("UPDATE arena_profiles SET coins = 1500 WHERE userId = ?").run("u1");
+  db.prepare("UPDATE arena_profiles SET coins = 3500 WHERE userId = ?").run("u1");
   const reset = resetArenaSkills(db, "u1");
   assert.equal(reset.spentPoints, 0);
-  assert.equal(reset.availablePoints, 9);
-  assert.equal(reset.coins, 500);
+  assert.equal(reset.availablePoints, 5); // floor(10 * 0.5)
+  assert.equal(reset.coins, 500); // 3500 - 10 * 300
 
   assert.throws(
     () => resetArenaSkills(db, "u1"),
     (error) =>
       error instanceof ArenaHttpError && error.code === "ARENA_SKILL_RESET_EMPTY",
   );
+});
+
+test("skill reset is on a 3-day cooldown", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 100000 });
+  activateArenaSkill(db, "u1", "offense_might_1");
+
+  const first = resetArenaSkills(db, "u1");
+  assert.equal(first.spentPoints, 0);
+  assert.ok(first.resetOnCooldown);
+  assert.ok(Date.parse(first.resetCooldownEndsAt) > Date.now());
+
+  // A second reset within the window is blocked, with retry info.
+  activateArenaSkill(db, "u1", "offense_might_1");
+  assert.throws(
+    () => resetArenaSkills(db, "u1"),
+    (error) =>
+      error instanceof ArenaHttpError &&
+      error.code === "ARENA_SKILL_RESET_COOLDOWN" &&
+      error.details.retryAfterMs > 0 &&
+      typeof error.details.cooldownEndsAt === "string",
+  );
+
+  // Once the cooldown has elapsed, resetting works again.
+  db.prepare(
+    "UPDATE arena_profiles SET lastSkillResetAt = ? WHERE userId = ?",
+  ).run(new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(), "u1");
+  const later = resetArenaSkills(db, "u1");
+  assert.equal(later.spentPoints, 0);
+});
+
+test("buying a title spends coins, marks it owned, and auto-activates the first one", () => {
+  const db = createTestDb();
+  const first = TITLE_CATALOG[0];
+  const second = TITLE_CATALOG[1];
+  insertProfile(db, { userId: "u1", coins: first.price + second.price + 100 });
+
+  const afterFirst = buyArenaTitle(db, "u1", first.id);
+  assert.equal(afterFirst.coins, second.price + 100);
+  assert.equal(afterFirst.activeTitleId, first.id, "first purchase auto-activates");
+  const firstRow = afterFirst.titles.find((t) => t.id === first.id);
+  assert.equal(firstRow.owned, true);
+  assert.equal(firstRow.active, true);
+
+  // Profile payload + leaderboard row now carry the resolved title.
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.deepEqual(profile.title, { id: first.id, name: first.name });
+  const board = getLeaderboard(db, "level");
+  assert.deepEqual(board.entries.find((e) => e.user.id === "u1").title, {
+    id: first.id,
+    name: first.name,
+  });
+
+  // A second purchase does NOT change the active title.
+  const afterSecond = buyArenaTitle(db, "u1", second.id);
+  assert.equal(afterSecond.coins, 100);
+  assert.equal(afterSecond.activeTitleId, first.id);
+  assert.equal(afterSecond.titles.find((t) => t.id === second.id).owned, true);
+});
+
+test("title purchase rejects duplicates, unknown ids, and insufficient coins", () => {
+  const db = createTestDb();
+  const cheap = TITLE_CATALOG[0];
+  insertProfile(db, { userId: "u1", coins: cheap.price });
+
+  assert.throws(
+    () => buyArenaTitle(db, "u1", "not-a-title"),
+    (e) => e instanceof ArenaHttpError && e.code === "ARENA_TITLE_NOT_FOUND",
+  );
+
+  buyArenaTitle(db, "u1", cheap.id);
+  assert.throws(
+    () => buyArenaTitle(db, "u1", cheap.id),
+    (e) => e instanceof ArenaHttpError && e.code === "ARENA_TITLE_OWNED",
+  );
+
+  assert.throws(
+    () => buyArenaTitle(db, "u1", TITLE_CATALOG[1].id),
+    (e) => e instanceof ArenaHttpError && e.code === "ARENA_NOT_ENOUGH_COINS",
+  );
+});
+
+test("a title can only be activated once owned, and can be cleared", () => {
+  const db = createTestDb();
+  const title = TITLE_CATALOG[0];
+  insertProfile(db, { userId: "u1", coins: title.price });
+
+  assert.throws(
+    () => setActiveArenaTitle(db, "u1", title.id),
+    (e) => e instanceof ArenaHttpError && e.code === "ARENA_TITLE_NOT_OWNED",
+  );
+
+  buyArenaTitle(db, "u1", title.id);
+  const cleared = setActiveArenaTitle(db, "u1", "");
+  assert.equal(cleared.activeTitleId, null);
+  assert.equal(getArenaProfilePayload(db, "u1").title, null);
+
+  const reactivated = setActiveArenaTitle(db, "u1", title.id);
+  assert.equal(reactivated.activeTitleId, title.id);
 });
 
 test("fight loss grants consolation XP and 0 coins", async () => {
@@ -1386,9 +1565,9 @@ test("fight loss grants consolation XP and 0 coins", async () => {
     effectHit: 1,
     effects: makeEffects({
       expBoostPct: 20,
-      expBoostWinsRemaining: 50,
+      expBoostWinsRemaining: 30,
       coinBoostPct: 20,
-      coinBoostWinsRemaining: 50,
+      coinBoostWinsRemaining: 30,
     }),
     selectedCard: makeCard(1, "C"),
   });
@@ -1415,13 +1594,18 @@ test("fight loss grants consolation XP and 0 coins", async () => {
   assert.ok(response.battle);
   assert.equal(
     response.rewards.xp,
-    Math.floor(calculateLossXp(response.opponent.level, 1, 4) * 1.2),
+    // exp boost (x1.2) then the NPC reward scale, each floored like the code.
+    Math.floor(
+      Math.floor(
+        calculateLossXp(response.opponent.level, response.rewards.xpRoundsWon, 4) * 1.2,
+      ) * NPC_REWARD_SCALE,
+    ),
   );
   assert.ok(response.rewards.xp > 1);
   assert.equal(response.rewards.coins, 0);
   assert.equal(response.profile.losses, 1);
-  assert.equal(response.profile.effects.expBoostWinsRemaining, 49);
-  assert.equal(response.profile.effects.coinBoostWinsRemaining, 39);
+  assert.equal(response.profile.effects.expBoostWinsRemaining, 29);
+  assert.equal(response.profile.effects.coinBoostWinsRemaining, 29);
   const row = db
     .prepare("SELECT dailyOpponentCount, lastOpponentDate FROM arena_profiles WHERE userId = ?")
     .get("u1");
@@ -1819,13 +2003,22 @@ test("playback fight snapshot applies sigil and affinity as card IV", async () =
 
   const fight = await startPlaybackFight(db, "u1");
 
-  assert.equal(fight.opponent.stats.power, 52);
+  // Sigil rides the card-IV path (base IV + item, then /3); affinity is now a
+  // direct stat bonus (improve.md §11), so power = 40 base + 11 card + 6 affinity.
+  assert.equal(fight.opponent.stats.power, 57);
   assert.deepEqual(fight.opponent.statBreakdown.card, {
     hp: 16,
-    power: 12,
-    guard: 11,
-    speed: 11,
-    effectHit: 11,
+    power: 11,
+    guard: 10,
+    speed: 10,
+    effectHit: 10,
+  });
+  assert.deepEqual(fight.opponent.statBreakdown.affinity, {
+    hp: 0,
+    power: 6,
+    guard: 3,
+    speed: 3,
+    effectHit: 3,
   });
   assert.equal(fight.opponent.selectedCard.cardItemStats.power, 3);
   assert.equal(fight.opponent.selectedCard.affinity.level, 5);
@@ -1965,12 +2158,16 @@ test("defender snapshot reflects changes made before starting a fight", async ()
   assert.equal(fight.opponent.effects.fightStartShieldAmount, 25);
 });
 
-test("defender consumable effects are not consumed by defensive fights", async () => {
+test("defender consumable charges are spent when they defend a fight", async () => {
   const db = createTestDb();
   insertProfile(db, {
     userId: "u1",
-    level: 5,
-    selectedCard: makeCard(1, "R"),
+    level: 40,
+    power: 400,
+    guard: 400,
+    speed: 400,
+    effectHit: 400,
+    selectedCard: makeCard(1, "UR"),
   });
   insertProfile(db, {
     userId: "u2",
@@ -1988,10 +2185,142 @@ test("defender consumable effects are not consumed by defensive fights", async (
     fight = advancePlaybackFightTurn(db, "u1");
   }
 
+  // The fight-start shield always fires for the defender, so its charge is spent
+  // (amount stays until the last charge is gone). u2 is overwhelmed, so the
+  // death-save charge is spent too.
   const defender = getArenaProfilePayload(db, "u2");
-  assert.equal(defender.effects.fightStartShieldCharges, 4);
+  assert.equal(defender.effects.fightStartShieldCharges, 3);
   assert.equal(defender.effects.fightStartShieldAmount, 50);
-  assert.equal(defender.effects.deathSaveCharges, 1);
+  assert.equal(defender.effects.deathSaveCharges, 0);
+});
+
+test("direct fights also spend the defender's consumable charges", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 40,
+    power: 400,
+    guard: 400,
+    speed: 400,
+    effectHit: 400,
+    selectedCard: makeCard(1, "UR"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 5,
+    effects: makeEffects({
+      fightStartShieldCharges: 2,
+      fightStartShieldAmount: 40,
+      deathSaveCharges: 1,
+    }),
+    selectedCard: makeCard(2, "R"),
+  });
+
+  const result = await runFight(db, "u1");
+  assert.equal(result.opponent.userId, "u2");
+  // Response snapshot is built pre-fight, so it still shows the full loadout...
+  assert.equal(result.opponent.effects.fightStartShieldCharges, 2);
+
+  // ...but the stored defender profile has paid for the fight.
+  const defender = getArenaProfilePayload(db, "u2");
+  assert.equal(defender.effects.fightStartShieldCharges, 1);
+  assert.equal(defender.effects.deathSaveCharges, 0);
+});
+
+test("defending a fight with no active consumables leaves the defender's effects untouched", async () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 5, selectedCard: makeCard(1, "R") });
+  insertProfile(db, { userId: "u2", level: 5, selectedCard: makeCard(2, "R") });
+
+  const before = getArenaProfilePayload(db, "u2").effects;
+  await runFight(db, "u1");
+  const after = getArenaProfilePayload(db, "u2").effects;
+
+  assert.deepEqual(after, before);
+});
+
+test("a PvP defender earns a coin stipend, a defensive-loss record, and an inbox notice", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 40,
+    power: 400, guard: 400, speed: 400, effectHit: 400,
+    selectedCard: makeCard(1, "UR"),
+  });
+  insertProfile(db, { userId: "u2", level: 10, coins: 100, selectedCard: makeCard(2, "R") });
+
+  await runFight(db, "u1");
+
+  const defender = getArenaProfilePayload(db, "u2");
+  const stipend = 10 + 10 * 2; // base + level*perLevel, defender lost so no x1.5
+  assert.equal(defender.coins, 100 + stipend);
+  assert.equal(defender.lifetimeCoinsEarned, stipend);
+  assert.equal(defender.defensiveLosses, 1);
+  assert.equal(defender.defensiveWins, 0);
+
+  const inbox = getArenaNotifications(db, "u2");
+  const notice = inbox.notifications.find((n) => n.type === "defense_reward");
+  assert.ok(notice, "defender should receive a defense_reward notification");
+  assert.equal(JSON.parse(notice.metadata).coins, stipend);
+  assert.equal(JSON.parse(notice.metadata).result, "loss");
+  assert.equal(JSON.parse(notice.metadata).attackerName, "player1");
+});
+
+test("a defender who wins the defence gets the boosted stipend and a defensive win", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    power: 1, guard: 1, speed: 1, effectHit: 1,
+    selectedCard: makeCard(1, "C"),
+  });
+  insertProfile(db, {
+    userId: "u2",
+    level: 20,
+    power: 400, guard: 400, speed: 400, effectHit: 400,
+    selectedCard: makeCard(2, "UR"),
+  });
+
+  const result = await runFight(db, "u1");
+  assert.equal(result.result, "loss"); // attacker u1 loses -> defender u2 wins
+
+  const defender = getArenaProfilePayload(db, "u2");
+  assert.equal(defender.defensiveWins, 1);
+  assert.equal(defender.defensiveLosses, 0);
+  assert.equal(defender.coins, Math.floor((10 + 20 * 2) * 1.5));
+});
+
+test("NPC fights pay the reduced reward rate", async () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    power: 400, guard: 400, speed: 400, effectHit: 400,
+    winStreak: 0,
+    // C-rarity card => rarityCoinReward is 0, so win coins are fully determined.
+    selectedCard: makeCard(1, "C"),
+  });
+
+  const result = await runFight(db, "u1");
+  assert.equal(result.opponent.isNpc, true);
+  assert.equal(result.result, "win");
+
+  const unscaled = calculateWinCoins(result.opponent.level, 0, 0);
+  assert.equal(result.rewards.coins, Math.floor(unscaled * NPC_REWARD_SCALE));
+  assert.ok(result.rewards.coins < unscaled, "NPC payout is below the un-scaled base");
+});
+
+test("leaderboard rows expose defensive win/loss counts", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 10, selectedCard: makeCard(1, "R") });
+  db.prepare(
+    "UPDATE arena_profiles SET defensiveWins = 3, defensiveLosses = 5 WHERE userId = ?",
+  ).run("u1");
+
+  const board = getLeaderboard(db, "level");
+  const row = board.entries.find((e) => e.user.id === "u1");
+  assert.equal(row.defensiveWins, 3);
+  assert.equal(row.defensiveLosses, 5);
 });
 
 test("fight cooldown blocks rapid repeat fights", async () => {
@@ -2423,7 +2752,7 @@ test("scrap payout is server-derived and identical for every screen", () => {
   });
 
   const bought = buyShopItem(db, "u1", "weapon_roll");
-  const expected = getFodderRefund("weapon");
+  const expected = getFodderRefund("weapon", 0, 10); // fresh roll, level-10 buyer
 
   // Shop reward modal path: the buy response carries the authoritative number.
   assert.equal(bought.rolledPiece.fodderRefund, expected);
@@ -2441,6 +2770,61 @@ test("scrap payout is server-derived and identical for every screen", () => {
 
   const after = getArenaShopPayload(db, "u1");
   assert.equal(after.profile.coins, coinsBefore + expected);
+});
+
+test("gear roll price and reroll cost scale with the buyer's level", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 5, coins: 100000, selectedCard: makeCard(1, "C") });
+
+  // Shop payload advertises the level-scaled price...
+  let shop = getArenaShopPayload(db, "u1");
+  let weaponRoll = shop.equipment.find((i) => i.id === "weapon_roll");
+  assert.equal(weaponRoll.price, getGearRollPrice(5));
+  assert.equal(shop.profile.gearRollPrice, getGearRollPrice(5));
+  assert.equal(shop.profile.rerollSubStatCost, getRerollSubStatCost(5));
+
+  // ...and buyShopItem actually charges it.
+  let coinsBefore = getArenaProfilePayload(db, "u1").coins;
+  buyShopItem(db, "u1", "weapon_roll");
+  assert.equal(getArenaProfilePayload(db, "u1").coins, coinsBefore - getGearRollPrice(5));
+
+  // Level up -> the price goes up.
+  db.prepare("UPDATE arena_profiles SET level = 60 WHERE userId = ?").run("u1");
+  shop = getArenaShopPayload(db, "u1");
+  weaponRoll = shop.equipment.find((i) => i.id === "weapon_roll");
+  assert.equal(weaponRoll.price, getGearRollPrice(60));
+  assert.ok(getGearRollPrice(60) > getGearRollPrice(5));
+
+  coinsBefore = getArenaProfilePayload(db, "u1").coins;
+  buyShopItem(db, "u1", "weapon_roll");
+  assert.equal(getArenaProfilePayload(db, "u1").coins, coinsBefore - getGearRollPrice(60));
+});
+
+test("fodder refund scales with the coins sunk into enhancing a piece", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 30, coins: 2000000, selectedCard: makeCard(1, "C") });
+
+  const target = buyShopItem(db, "u1", "weapon_roll");
+  const freshRefund = getFodderRefund("weapon", 0, 30);
+
+  // Enhance the target a few times, feeding it fresh rolls as fodder.
+  for (let i = 0; i < 4; i += 1) {
+    const fodder = buyShopItem(db, "u1", "weapon_roll");
+    enhanceEquipmentPiece(db, "u1", target.rolledPieceId, fodder.rolledPieceId);
+  }
+
+  const enhanced = getArenaProfilePayload(db, "u1").equipmentPieces.find(
+    (p) => p.id === target.rolledPieceId,
+  );
+  assert.equal(enhanced.enhancementLevel, 4);
+  assert.ok(
+    enhanced.fodderRefund > freshRefund,
+    "an enhanced piece is worth more scrapped than a fresh roll",
+  );
+  assert.equal(enhanced.fodderRefund, getFodderRefund("weapon", 4, 30));
+
+  const scrapped = fodderEquipmentPiece(db, "u1", target.rolledPieceId);
+  assert.equal(scrapped.coinsGained, getFodderRefund("weapon", 4, 30));
 });
 
 test("owned rolled gear can be re-equipped from inventory", () => {
@@ -2507,9 +2891,11 @@ test("enhancing equipment consumes coins and a fodder piece for +1 main stat", (
   const payload = getArenaShopPayload(db, "u1");
   const upgraded = payload.profile.equipmentPieces.find((piece) => piece.id === target.rolledPieceId);
   assert.equal(upgraded.enhancementLevel, 1);
-  assert.equal(upgraded.enhancedMainStatValue, upgraded.mainStatValue + 1);
+  // Main stat now scales by a % of its rolled value per level (10% at +1).
+  assert.equal(upgraded.enhancedMainStatValue, Math.round(upgraded.mainStatValue * 1.1));
   assert.equal(payload.profile.equipmentPieces.some((piece) => piece.id === fodder.rolledPieceId), false);
-  assert.equal(payload.profile.coins, 650);
+  // 3000 - two level-20 gear rolls - the enhance cost (unchanged formula)
+  assert.equal(payload.profile.coins, 3000 - 2 * getGearRollPrice(20) - 350);
 });
 
 function makeLoadoutProtectedWeaponFodder(db) {
@@ -2583,17 +2969,136 @@ test("rerolling one equipment substat consumes coins and a fodder piece", () => 
   const result = rerollEquipmentSubStat(db, "u1", target.rolledPieceId, 0, fodder.rolledPieceId);
   assert.equal(result.pieceId, target.rolledPieceId);
   assert.equal(result.subStatIndex, 0);
-  assert.equal(result.coinCost, 500);
-  assert.equal(result.newSubStat.type, result.oldSubStat.type === "crit" ? "critRate" : result.oldSubStat.type);
+  assert.equal(result.coinCost, getRerollSubStatCost(20));
+  assert.equal(result.newSubStat.type, result.oldSubStat.type);
   const range = SUB_STAT_POOL.ranges[result.newSubStat.type];
   assert.ok(result.newSubStat.value >= range[0]);
   assert.ok(result.newSubStat.value <= range[1]);
 
   const payload = getArenaShopPayload(db, "u1");
   const rerolled = payload.profile.equipmentPieces.find((piece) => piece.id === target.rolledPieceId);
-  assert.deepEqual(rerolled.subStats[0], result.newSubStat);
+  assert.equal(rerolled.subStats[0].type, result.newSubStat.type);
+  assert.equal(rerolled.subStats[0].value, result.newSubStat.value);
+  assert.equal(rerolled.subStats[0].bonus, 0); // a rerolled line loses its enhancement boost
   assert.equal(payload.profile.equipmentPieces.some((piece) => piece.id === fodder.rolledPieceId), false);
-  assert.equal(payload.profile.coins, 500);
+  // 3000 - two level-20 gear rolls - the level-20 reroll cost
+  assert.equal(payload.profile.coins, 3000 - 2 * getGearRollPrice(20) - getRerollSubStatCost(20));
+});
+
+test("each slot owns a distinct main stat its own sub-stats can never roll", () => {
+  const bySlot = { weapon: "dmgPct", armor: "defendPct" };
+  for (const [slot, mainType] of Object.entries(bySlot)) {
+    for (let i = 0; i < 30; i += 1) {
+      const piece = rollEquipmentPiece(slot);
+      assert.equal(piece.mainStatType, mainType, `${slot} main stat`);
+      assert.ok(piece.setId, `${slot} rolled a set`);
+      assert.equal(piece.subStats.length, SUB_STAT_POOL.count);
+      assert.ok(
+        piece.subStats.every((s) => s.type !== mainType),
+        `${slot} sub-stats must not include ${mainType}`,
+      );
+    }
+  }
+  // Charm rolls one of critRate / critDmg and excludes the chosen one from subs.
+  for (let i = 0; i < 30; i += 1) {
+    const charm = rollEquipmentPiece("charm");
+    assert.ok(["critRate", "critDmg"].includes(charm.mainStatType));
+    assert.ok(charm.subStats.every((s) => s.type !== charm.mainStatType));
+  }
+});
+
+test("enhancement scales the main stat by a % of its rolled value and boosts a sub-stat every 3 levels", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 5_000_000, selectedCard: makeCard(1, "C") });
+  const target = buyShopItem(db, "u1", "weapon_roll");
+  const rolledMain = target.rolledPiece.mainStatValue;
+
+  for (let level = 1; level <= 6; level += 1) {
+    const fodder = buyShopItem(db, "u1", "weapon_roll");
+    const res = enhanceEquipmentPiece(db, "u1", target.rolledPieceId, fodder.rolledPieceId);
+    assert.equal(res.enhancementLevel, level);
+    if (level % 3 === 0) {
+      assert.ok(res.subStatBoost, `+${level} should grant a sub-stat boost`);
+      assert.ok(res.subStatBoost.amount > 0);
+    } else {
+      assert.equal(res.subStatBoost, null);
+    }
+  }
+
+  const piece = getArenaProfilePayload(db, "u1").equipmentPieces.find(
+    (p) => p.id === target.rolledPieceId,
+  );
+  // +6 main = round(rolled * (1 + 6 * 0.10)) = round(rolled * 1.6)
+  assert.equal(piece.enhancedMainStatValue, Math.round(rolledMain * 1.6));
+  assert.equal(piece.enhancedMainStatValue, enhancedMainStatValue(rolledMain, 6));
+  // Two boost ticks (at +3 and +6) landed on some sub-stat line(s).
+  const totalBonus = piece.subStats.reduce((sum, s) => sum + (s.bonus || 0), 0);
+  assert.ok(totalBonus > 0);
+  const boosted = piece.subStats.find((s) => (s.bonus || 0) > 0);
+  assert.equal(boosted.effectiveValue, boosted.value + boosted.bonus);
+});
+
+test("a rerollKeepHigher charge protects the current sub-stat value and is consumed", () => {
+  const db = createTestDb();
+  insertProfile(db, {
+    userId: "u1",
+    level: 20,
+    coins: 5_000_000,
+    selectedCard: makeCard(1, "C"),
+    effects: makeEffects({ rerollKeepHigherCharges: 2 }),
+  });
+  const target = buyShopItem(db, "u1", "weapon_roll");
+  // Force a known-high current value so "keep higher" is observable.
+  db.prepare(
+    "UPDATE arena_equipment_pieces SET subStats = ? WHERE id = ?",
+  ).run(JSON.stringify([{ type: "hp", value: 50 }, { type: "power", value: 3 }, { type: "speed", value: 3 }, { type: "effectHit", value: 3 }]), target.rolledPieceId);
+
+  const fodder = buyShopItem(db, "u1", "weapon_roll");
+  const res = rerollEquipmentSubStat(db, "u1", target.rolledPieceId, 0, fodder.rolledPieceId);
+
+  assert.equal(res.keptHigher, true);
+  // hp line range is [30,50], so keeping-higher can never drop below the rolled max of 50.
+  assert.ok(res.newSubStat.value >= res.rolledValue);
+  assert.equal(res.newSubStat.value, Math.max(50, res.rolledValue));
+  assert.equal(res.keepHigherChargesRemaining, 1);
+  assert.equal(
+    getArenaProfilePayload(db, "u1").effects.rerollKeepHigherCharges,
+    1,
+  );
+});
+
+test("equipment set bonuses apply at 2 and 3 matching pieces", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, selectedCard: makeCard(1, "C") });
+
+  const equipSet = (slot, setId) => {
+    const id = insertEquipmentPiece(db, "u1", {
+      slot,
+      mainStatType: slot === "weapon" ? "dmgPct" : slot === "armor" ? "defendPct" : "critRate",
+      mainStatValue: 10,
+      subStats: [],
+      subStatBonuses: [0, 0, 0, 0],
+      setId,
+    });
+    db.prepare("UPDATE arena_equipment_pieces SET equipped = 1 WHERE id = ?").run(id);
+    return id;
+  };
+
+  equipSet("weapon", "berserker");
+  equipSet("armor", "berserker");
+  let stats = computeEquipmentStats(db, "u1");
+  const bers = EQUIPMENT_SET_BY_ID.get("berserker");
+  assert.deepEqual(stats.sets, [{ id: "berserker", name: "Berserker", count: 2, tier: 2 }]);
+  // 2-piece: +6 dmgPct on top of the weapon main (10).
+  assert.equal(stats.pct.dmgPct, 10 + bers.bonus2.dmgPct);
+
+  equipSet("charm", "berserker");
+  stats = computeEquipmentStats(db, "u1");
+  assert.deepEqual(stats.sets, [{ id: "berserker", name: "Berserker", count: 3, tier: 3 }]);
+  // 3-piece replaces 2-piece: dmgPct = weapon main (10) + bonus3.dmgPct;
+  // critChancePct = charm main (10) + bonus3.critChancePct.
+  assert.equal(stats.pct.dmgPct, 10 + bers.bonus3.dmgPct);
+  assert.equal(stats.pct.critChancePct, 10 + bers.bonus3.critChancePct);
 });
 
 test("profile total HP includes equipment hpPct display bonus", () => {
@@ -2628,7 +3133,7 @@ test("using consumable applies effect and consumes quantity", () => {
     selectedCard: makeCard(1, "C"),
   });
 
-  craftShopRecipe(db, "u1", "rookie_cons_1");
+  buyShopItem(db, "u1", "red_tonic");
 
   const useResult = useConsumable(db, "u1", "red_tonic");
   const effect = getConsumableEffect("red_tonic");
@@ -2644,7 +3149,7 @@ test("using consumable applies effect and consumes quantity", () => {
 test("Berserker's Brew applies +20% damage boost", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "rookie_cons_2");
+  buyShopItem(db, "u1", "green_draft");
   const effect = getConsumableEffect("green_draft");
   const result = useConsumable(db, "u1", "green_draft");
   assert.equal(result.effects.damageBoostPct, effect.pct);
@@ -2654,7 +3159,7 @@ test("Berserker's Brew applies +20% damage boost", () => {
 test("Scout's Whistle applies +12% speed boost", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "rookie_cons_3");
+  buyShopItem(db, "u1", "amber_draft");
   const effect = getConsumableEffect("amber_draft");
   const result = useConsumable(db, "u1", "amber_draft");
   assert.equal(result.effects.speedBoostPct, effect.pct);
@@ -2664,7 +3169,7 @@ test("Scout's Whistle applies +12% speed boost", () => {
 test("Phoenix Feather applies death save charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "silver_cons_1");
+  buyShopItem(db, "u1", "sun_elixir");
   const effect = getConsumableEffect("sun_elixir");
   const result = useConsumable(db, "u1", "sun_elixir");
   assert.equal(result.effects.deathSaveCharges, effect.charges);
@@ -2673,7 +3178,7 @@ test("Phoenix Feather applies death save charges", () => {
 test("Titan Draught applies +15% all stats", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "silver_cons_2");
+  buyShopItem(db, "u1", "star_tonic");
   const effect = getConsumableEffect("star_tonic");
   const result = useConsumable(db, "u1", "star_tonic");
   assert.equal(result.effects.statSteroidPct, effect.pct);
@@ -2683,7 +3188,7 @@ test("Titan Draught applies +15% all stats", () => {
 test("Seeker Lens applies +20% crit chance", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 30, coins: 100000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "gold_cons_1");
+  buyShopItem(db, "u1", "seeker_lens");
   const effect = getConsumableEffect("seeker_lens");
   const result = useConsumable(db, "u1", "seeker_lens");
   assert.equal(result.effects.critChanceBoostPct, effect.pct);
@@ -2693,7 +3198,7 @@ test("Seeker Lens applies +20% crit chance", () => {
 test("Oath Ribbon applies +15% guard boost", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 30, coins: 100000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "gold_cons_2");
+  buyShopItem(db, "u1", "oath_ribbon");
   const effect = getConsumableEffect("oath_ribbon");
   const result = useConsumable(db, "u1", "oath_ribbon");
   assert.equal(result.effects.guardBoostPct, effect.pct);
@@ -2703,7 +3208,7 @@ test("Oath Ribbon applies +15% guard boost", () => {
 test("Arcane Mirror applies match rarity charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 30, coins: 100000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "gold_cons_3");
+  buyShopItem(db, "u1", "treasure_cache");
   const effect = getConsumableEffect("treasure_cache");
   const result = useConsumable(db, "u1", "treasure_cache");
   assert.equal(result.effects.matchRarityCharges, effect.charges);
@@ -2712,7 +3217,7 @@ test("Arcane Mirror applies match rarity charges", () => {
 test("Prism Draught applies first attack double charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 100000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "mythic_cons_1");
+  buyShopItem(db, "u1", "prism_draught");
   const effect = getConsumableEffect("prism_draught");
   const result = useConsumable(db, "u1", "prism_draught");
   assert.equal(result.effects.firstAttackDoubleCharges, effect.charges);
@@ -2721,7 +3226,7 @@ test("Prism Draught applies first attack double charges", () => {
 test("Vampiric Fang applies 20% lifesteal", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 100000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "mythic_cons_3");
+  buyShopItem(db, "u1", "gate_key");
   const effect = getConsumableEffect("gate_key");
   const result = useConsumable(db, "u1", "gate_key");
   assert.equal(result.effects.vampiricHealPct, effect.pct);
@@ -2814,7 +3319,7 @@ test("Apex Sigil can only be used once per card", () => {
 test("Fuse Bomb deals +100 true damage", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "bronze_cons_3");
+  buyShopItem(db, "u1", "fuse_bomb");
   const effect = getConsumableEffect("fuse_bomb");
   const result = useConsumable(db, "u1", "fuse_bomb");
   assert.equal(result.effects.firstHitTrueDamageValue, effect.value);
@@ -2824,7 +3329,7 @@ test("Fuse Bomb deals +100 true damage", () => {
 test("Lantern Oil applies +50% damage vs higher rarity", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "silver_cons_3");
+  buyShopItem(db, "u1", "lantern_oil");
   const effect = getConsumableEffect("lantern_oil");
   const result = useConsumable(db, "u1", "lantern_oil");
   assert.equal(result.effects.higherRarityDamageBonusPct, effect.pct);
@@ -2969,6 +3474,33 @@ test("combined consumable damage multipliers are capped", async () => {
   assert.ok(baselineHit);
   assert.ok(boostedHit);
   assert.ok(boostedHit.damage <= baselineHit.damage * 5);
+});
+
+test("first_attack_double fires on the player's first hit even when they act second (improve.md §11)", async () => {
+  const db = createTestDb();
+  // Player is far slower, so the opponent always takes turn 1 — the old
+  // `turnCounter === 1` gate would silently skip the double here.
+  const slowPlayer = { hp: 4000, power: 60, guard: 40, speed: 1, effectHit: 0 };
+  const fastOpponent = { hp: 4000, power: 10, guard: 10, speed: 100, effectHit: 0 };
+
+  const baseline = await simulateFight(db, {
+    player: makeCombatSnapshot({ id: 1, stats: slowPlayer }),
+    opponent: makeCombatSnapshot({ id: 2, stats: fastOpponent }),
+    randomFn: () => 0.99,
+  });
+  const boosted = await simulateFight(db, {
+    player: makeCombatSnapshot({ id: 1, stats: slowPlayer }),
+    opponent: makeCombatSnapshot({ id: 2, stats: fastOpponent }),
+    playerEffects: { firstAttackDoubleCharges: 1 },
+    randomFn: () => 0.99,
+  });
+
+  assert.equal(baseline.effectUsage.usedFirstAttackDouble, false);
+  assert.equal(boosted.effectUsage.usedFirstAttackDouble, true);
+
+  const firstPlayerHit = (fight) =>
+    fight.rounds.find((round) => round.attacker === "player" && !round.avoided);
+  assert.equal(firstPlayerHit(boosted).damage, firstPlayerHit(baseline).damage * 2);
 });
 
 test("max-level all-consumable burst still respects the damage cap", async () => {
@@ -3292,6 +3824,8 @@ test("listing moves a card into escrow and clears it when selected", () => {
   const card = makeCard(1, "R");
   insertProfile(db, {
     userId: "u1",
+    level: 15,
+    coins: 100000,
     selectedCard: card,
   });
   insertCollectionCardFixture(db, "u1", card);
@@ -3315,7 +3849,7 @@ test("listing moves a card into escrow and clears it when selected", () => {
 
 test("listing validates price, active fights, and seller listing limits", () => {
   const db = createTestDb();
-  insertProfile(db, { userId: "u1" });
+  insertProfile(db, { userId: "u1", level: 15, coins: 100000 });
   const card = makeCard(1, "R");
   insertCollectionCardFixture(db, "u1", card);
 
@@ -3376,8 +3910,8 @@ test("listing validates price, active fights, and seller listing limits", () => 
 test("cancelling restores the same card without reselecting it", () => {
   const db = createTestDb();
   const card = makeCard(1, "SSR");
-  insertProfile(db, { userId: "u1", selectedCard: card });
-  insertProfile(db, { userId: "u2" });
+  insertProfile(db, { userId: "u1", level: 15, coins: 100000, selectedCard: card });
+  insertProfile(db, { userId: "u2", level: 15 });
   insertCollectionCardFixture(db, "u1", card);
   const created = createArenaMarketListing(db, "u1", {
     cardInstanceId: card.cardInstanceId,
@@ -3407,16 +3941,19 @@ test("buying transfers ownership and coins without inflating lifetime earnings",
   const card = makeCard(1, "UR");
   insertProfile(db, {
     userId: "u1",
+    level: 15,
     coins: 100,
     lifetimeCoinsEarned: 777,
   });
   insertProfile(db, {
     userId: "u2",
+    level: 15,
     coins: 1000,
     lifetimeCoinsEarned: 888,
   });
   insertProfile(db, {
     userId: "u3",
+    level: 15,
     coins: 10,
   });
   insertCollectionCardFixture(db, "u1", card);
@@ -3424,6 +3961,8 @@ test("buying transfers ownership and coins without inflating lifetime earnings",
     cardInstanceId: card.cardInstanceId,
     price: 600,
   });
+  // The listing fee (min 100) already came out of the seller's 100 coins.
+  assert.equal(getArenaProfilePayload(db, "u1").coins, 0);
 
   assert.throws(
     () => buyArenaMarketListing(db, "u1", created.listing.listingId),
@@ -3442,7 +3981,8 @@ test("buying transfers ownership and coins without inflating lifetime earnings",
   const buyer = getArenaProfilePayload(db, "u2");
   assert.equal(bought.listing.status, "sold");
   assert.equal(bought.listing.buyerUserId, "u2");
-  assert.equal(seller.coins, 700);
+  // Buyer pays the full 600; seller nets 600 - round(600 * 0.07) = 558; the 42 is burned.
+  assert.equal(seller.coins, 558);
   assert.equal(buyer.coins, 400);
   assert.equal(seller.lifetimeCoinsEarned, 777);
   assert.equal(buyer.lifetimeCoinsEarned, 888);
@@ -3457,6 +3997,85 @@ test("buying transfers ownership and coins without inflating lifetime earnings",
       error instanceof ArenaHttpError &&
       error.code === "ARENA_MARKET_LISTING_INACTIVE",
   );
+});
+
+test("market friction: level gate, listing fee, price ceiling, and burned commission", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 5, coins: 100000 });
+  insertProfile(db, { userId: "u2", level: 20, coins: 100000 });
+  const card = { ...makeCard(1, "SR"), cardInstanceId: "c-sr-1" };
+  insertCollectionCardFixture(db, "u1", card);
+
+  // Level gate: u1 is below ARENA_TRADE_MIN_LEVEL.
+  assert.throws(
+    () => createArenaMarketListing(db, "u1", { cardInstanceId: card.cardInstanceId, price: 1000 }),
+    (e) => e instanceof ArenaHttpError && e.code === "ARENA_TRADE_LEVEL_LOCKED",
+  );
+
+  db.prepare("UPDATE arena_profiles SET level = 20 WHERE userId = ?").run("u1");
+
+  // Price ceiling: SR shop baseline is 1000, cap is 4x = 4000 with no sales history.
+  const guide = getArenaMarketPriceGuide(db, "u1", {
+    malId: card.malId,
+    ivTotal: card.iv.total,
+    rarity: "SR",
+  });
+  assert.equal(guide.maxListingPrice, getMaxListingPrice(guide.marketPrice.value));
+  assert.throws(
+    () =>
+      createArenaMarketListing(db, "u1", {
+        cardInstanceId: card.cardInstanceId,
+        price: guide.maxListingPrice + 1,
+      }),
+    (e) => e instanceof ArenaHttpError && e.code === "ARENA_MARKET_PRICE_TOO_HIGH",
+  );
+
+  // A legal listing charges a non-refundable fee up front.
+  const price = 3000;
+  const fee = marketListingFee(price); // max(round(3000 * 0.02), 100) = 100
+  const listed = createArenaMarketListing(db, "u1", {
+    cardInstanceId: card.cardInstanceId,
+    price,
+  });
+  assert.equal(listed.listingFee, fee);
+  assert.equal(getArenaProfilePayload(db, "u1").coins, 100000 - fee);
+
+  // Cancelling returns the card but NOT the fee.
+  cancelArenaMarketListing(db, "u1", listed.listing.listingId);
+  assert.equal(getArenaProfilePayload(db, "u1").coins, 100000 - fee);
+
+  // Re-list and sell: buyer pays full, seller nets price - 7%, the rest is burned.
+  const relisted = createArenaMarketListing(db, "u1", {
+    cardInstanceId: card.cardInstanceId,
+    price,
+  });
+  const sellerBefore = getArenaProfilePayload(db, "u1").coins;
+  const buyerBefore = getArenaProfilePayload(db, "u2").coins;
+  buyArenaMarketListing(db, "u2", relisted.listing.listingId);
+
+  const commission = Math.round(price * 0.07); // 210
+  assert.equal(getArenaProfilePayload(db, "u2").coins, buyerBefore - price);
+  assert.equal(getArenaProfilePayload(db, "u1").coins, sellerBefore + price - commission);
+});
+
+test("trade coin transfers are taxed 7% on completion", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", level: 20, coins: 100000 });
+  insertProfile(db, { userId: "u2", level: 20, coins: 100000 });
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO arena_trade_sessions (
+      id, requestId, askerId, responderId, askerCardInstanceId, responderCardInstanceId,
+      askerCoins, responderCoins, askerConfirmed, responderConfirmed, status, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, NULL, NULL, ?, 0, 1, 0, 'active', ?, ?)`,
+  ).run("session-coin-tax", "req-coin-tax", "u1", "u2", 10000, now, now);
+
+  confirmTrade(db, "u2", "session-coin-tax");
+
+  // Asker pays 10,000; responder receives 10,000 - round(10,000 * 0.07) = 9,300.
+  assert.equal(getArenaProfilePayload(db, "u1").coins, 90000);
+  assert.equal(getArenaProfilePayload(db, "u2").coins, 109300);
 });
 
 test("market listing query filters and paginates active listings", () => {
@@ -3498,8 +4117,8 @@ test("market listing query filters and paginates active listings", () => {
 
 test("trade listings can request a specific card", () => {
   const db = createTestDb();
-  insertProfile(db, { userId: "u1", coins: 1000 });
-  insertProfile(db, { userId: "u2", coins: 1000 });
+  insertProfile(db, { userId: "u1", level: 15, coins: 1000 });
+  insertProfile(db, { userId: "u2", level: 15, coins: 1000 });
 
   const listedCard = makeCard(21, "SR");
   const wrongOffer = makeCard(88, "R");
@@ -3549,9 +4168,9 @@ test("trade listings can request a specific card", () => {
 
 test("getTradeRequestForUser returns the request to either party and 404s strangers", () => {
   const db = createTestDb();
-  insertProfile(db, { userId: "u1", coins: 1000 });
-  insertProfile(db, { userId: "u2", coins: 1000 });
-  insertProfile(db, { userId: "u3", coins: 1000 });
+  insertProfile(db, { userId: "u1", level: 15, coins: 1000 });
+  insertProfile(db, { userId: "u2", level: 15, coins: 1000 });
+  insertProfile(db, { userId: "u3", level: 15, coins: 1000 });
 
   const listedCard = makeCard(21, "SR");
   const offeredCard = { ...makeCard(1, "R"), cardInstanceId: "card-1-u2" };
@@ -3584,8 +4203,8 @@ test("getTradeRequestForUser returns the request to either party and 404s strang
 
 test("accepting a listing trade with both cards completes the swap", () => {
   const db = createTestDb();
-  insertProfile(db, { userId: "u1", coins: 1000 });
-  insertProfile(db, { userId: "u2", coins: 1000 });
+  insertProfile(db, { userId: "u1", level: 15, coins: 1000 });
+  insertProfile(db, { userId: "u2", level: 15, coins: 1000 });
 
   const listedCard = makeCard(21, "SR");
   const offeredCard = { ...makeCard(1, "R"), cardInstanceId: "card-1-u2" };
@@ -3919,7 +4538,9 @@ test("arena routes remain registered through compatibility entry", async () => {
     ["POST", "/arena/shop/fodder"],
     ["POST", "/arena/shop/enhance"],
     ["POST", "/arena/shop/reroll-substat"],
-    ["POST", "/arena/shop/craft"],
+    ["GET", "/arena/shop/titles"],
+    ["POST", "/arena/shop/titles/buy"],
+    ["POST", "/arena/shop/titles/activate"],
     ["GET", "/arena/leaderboard"],
     ["GET", "/arena/trade/users"],
     ["GET", "/arena/trade/cards"],
@@ -4193,7 +4814,7 @@ test("all consumables define valid effects with positive durations", () => {
 test("Frost Elixir applies +10% evade with 250 fight duration", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "bronze_cons_1");
+  buyShopItem(db, "u1", "frost_elixir");
   const effect = getConsumableEffect("frost_elixir");
   const result = useConsumable(db, "u1", "frost_elixir");
   assert.equal(result.effects.evadeBoostPct, effect.pct);
@@ -4203,7 +4824,7 @@ test("Frost Elixir applies +10% evade with 250 fight duration", () => {
 test("Viridian Elixir applies +5 IV boost with 250 charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "bronze_cons_2");
+  buyShopItem(db, "u1", "viridian_elixir");
   const effect = getConsumableEffect("viridian_elixir");
   const result = useConsumable(db, "u1", "viridian_elixir");
   assert.equal(result.effects.ivBoostCharges, effect.charges);
@@ -4212,7 +4833,7 @@ test("Viridian Elixir applies +5 IV boost with 250 charges", () => {
 test("Sage's Tome applies +100% exp boost with 250 fight duration", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "bronze_cons_4");
+  buyShopItem(db, "u1", "exp_tome");
   const effect = getConsumableEffect("exp_tome");
   const result = useConsumable(db, "u1", "exp_tome");
   assert.equal(result.effects.expBoostPct, effect.pct);
@@ -4222,7 +4843,7 @@ test("Sage's Tome applies +100% exp boost with 250 fight duration", () => {
 test("Sacred Candles applies +80 shield with 1000 charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 100000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "mythic_cons_2");
+  buyShopItem(db, "u1", "sacred_candles");
   const effect = getConsumableEffect("sacred_candles");
   const result = useConsumable(db, "u1", "sacred_candles");
   assert.equal(result.effects.fightStartShieldCharges, effect.charges);
@@ -4232,7 +4853,7 @@ test("Sacred Candles applies +80 shield with 1000 charges", () => {
 test("Void Cauldron applies double passive trigger with 1000 fight duration", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 60, coins: 200000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "cosmic_cons_2");
+  buyShopItem(db, "u1", "void_cauldron");
   const effect = getConsumableEffect("void_cauldron");
   const result = useConsumable(db, "u1", "void_cauldron");
   assert.equal(result.effects.doublePassiveTriggerFightsRemaining, effect.fights);
@@ -4241,7 +4862,7 @@ test("Void Cauldron applies double passive trigger with 1000 fight duration", ()
 test("Chrono Vial applies 50% self-revive heal with 1000 charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 60, coins: 200000, selectedCard: makeCard(1, "C") });
-  craftShopRecipe(db, "u1", "cosmic_cons_3");
+  buyShopItem(db, "u1", "chrono_vial");
   const effect = getConsumableEffect("chrono_vial");
   const result = useConsumable(db, "u1", "chrono_vial");
   assert.equal(effect.hpPct, 50);
@@ -4253,8 +4874,8 @@ test("Solar Cauldron ascension applies +1 all stats and enforces cooldown", () =
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 60, coins: 500000, selectedCard: makeCard(1, "C") });
   // Craft two so the second use attempt has one in inventory
-  craftShopRecipe(db, "u1", "cosmic_cons_1");
-  craftShopRecipe(db, "u1", "cosmic_cons_1");
+  buyShopItem(db, "u1", "solar_cauldron");
+  buyShopItem(db, "u1", "solar_cauldron");
 
   const before = getArenaProfilePayload(db, "u1");
   const result = useConsumable(db, "u1", "solar_cauldron");
@@ -4282,69 +4903,103 @@ test("reusing a charge consumable adds charges", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 100000, selectedCard: makeCard(1, "C") });
 
-  craftShopRecipe(db, "u1", "silver_cons_1");
+  const grant = getConsumableEffect("sun_elixir").charges;
+
+  buyShopItem(db, "u1", "sun_elixir");
   const r1 = useConsumable(db, "u1", "sun_elixir");
-  assert.equal(r1.effects.deathSaveCharges, 500, "1st use should give 500");
+  assert.equal(r1.effects.deathSaveCharges, grant, "1st use should give one grant");
 
-  craftShopRecipe(db, "u1", "silver_cons_1");
+  buyShopItem(db, "u1", "sun_elixir");
   const r2 = useConsumable(db, "u1", "sun_elixir");
-  assert.equal(r2.effects.deathSaveCharges, 1000, "2nd use should add another 500");
+  assert.equal(r2.effects.deathSaveCharges, grant * 2, "2nd use should add another grant");
 
-  craftShopRecipe(db, "u1", "silver_cons_1");
+  buyShopItem(db, "u1", "sun_elixir");
   const r3 = useConsumable(db, "u1", "sun_elixir");
-  assert.equal(r3.effects.deathSaveCharges, 1500, "3rd use should add another 500");
+  assert.equal(r3.effects.deathSaveCharges, grant * 3, "3rd use should add another grant (at cap)");
 });
 
-test("consumable recipes are not level locked", () => {
+test("consumable purchases are level locked by tier", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 1, coins: 500000, selectedCard: makeCard(1, "C") });
 
-  const result = craftShopRecipe(db, "u1", "cosmic_cons_3");
+  // A level-1 alt with coins to burn cannot buy a Cosmic consumable.
+  assert.throws(
+    () => buyShopItem(db, "u1", "chrono_vial"),
+    (err) => err instanceof ArenaHttpError && err.code === "ARENA_ITEM_LOCKED",
+  );
+  const locked = getArenaShopPayload(db, "u1")
+    .shop.flatMap((tier) => tier.items)
+    .find((item) => item.id === "chrono_vial");
+  assert.equal(locked.unlocked, false);
+  assert.equal(locked.unlockLevel, TIER_UNLOCK_LEVELS.Cosmic);
 
-  assert.equal(result.outputItemId, "chrono_vial");
-  assert.equal(result.shop.recipes.find((recipe) => recipe.id === "cosmic_cons_3")?.unlocked, true);
+  // Rookie consumables stay open from level 1.
+  const rookie = buyShopItem(db, "u1", "red_tonic");
+  assert.equal(rookie.purchasedItemId, "red_tonic");
+
+  // Once the level requirement is met, the Cosmic consumable unlocks.
+  db.prepare("UPDATE arena_profiles SET level = ? WHERE userId = ?").run(
+    TIER_UNLOCK_LEVELS.Cosmic,
+    "u1",
+  );
+  const result = buyShopItem(db, "u1", "chrono_vial");
+  assert.equal(result.purchasedItemId, "chrono_vial");
+  assert.equal(
+    result.shop.shop
+      .flatMap((tier) => tier.items)
+      .find((item) => item.id === "chrono_vial")?.unlocked,
+    true,
+  );
 });
 
-test("every craft recipe has a positive per-tier coin cost", () => {
-  const expectedByTier = {
-    Rookie: 200,
-    Bronze: 800,
-    Silver: 3200,
-    Gold: 10000,
-    Mythic: 36000,
-    Cosmic: 120000,
-  };
-
+test("every consumable has a positive per-tier coin price", () => {
   // Every configured tier is priced (guards against a new tier silently
-  // crafting for free once CRAFT_COIN_COSTS is keyed by name).
+  // selling for free once CONSUMABLE_TIER_PRICES is keyed by name).
   for (const tier of SHOP_TIERS) {
-    assert.ok(expectedByTier[tier] > 0, `tier ${tier} has no craft cost`);
+    assert.ok(CONSUMABLE_TIER_PRICES[tier] > 0, `tier ${tier} has no price`);
   }
 
-  assert.ok(SHOP_RECIPES.length > 0);
-  for (const recipe of SHOP_RECIPES) {
+  // Prices rise monotonically with tier so higher tiers stay a bigger sink.
+  const tierPrices = SHOP_TIERS.map((tier) => CONSUMABLE_TIER_PRICES[tier]);
+  for (let i = 1; i < tierPrices.length; i += 1) {
+    assert.ok(tierPrices[i] > tierPrices[i - 1], "tier prices should increase");
+  }
+
+  // Ascension is a permanent stat buy, not a duration consumable, so it keeps a
+  // dedicated high price instead of the cheap Cosmic tier default.
+  const ITEM_PRICE_OVERRIDES = { solar_cauldron: 120000 };
+  const consumables = SHOP_ITEMS.filter((item) => item.type === "consumable");
+  assert.ok(consumables.length > 0);
+  for (const item of consumables) {
+    assert.ok(Number.isInteger(item.price) && item.price > 0);
     assert.equal(
-      recipe.coinCost,
-      expectedByTier[recipe.tier],
-      `${recipe.id} coinCost`,
+      item.price,
+      ITEM_PRICE_OVERRIDES[item.id] ?? CONSUMABLE_TIER_PRICES[item.tier],
+      `${item.id} price`,
     );
-    assert.ok(Number.isInteger(recipe.coinCost) && recipe.coinCost > 0);
   }
 });
 
-test("every tier's consumables and recipes are unlocked at level 1", () => {
+test("consumable tiers unlock on a level ladder, not all at once", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 1, coins: 0, selectedCard: makeCard(1, "C") });
 
-  const payload = getArenaShopPayload(db, "u1");
-  const consumables = payload.shop.flatMap((tier) => tier.items);
-
-  assert.ok(consumables.length > 0);
-  for (const item of consumables) {
-    assert.equal(item.unlocked, true, `${item.id} should be unlocked at level 1`);
+  // At level 1 only Rookie is open; every higher tier is gated.
+  const atLevel1 = getArenaShopPayload(db, "u1");
+  for (const item of atLevel1.shop.flatMap((tier) => tier.items)) {
+    assert.equal(
+      item.unlocked,
+      item.tier === "Rookie",
+      `${item.id} (${item.tier}) unlocked state at level 1`,
+    );
+    assert.equal(item.unlockLevel, TIER_UNLOCK_LEVELS[item.tier]);
   }
-  for (const recipe of payload.recipes) {
-    assert.equal(recipe.unlocked, true, `${recipe.id} should be unlocked at level 1`);
+
+  // At max level everything is buyable.
+  db.prepare("UPDATE arena_profiles SET level = 70 WHERE userId = ?").run("u1");
+  const atMax = getArenaShopPayload(db, "u1");
+  for (const item of atMax.shop.flatMap((tier) => tier.items)) {
+    assert.equal(item.unlocked, true, `${item.id} should be unlocked at level 70`);
   }
 });
 
@@ -4360,9 +5015,11 @@ test("consumable inventory is capped per item", () => {
 
   const shop = getArenaShopPayload(db, "u1");
   const redTonic = shop.shop.flatMap((tier) => tier.items).find((item) => item.id === "red_tonic");
-  const redTonicRecipe = shop.recipes.find((recipe) => recipe.id === "rookie_cons_1");
-  assert.equal(redTonic?.canCraft, false);
-  assert.equal(redTonicRecipe?.canCraft, false);
+  assert.equal(redTonic?.canBuy, false);
+  assert.throws(
+    () => buyShopItem(db, "u1", "red_tonic"),
+    (error) => error instanceof ArenaHttpError && error.code === "ARENA_INVENTORY_CAP",
+  );
 });
 
 test("active consumable effects allow four kinds", () => {
@@ -4375,8 +5032,8 @@ test("active consumable effects allow four kinds", () => {
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-  ].forEach(([recipeId, itemId]) => {
-    craftShopRecipe(db, "u1", recipeId);
+  ].forEach(([, itemId]) => {
+    buyShopItem(db, "u1", itemId);
     useConsumable(db, "u1", itemId);
   });
 
@@ -4390,10 +5047,22 @@ test("active consumable effects allow four kinds", () => {
     "speed_boost",
     "evade_next_fight",
   ]);
-  assert.equal(profile.effects.fightStartShieldCharges, 100);
-  assert.equal(profile.effects.damageBoostFightsRemaining, 500);
-  assert.equal(profile.effects.speedBoostFightsRemaining, 500);
-  assert.equal(profile.effects.evadeBoostFightsRemaining, 250);
+  assert.equal(
+    profile.effects.fightStartShieldCharges,
+    getConsumableEffect("red_tonic").charges,
+  );
+  assert.equal(
+    profile.effects.damageBoostFightsRemaining,
+    getConsumableEffect("green_draft").fights,
+  );
+  assert.equal(
+    profile.effects.speedBoostFightsRemaining,
+    getConsumableEffect("amber_draft").fights,
+  );
+  assert.equal(
+    profile.effects.evadeBoostFightsRemaining,
+    getConsumableEffect("frost_elixir").fights,
+  );
 });
 
 test("fifth consumable without force throws ARENA_CONSUMABLE_CAP_REACHED", () => {
@@ -4406,13 +5075,13 @@ test("fifth consumable without force throws ARENA_CONSUMABLE_CAP_REACHED", () =>
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-  ].forEach(([recipeId, itemId]) => {
-    craftShopRecipe(db, "u1", recipeId);
+  ].forEach(([, itemId]) => {
+    buyShopItem(db, "u1", itemId);
     useConsumable(db, "u1", itemId);
   });
 
   // Try a 5th without force -- should throw.
-  craftShopRecipe(db, "u1", "bronze_cons_3"); // Fuse Bomb
+  buyShopItem(db, "u1", "fuse_bomb"); // Fuse Bomb
   let capError;
   assert.throws(
     () => useConsumable(db, "u1", "fuse_bomb"),
@@ -4440,12 +5109,12 @@ test("Solar Cauldron ascension does not count toward active consumable cap", () 
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-  ].forEach(([recipeId, itemId]) => {
-    craftShopRecipe(db, "u1", recipeId);
+  ].forEach(([, itemId]) => {
+    buyShopItem(db, "u1", itemId);
     useConsumable(db, "u1", itemId);
   });
 
-  craftShopRecipe(db, "u1", "cosmic_cons_1");
+  buyShopItem(db, "u1", "solar_cauldron");
   const result = useConsumable(db, "u1", "solar_cauldron");
   const activeKinds = result.effects.activeConsumables.map((entry) => entry.kind);
 
@@ -4470,16 +5139,16 @@ test("Phoenix Feather top-up does not require replacing oldest when tracking mar
     selectedCard: makeCard(1, "C"),
     effects: {
       fightStartShieldAmount: 60,
-      fightStartShieldCharges: 100,
+      fightStartShieldCharges: 10,
       damageBoostPct: 20,
-      damageBoostFightsRemaining: 500,
+      damageBoostFightsRemaining: 10,
       speedBoostPct: 12,
-      speedBoostFightsRemaining: 500,
+      speedBoostFightsRemaining: 10,
       evadeBoostPct: 10,
-      evadeBoostFightsRemaining: 250,
+      evadeBoostFightsRemaining: 10,
       firstHitTrueDamageValue: 100,
-      firstHitTrueDamageCharges: 250,
-      ivBoostCharges: 250,
+      firstHitTrueDamageCharges: 5,
+      ivBoostCharges: 5,
       deathSaveCharges: 1,
       activeConsumables: [
         { itemId: "red_tonic", kind: "shield_fight_start", activatedAt: now },
@@ -4493,8 +5162,11 @@ test("Phoenix Feather top-up does not require replacing oldest when tracking mar
 
   const result = useConsumable(db, "u1", "sun_elixir");
 
-  assert.equal(result.effects.deathSaveCharges, 501);
-  assert.equal(result.effects.fightStartShieldCharges, 100);
+  assert.equal(
+    result.effects.deathSaveCharges,
+    1 + getConsumableEffect("sun_elixir").charges,
+  );
+  assert.equal(result.effects.fightStartShieldCharges, 10);
   assert.equal(result.effects.activeConsumables.length, 4);
 });
 
@@ -4531,7 +5203,10 @@ test("expired Phoenix Feather marker is pruned before active consumable cap chec
   const result = useConsumable(db, "u1", "sun_elixir");
   const activeKinds = result.effects.activeConsumables.map((entry) => entry.kind);
 
-  assert.equal(result.effects.deathSaveCharges, 500);
+  assert.equal(
+    result.effects.deathSaveCharges,
+    getConsumableEffect("sun_elixir").charges,
+  );
   assert.deepEqual(activeKinds, [
     "shield_fight_start",
     "damage_boost",
@@ -4550,13 +5225,13 @@ test("fifth consumable with force replaces the oldest active kind", () => {
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-  ].forEach(([recipeId, itemId]) => {
-    craftShopRecipe(db, "u1", recipeId);
+  ].forEach(([, itemId]) => {
+    buyShopItem(db, "u1", itemId);
     useConsumable(db, "u1", itemId);
   });
 
   // Use a 5th with force -- the oldest (red_tonic) should be replaced.
-  craftShopRecipe(db, "u1", "bronze_cons_3"); // Fuse Bomb
+  buyShopItem(db, "u1", "fuse_bomb"); // Fuse Bomb
   useConsumable(db, "u1", "fuse_bomb", true);
 
   const profile = getArenaProfilePayload(db, "u1");
@@ -4572,9 +5247,18 @@ test("fifth consumable with force replaces the oldest active kind", () => {
   assert.equal(profile.effects.fightStartShieldCharges, 0);
   assert.equal(profile.effects.fightStartShieldAmount, 0);
   // Remaining effects should be intact.
-  assert.equal(profile.effects.damageBoostFightsRemaining, 500);
-  assert.equal(profile.effects.evadeBoostFightsRemaining, 250);
-  assert.equal(profile.effects.firstHitTrueDamageCharges, 250);
+  assert.equal(
+    profile.effects.damageBoostFightsRemaining,
+    getConsumableEffect("green_draft").fights,
+  );
+  assert.equal(
+    profile.effects.evadeBoostFightsRemaining,
+    getConsumableEffect("frost_elixir").fights,
+  );
+  assert.equal(
+    profile.effects.firstHitTrueDamageCharges,
+    getConsumableEffect("fuse_bomb").charges,
+  );
 });
 
 test("fifth consumable with force can replace a chosen active kind", () => {
@@ -4586,12 +5270,12 @@ test("fifth consumable with force can replace a chosen active kind", () => {
     ["rookie_cons_2", "green_draft"],
     ["rookie_cons_3", "amber_draft"],
     ["bronze_cons_1", "frost_elixir"],
-  ].forEach(([recipeId, itemId]) => {
-    craftShopRecipe(db, "u1", recipeId);
+  ].forEach(([, itemId]) => {
+    buyShopItem(db, "u1", itemId);
     useConsumable(db, "u1", itemId);
   });
 
-  craftShopRecipe(db, "u1", "bronze_cons_3"); // Fuse Bomb
+  buyShopItem(db, "u1", "fuse_bomb"); // Fuse Bomb
   useConsumable(db, "u1", "fuse_bomb", {
     force: true,
     replaceItemId: "amber_draft",
@@ -4608,8 +5292,14 @@ test("fifth consumable with force can replace a chosen active kind", () => {
   ]);
   assert.equal(profile.effects.speedBoostFightsRemaining, 0);
   assert.equal(profile.effects.speedBoostPct, 0);
-  assert.equal(profile.effects.fightStartShieldCharges, 100);
-  assert.equal(profile.effects.firstHitTrueDamageCharges, 250);
+  assert.equal(
+    profile.effects.fightStartShieldCharges,
+    getConsumableEffect("red_tonic").charges,
+  );
+  assert.equal(
+    profile.effects.firstHitTrueDamageCharges,
+    getConsumableEffect("fuse_bomb").charges,
+  );
 });
 
 test("same-type consumable values stay fixed while charges increase", () => {
@@ -4617,26 +5307,32 @@ test("same-type consumable values stay fixed while charges increase", () => {
   insertProfile(db, { userId: "u1", level: 50, coins: 200000, selectedCard: makeCard(1, "C") });
 
   // Use red_tonic (60 shield) then sacred_candles (80 shield).
-  craftShopRecipe(db, "u1", "rookie_cons_1");
+  buyShopItem(db, "u1", "red_tonic");
   useConsumable(db, "u1", "red_tonic");
 
-  craftShopRecipe(db, "u1", "mythic_cons_2");
+  buyShopItem(db, "u1", "sacred_candles");
   const result = useConsumable(db, "u1", "sacred_candles");
 
   assert.equal(result.effects.fightStartShieldAmount, 60, "should keep the active shield amount");
-  assert.equal(result.effects.fightStartShieldCharges, 1100);
+  assert.equal(
+    result.effects.fightStartShieldCharges,
+    getConsumableEffect("red_tonic").charges + getConsumableEffect("sacred_candles").charges,
+  );
 });
 
 test("reusing the same percentage consumable extends duration without raising value", () => {
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 20, coins: 10000, selectedCard: makeCard(1, "C") });
 
-  craftShopRecipe(db, "u1", "rookie_cons_2", 2);
+  buyShopItem(db, "u1", "green_draft", 2);
   useConsumable(db, "u1", "green_draft");
   const result = useConsumable(db, "u1", "green_draft");
 
   assert.equal(result.effects.damageBoostPct, 20);
-  assert.equal(result.effects.damageBoostFightsRemaining, 1000);
+  assert.equal(
+    result.effects.damageBoostFightsRemaining,
+    2 * getConsumableEffect("green_draft").fights,
+  );
 });
 
 test("evade boost pct is capped at 95", () => {
@@ -4706,46 +5402,60 @@ test("repeated consumables extend duration without stacking effect value", () =>
   const db = createTestDb();
   insertProfile(db, { userId: "u1", level: 50, coins: 500000, selectedCard: makeCard(1, "C") });
 
+  const grant = getConsumableEffect("amber_draft").fights;
+  const cap = EFFECT_DURATION_LIMITS.speedBoostFightsRemaining;
+
   for (let i = 0; i < 5; i++) {
-    craftShopRecipe(db, "u1", "rookie_cons_3");
+    buyShopItem(db, "u1", "amber_draft");
     const result = useConsumable(db, "u1", "amber_draft");
-    assert.equal(result.effects.speedBoostFightsRemaining, 500 * (i + 1));
+    // Duration accumulates per craft but is capped at the tactical ceiling.
+    assert.equal(
+      result.effects.speedBoostFightsRemaining,
+      Math.min(grant * (i + 1), cap),
+    );
     assert.equal(result.effects.speedBoostPct, 12);
   }
 
   const profile = getArenaProfilePayload(db, "u1");
-  assert.equal(profile.effects.speedBoostFightsRemaining, 2500);
+  assert.equal(profile.effects.speedBoostFightsRemaining, cap);
   assert.equal(profile.effects.speedBoostPct, 12);
 });
 
-test("consumable duration fields normalize large values unchanged", () => {
+test("combat consumable durations are tactical windows and clamp to EFFECT_DURATION_LIMITS", () => {
   const consumableFields = [
-    { id: "exp_tome", field: "expBoostWinsRemaining", base: 250 },
-    { id: "frost_elixir", field: "evadeBoostFightsRemaining", base: 250 },
-    { id: "fuse_bomb", field: "firstHitTrueDamageCharges", base: 250 },
-    { id: "viridian_elixir", field: "ivBoostCharges", base: 250 },
-    { id: "green_draft", field: "damageBoostFightsRemaining", base: 500 },
-    { id: "amber_draft", field: "speedBoostFightsRemaining", base: 500 },
-    { id: "seeker_lens", field: "critChanceBoostFightsRemaining", base: 500 },
-    { id: "oath_ribbon", field: "guardBoostFightsRemaining", base: 500 },
-    { id: "sun_elixir", field: "deathSaveCharges", base: 500 },
-    { id: "lantern_oil", field: "higherRarityDamageBonusPctCharges", base: 500 },
-    { id: "star_tonic", field: "statSteroidFightsRemaining", base: 500 },
-    { id: "gate_key", field: "vampiricHealFightsRemaining", base: 1000 },
-    { id: "void_cauldron", field: "doublePassiveTriggerFightsRemaining", base: 1000 },
-    { id: "prism_draught", field: "firstAttackDoubleCharges", base: 1000 },
-    { id: "chrono_vial", field: "selfReviveCharges", base: 1000 },
-    { id: "red_tonic", field: "fightStartShieldCharges", base: 100 },
-    { id: "sacred_candles", field: "fightStartShieldCharges", base: 1000 },
-    { id: "treasure_cache", field: "matchRarityCharges", base: 750 },
+    { id: "exp_tome", field: "expBoostWinsRemaining" },
+    { id: "frost_elixir", field: "evadeBoostFightsRemaining" },
+    { id: "fuse_bomb", field: "firstHitTrueDamageCharges" },
+    { id: "viridian_elixir", field: "ivBoostCharges" },
+    { id: "green_draft", field: "damageBoostFightsRemaining" },
+    { id: "amber_draft", field: "speedBoostFightsRemaining" },
+    { id: "seeker_lens", field: "critChanceBoostFightsRemaining" },
+    { id: "oath_ribbon", field: "guardBoostFightsRemaining" },
+    { id: "sun_elixir", field: "deathSaveCharges" },
+    { id: "lantern_oil", field: "higherRarityDamageBonusPctCharges" },
+    { id: "star_tonic", field: "statSteroidFightsRemaining" },
+    { id: "gate_key", field: "vampiricHealFightsRemaining" },
+    { id: "void_cauldron", field: "doublePassiveTriggerFightsRemaining" },
+    { id: "prism_draught", field: "firstAttackDoubleCharges" },
+    { id: "chrono_vial", field: "selfReviveCharges" },
+    { id: "red_tonic", field: "fightStartShieldCharges" },
+    { id: "sacred_candles", field: "fightStartShieldCharges" },
+    { id: "treasure_cache", field: "matchRarityCharges" },
   ];
 
-  consumableFields.forEach(({ id, field, base }) => {
+  consumableFields.forEach(({ id, field }) => {
     const effect = getConsumableEffect(id);
-    const actualBase = effect.charges || effect.fights || 0;
-    assert.equal(actualBase, base, `${id} base should be ${base}`);
+    const grant = effect.charges || effect.fights || 0;
+    const cap = EFFECT_DURATION_LIMITS[field];
 
+    // Every combat consumable field now has an explicit tactical cap...
+    assert.ok(Number.isInteger(cap) && cap > 0, `${field} should have a duration cap`);
+    // ...a single craft is short (an order of magnitude below the legacy 250+)...
+    assert.ok(grant > 0 && grant <= 25, `${id} grant ${grant} should be a short window`);
+    // ...a craft never exceeds the cap on its own...
+    assert.ok(grant <= cap, `${id} grant ${grant} should fit within cap ${cap}`);
+    // ...and legacy stockpiles are clamped down on load.
     const effects = normalizeArenaEffects({ [field]: 99999 });
-    assert.equal(effects[field], 99999, `${field} should not clamp`);
+    assert.equal(effects[field], cap, `${field} should clamp to ${cap}`);
   });
 });

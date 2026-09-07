@@ -3,7 +3,9 @@
 const fs = require("fs");
 const path = require("path");
 
-const ELEMENTS = ["Fire", "Water", "Earth", "Wind", "Light", "Dark"];
+// Combat Styles (formerly elements). Legacy one-time seeder — kept in sync with
+// `lib/arena-constants.js` so a re-run produces current-format values.
+const ELEMENTS = ["Might", "Swift", "Skill", "Ruse", "Surge", "Ward"];
 
 const DEFAULT_CATALOG_FILE = path.resolve(
   __dirname,
