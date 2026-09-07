@@ -32,9 +32,9 @@ function configureDiscordStrategy(findOrCreateDiscordUser) {
           "http://localhost:3000/auth/discord/callback",
         scope: ["identify"],
       },
-      (accessToken, refreshToken, profile, cb) => {
+      async (accessToken, refreshToken, profile, cb) => {
         try {
-          const user = findOrCreateDiscordUser(profile);
+          const user = await findOrCreateDiscordUser(profile);
           return cb(null, user);
         } catch (err) {
           return cb(err);
