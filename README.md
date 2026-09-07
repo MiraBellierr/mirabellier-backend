@@ -4,7 +4,7 @@
 
 This is the backend for my little corner of the web.
 
-It is a cozy-but-serious Express app that handles auth, data, uploads, share previews, and all the behind-the-scenes logic that keeps the frontend feeling smooth.
+It is a cozy-but-serious Express app that handles auth, data, uploads, share previews, real-time fights, and all the behind-the-scenes logic that keeps the frontend feeling smooth.
 
 ## Hiya!!
 
@@ -14,39 +14,35 @@ The frontend gets the sparkles, but this is the quiet engine room. It stores the
 
 - Serves blog posts, tags, comments, and likes
 - Handles Discord OAuth login and httpOnly session cookies
-- Stores and updates public profile data
+- Mirrors Discord avatars/banners onto this origin so profiles keep working when Discord URLs expire
+- Stores and updates public profile data, plus follows between users
 - Powers the guestbook board with synced note positions
-- Runs the Arena API (profile, collection, shop, fight, leaderboard)
+- Runs the Arena game API: profile, collection, card draws and packs, shop, equipment, crafting/enhancing, skill tree, marketplace, player-to-player trading, leaderboard, and Hall of Fame
+- Runs a turn-based TCG (queue, solo, live games) over WebSockets
+- Streams real-time Arena fight playback and the anime feed over Socket.IO
 - Runs Question of the Day APIs (current, answers, archive, admin queue)
+- Runs the Pixies short-video feed: browsing, likes, comments, notifications, and admin import from TikTok / Instagram / YouTube via `yt-dlp`
+- Aggregates fan-art search across Safebooru, Gelbooru, Danbooru, and Pixiv
+- Tracks Twitch channels: live status, stream predictions, accuracy stats, and "notify me when live" web-push
 - Serves shrine admin/content APIs and shrine SEO/share pages
 - Serves anime and quote SEO/share pages + embed images
 - Stores quote snapshots and MyAnimeList currently-watching snapshots
 - Handles image uploads and optimization
 - Generates sitemap data and supports IndexNow submission
-
-## Tiny project tour
-
-```text
-mirabellier-backend/
-|- app.js            Main server entry + middleware setup
-|- routes/           Feature route modules (posts, auth, arena, qotd, etc.)
-|- lib/              DB, auth/session, embeds, sitemap, integrations
-|- scripts/          Utility scripts
-|- test/             Node test files
-|- images/           Uploaded images
-|- data/             Runtime/generated backend data files
-|- database.sqlite3  Local SQLite database
-`- package.json      Backend scripts and deps
-```
+- Verifies humans with Cloudflare Turnstile before sensitive actions
+- Hardens requests with Helmet, CORS allow-listing, and per-IP rate limiting
 
 ## The stack
 
-- Node.js
-- Express 5
+- Node.js + Express 5
 - SQLite with `better-sqlite3`
-- Passport Discord
-- Multer
-- Sharp
+- Passport Discord + `express-session`
+- Socket.IO for real-time fights, TCG games, and the anime feed
+- Multer + Sharp for uploads and image optimization
+- Helmet, `express-rate-limit`, `compression`
+- `web-push` (VAPID) for Twitch live notifications
+- Playwright / `yt-dlp` / `ffmpeg` for social-video import
+- Cloudflare Turnstile for human verification
 
 ## API base notes
 
@@ -68,7 +64,7 @@ npm install
 
 ### 2. Create `mirabellier-backend/.env`
 
-Copy `.env.example` and fill in your values.
+Copy `.env.example` and fill in your values. `.env.example` is the source of truth and documents every optional variable inline. The essentials:
 
 ```env
 PORT=3000
@@ -83,9 +79,18 @@ MAL_CLIENT_ID=your_myanimelist_client_id
 MAL_USERNAME=your_myanimelist_username
 WEBSITE_BASE=https://mirabellier.com
 INDEXNOW_KEY=your-indexnow-key
+TURNSTILE_SECRET_KEY=your_turnstile_secret_key
 ```
 
-Useful optional vars are documented in `.env.example` (session cookie options, QOTD webhook options, MAL refresh interval, quote schedule, and IndexNow toggles).
+Other groups documented in `.env.example`:
+
+- Session cookie options (`SESSION_COOKIE_NAME`, `SESSION_COOKIE_MAX_AGE_SECONDS`, `SESSION_COOKIE_SECURE`)
+- Local-dev toggles: `TURNSTILE_DEV_BYPASS`, `ALLOW_DEV_ORIGINS` (both must stay `false` anywhere internet-facing)
+- Proxy / abuse controls: `TRUST_PROXY_HOPS`, `RATE_LIMIT_GLOBAL_PER_MIN`, `RATE_LIMIT_WRITE_PER_MIN`
+- Twitch: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, and `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` for web push
+- Fan-art providers: optional Gelbooru / Danbooru / Pixiv credentials
+- Social import: `TIKTOK_TTWID`, cookie-file paths for TikTok / Instagram / YouTube, `YTDLP_PATH`, `FFMPEG_PATH`, `FFPROBE_PATH`
+- QOTD Discord webhook, MAL refresh interval, quote schedule, Arena day offset, IndexNow toggles
 
 ### Arena character catalog
 
@@ -128,108 +133,137 @@ If `PORT` is missing, `app.js` falls back to `5000`.
 
 - `npm run dev` - run backend with nodemon
 - `npm start` - run backend normally
+- `npm test` - run the Node test suite (`node --test`)
 - `npm run generate:sitemap` - regenerate sitemap data
 - `npm run scrape:mal:characters` - refresh the ranked local Arena character catalog
 - `npm run migrate:card-rarities` - preview rank-based rarity updates for stored cards
-- `npm test` - run Node tests
+- `npm run prune:db-backups` / `:apply` - list (or delete) stale local DB backups
+- `npm run repair:videos` - re-encode non-playable imported Pixie videos
+- `npm run export:arena` / `export:levels` - dump Arena data to CSV
+
+More one-off maintenance and migration scripts live in `scripts/`; run them directly with `node scripts/<name>` (for example `node scripts/mirror-discord-avatars.cjs` to backfill mirrored avatars).
+
+## Real-time (WebSocket)
+
+Socket.IO is served at path `/ws` on the same HTTP server.
+
+- `POST /auth/ws-token` - exchange the current session for a short-lived WS token
+- The client connects with that token, then subscribes to Arena fight playback (start / advance / skip), TCG games, and the currently-watching anime feed
+- Fight messages are gated by Turnstile verification and per-user rate limits
 
 ## Main route map
 
+This is a summary of the busier groups, not an exhaustive list. Routes are shown unprefixed; `/v1/...` works too.
+
 ### Posts and blog
 
-- `GET /posts` - list posts
-- `GET /posts/:id` - fetch one post
-- `POST /posts` - create post
-- `PUT /posts/:id` - update post
-- `DELETE /posts/:id` - delete post
+- `GET /posts`, `GET /posts/:id`, `POST /posts`, `PUT /posts/:id`, `DELETE /posts/:id`
 - `POST /posts/:id/comments` - add comment
 - `POST /posts/:id/like` - like/unlike post
 - `GET /tags` - list unique blog tags
-- `GET /blog/:id` - SEO/share page for single blog route
+- `GET /blog/:id` - SEO/share page for a single blog route
+- `POST /posts-img` - upload an image for posts (owner only)
 
 ### Auth and profile
 
-- `GET /auth/discord` - start Discord OAuth
-- `GET /auth/discord/callback` - finish Discord OAuth
+- `GET /auth/discord`, `GET /auth/discord/callback` - Discord OAuth
+- `POST /auth/ws-token` - short-lived WebSocket token
 - `GET /me` - current authenticated user
 - `POST /me` - update profile (+ avatar/banner upload)
 - `POST /logout` - destroy session
-- `GET /user/:id` - public user profile by id
-- `GET /user/by-username/:username` - public user profile by username
+- `GET /user/:id`, `GET /user/by-username/:username` - public profiles
 - `GET /user/:id/stats` - public user stats
-- `GET /profile/:username` - SEO/share page for public profile route
-- `GET /profile-embed/:username.png` - profile share image
-- `GET /api/profile-embed/:username.png` - alias profile share image route
+- `GET /user/:id/follow`, `POST /user/:id/follow` - follow state / toggle
+- `GET /profile/:username` - SEO/share page
+- `GET /profile-embed/:username.png`, `GET /api/profile-embed/:username.png` - profile share image
 
 ### Guestbook
 
-- `GET /guestbook` - list notes
-- `POST /guestbook` - create note
+- `GET /guestbook`, `POST /guestbook`
 - `PATCH /guestbook/:id/position` - save note position
 - `DELETE /guestbook/:id` - delete note (owner only)
 
-### Arena
+### Arena (`/arena/...`)
 
-- `GET /arena/profile` - arena profile payload
-- `GET /arena/collection` - owned cards payload
-- `POST /arena/collection/select-card` - choose active card
-- `GET /arena/market/listings` - browse active player card listings
-- `GET /arena/market/listings/mine` - current user's active listings
-- `GET /arena/market/price` - completed-sale average or shop baseline
-- `POST /arena/market/listings` - move a collection card into market escrow
-- `POST /arena/market/listings/:listingId/buy` - buy an active listing
-- `POST /arena/market/listings/:listingId/cancel` - cancel and restore a listing
-- `GET /arena/updates` - newest Arena home update posts
-- `POST /arena/updates` - publish an Arena update (owner only)
-- `DELETE /arena/updates/:updateId` - delete an Arena update (owner only)
-- `POST /arena/fight` - run fight
-- `POST /arena/draw-card` - daily draw
-- `GET /arena/shop` - shop payload
-- `POST /arena/shop/buy` - buy shop item
-- `POST /arena/shop/use-consumable` - use consumable
-- `POST /arena/shop/craft` - craft recipe
-- `GET /arena/leaderboard` - leaderboard data
+- `GET /arena/profile`, `GET /arena/collection`, `GET /arena/leaderboard`, `GET /arena/hall-of-fame`
+- `POST /arena/verify` - Turnstile human check
+- `POST /arena/draw-card`, `POST /arena/draw-pack`, `POST /arena/mint`
+- `POST /arena/collection/select-card`, `/sacrifice`, `/toggle-favorite`
+- `POST /arena/fight`, `/fight/start`, `/fight/advance`, `/fight/skip`; `GET /arena/fight/state`
+- `GET /arena/shop`, `/shop/cards`, `/shop/titles`; `POST /arena/shop/buy`, `/shop/equip`, `/shop/enhance`, `/shop/reroll-substat`, `/shop/use-consumable`, `/shop/titles/buy`, ...
+- `GET /arena/skill-tree`; `POST /arena/skill-tree/activate`, `/skill-tree/reset`
+- `POST /arena/loadout/save`, `/loadout/restore`, `/loadout/delete`
+- Marketplace: `GET /arena/market/listings`, `/market/listings/mine`, `/market/price`; `POST /arena/market/listings`, `/market/listings/:id/buy`, `/market/listings/:id/cancel`
+- Trading: `GET /arena/trade/...`; `POST /arena/trade/request`, `/trade/session/:id/offer-card`, `/trade/session/:id/confirm`, ...
+- Notifications: `GET /arena/notifications`, `/notifications/unread-count`; `POST /arena/notifications/read-all`
+- Updates (owner): `GET /arena/updates`, `POST /arena/updates`, `DELETE /arena/updates/:updateId`
+- Compensations: `GET /arena/archive`; `POST /arena/compensations/claim`
+
+### TCG (`/tcg/...`)
+
+- `GET /tcg/active-game`, `GET /tcg/eligible-cards`, `GET /tcg/game/:gameId`
+- `GET /tcg/queue`, `POST /tcg/queue`, `DELETE /tcg/queue`
+- `POST /tcg/solo` - start a solo game
+- `POST /tcg/game/:gameId/deck`, `POST /tcg/game/:gameId/action`
 
 ### Question of the Day
 
 - `GET /question-of-the-day` - SEO/share page
 - `GET /question-of-the-day/embed-image.png` - QOTD share image
-- `GET /question-of-the-day/current` - current question + answers
-- `POST /question-of-the-day/current` - set/update current question (owner)
+- `GET /question-of-the-day/current`, `POST /question-of-the-day/current` (owner)
 - `POST /question-of-the-day/current/answers` - submit answer
-- `GET /question-of-the-day/admin/questions` - admin queue page
-- `POST /question-of-the-day/admin/questions` - queue prompts (owner)
-- `POST /question-of-the-day/admin/current/force-archive` - force archive (owner)
-- `GET /question-of-the-day/archive` - archive list
-- `GET /question-of-the-day/archive/:recordedDate` - archive day detail
-- `DELETE /question-of-the-day/answers/:id` - delete answer (owner)
+- `GET /question-of-the-day/admin/questions`, `POST .../admin/questions` (owner)
+- `POST /question-of-the-day/admin/current/force-archive` (owner)
+- `GET /question-of-the-day/archive`, `GET /question-of-the-day/archive/:recordedDate`
+- `DELETE /question-of-the-day/answers/:id` (owner)
+
+### Pixies (short video) (`/pixies/...`)
+
+- `GET /pixies` - SEO/share feed page; `GET /pixies/:videoId` - share page
+- `GET /pixies/feed`, `/search`, `/popular`, `/following`, `/tags`, `/user/:userId`
+- `POST /pixies/:id/view`, `/:id/like`; `GET /pixies/:id/comments`, `POST /pixies/:id/comments`, `POST /pixies/:id/comments/:commentId/like`, `DELETE /pixies/:id/comments/:commentId`
+- `POST /pixies/` - create; `DELETE /pixies/:id`
+- Notifications: `GET /pixies/notifications`, `/notifications/unread-count`; `POST /pixies/notifications/read-all`, `/notifications/:id/read`
+- Admin/import: `GET /admin/pixies`, `GET /admin/tiktok`, `GET /pixies/admin/tiktok/queue`, `POST /pixies/admin`, `POST /pixies/admin/resolve`, `GET/POST /pixies/admin/import/queue`, `POST /pixies/admin/import/queue/:id/retry`, `/:id/cancel`, `/clear`
+- Raw media is served from `/videos/:filename`
+
+### Twitch (`/twitch/...`)
+
+- `GET /twitch/channels`, `POST /twitch/channels`, `DELETE /twitch/channels/:login`
+- `GET /twitch/channels/:login/prediction`, `/accuracy`, `/profile`
+- `POST /twitch/channels/:login/backfill`
+- `GET /twitch/push/vapid-public-key`, `/push/status`; `POST /twitch/push/subscribe`, `DELETE /twitch/push/subscribe`
+
+### Fan art
+
+- `GET /fanart` - aggregated search across Safebooru / Gelbooru / Danbooru / Pixiv
+
+### Admin (`/admin/...`, owner only)
+
+- `GET /admin/users/lookup`, `/users/suggestions`, `/arena/characters/suggestions`, `/arena/metrics`
+- `POST /admin/users/:userId/coins`, `/cards`, `/reset-draws`, `/clear-consumable-effects`
+- `POST /admin/arena/compensations`, `/arena/card-shop/reroll`
 
 ### Anime, quotes, shrines, images
 
-- `GET /anime` - SEO/share page
-- `GET /anime/currently-watching` - MAL-backed currently watching feed
-- `GET /anime/currently-watching/embed-image.png` - anime share image
-- `GET /quotes` - SEO/share page
-- `GET /quotes/embed-image.png` - quotes share image
-- `GET /quote-of-the-day` - quote snapshot payload
-- `GET /shrines/pages` - list shrine page configs
-- `GET /shrines/pages/:slug` - get shrine page config
-- `POST /shrines/pages` - create shrine page config (owner)
-- `PUT /shrines/pages/:slug` - update shrine page config (owner)
-- `GET /shrine` - shrine hub SEO/share page
-- `GET /shrine/:slug` - shrine entry SEO/share page
-- `POST /posts-img` - upload image for posts
-- `GET /images/list` - list uploaded image files
-- `GET /images/meta/:filename` - read image metadata
-- `GET /images/:filename` - static image file serving
+- `GET /anime` - SEO/share page; `GET /anime/currently-watching` - MAL-backed feed; `GET /anime/currently-watching/embed-image.png`
+- `GET /quotes` - SEO/share page; `GET /quotes/embed-image.png`; `GET /quote-of-the-day` - snapshot payload
+- `GET /shrines/pages`, `GET /shrines/pages/:slug`, `POST /shrines/pages` (owner), `PUT /shrines/pages/:slug` (owner)
+- `GET /shrine`, `GET /shrine/:slug` - shrine SEO/share pages
+- `GET /images/list`, `GET /images/meta/:filename`, `GET /images/:filename` - static image serving
 
 ## If something feels broken
 
 - Check `mirabellier-backend/.env` first
 - If login fails, verify Discord app credentials + callback URL
 - If frontend auth redirects look wrong, verify `FRONTEND_URL`
+- If local dev requests are blocked by CORS / Socket.IO / OAuth, set `ALLOW_DEV_ORIGINS=true` (dev only)
+- If Turnstile blocks you locally, set `TURNSTILE_DEV_BYPASS=true` (dev only)
+- If rate limiting seems too strict or per-IP buckets collapse, check `TRUST_PROXY_HOPS` matches your proxy chain (Cloudflare only = 1, Cloudflare + nginx = 2)
 - If uploads fail, verify `IMAGES_DIR` path and file permissions
+- If Pixie imports fail, verify `yt-dlp` + `ffmpeg` are installed and the relevant cookie file exists
 - If MAL endpoints fail, verify `MAL_CLIENT_ID` and `MAL_USERNAME`
+- If Twitch push fails, verify the VAPID keys and `VAPID_SUBJECT`
 - If data seems stale, make sure only one local process is writing the same SQLite DB
 - If owner-only routes return 403, verify `OWNER_DISCORD_IDS`
 
