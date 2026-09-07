@@ -296,6 +296,7 @@ function registerRoutes(app) {
     makeToken: users.makeToken,
     createSession: users.createSession,
     deleteSession: users.deleteSession,
+    revokeUserSessions: users.revokeUserSessions,
     getUserByUsername: users.getUserByUsername,
     getUserById: users.getUserById,
     getUserByToken: users.getUserByToken,

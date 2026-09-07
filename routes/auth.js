@@ -408,6 +408,7 @@ module.exports = function registerAuthRoutes(app, deps) {
     makeToken,
     createSession,
     deleteSession,
+    revokeUserSessions,
     getUserByUsername,
     getUserById,
     updateUserById,
@@ -602,6 +603,11 @@ module.exports = function registerAuthRoutes(app, deps) {
         );
         if (optimizedBanner !== undefined) banner = optimizedBanner;
 
+        const usernameChanged =
+          typeof req.body.username === "string" &&
+          req.body.username.trim() !== "" &&
+          req.body.username.trim() !== user.username;
+
         const updated = updateUserById(user.id, {
           username: req.body.username,
           avatar,
@@ -611,10 +617,22 @@ module.exports = function registerAuthRoutes(app, deps) {
           website: req.body.website,
         });
 
+        // An identity change revokes every existing session (other devices are
+        // signed out); re-issue one for the device that made the change.
+        if (usernameChanged) {
+          revokeUserSessions(user.id);
+          const freshToken = makeToken();
+          createSession(freshToken, user.id);
+          setSessionCookie(req, res, freshToken);
+        }
+
         res.json(buildAuthenticatedUserPayload(updated, userPublic));
       } catch (err) {
         if (err.message === "username taken") {
           return res.status(409).json({ error: "username taken" });
+        }
+        if (err.message === "invalid username") {
+          return res.status(400).json({ error: "invalid username" });
         }
         res.status(500).json({ error: "update failed" });
       }
