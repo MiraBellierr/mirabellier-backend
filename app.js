@@ -178,7 +178,7 @@ function parsePositiveInt(value, fallback) {
 function createGlobalRateLimiter() {
   return rateLimit({
     windowMs: 60_000,
-    max: parsePositiveInt(process.env.RATE_LIMIT_GLOBAL_PER_MIN, 600),
+    limit: parsePositiveInt(process.env.RATE_LIMIT_GLOBAL_PER_MIN, 600),
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "rate_limited" },
@@ -188,7 +188,7 @@ function createGlobalRateLimiter() {
 function createWriteRateLimiter() {
   return rateLimit({
     windowMs: 60_000,
-    max: parsePositiveInt(process.env.RATE_LIMIT_WRITE_PER_MIN, 60),
+    limit: parsePositiveInt(process.env.RATE_LIMIT_WRITE_PER_MIN, 60),
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) =>
