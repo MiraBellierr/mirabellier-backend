@@ -4596,6 +4596,8 @@ test("arena routes remain registered through compatibility entry", async () => {
 });
 
 test("fight endpoints reject callers who have not cleared Turnstile", async () => {
+  const previousBypass = process.env.TURNSTILE_DEV_BYPASS;
+  process.env.TURNSTILE_DEV_BYPASS = "true";
   resetArenaFightVerifications();
   const db = createTestDb();
   insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "R") });
@@ -4640,6 +4642,11 @@ test("fight endpoints reject callers who have not cleared Turnstile", async () =
       server.close((error) => (error ? reject(error) : resolve()));
     });
     resetArenaFightVerifications();
+    if (previousBypass === undefined) {
+      delete process.env.TURNSTILE_DEV_BYPASS;
+    } else {
+      process.env.TURNSTILE_DEV_BYPASS = previousBypass;
+    }
   }
 });
 

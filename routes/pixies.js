@@ -367,6 +367,22 @@ module.exports = function registerPixieRoutes(app, deps) {
   const { db, authFromReq, VIDEOS_DIR, IMAGES_DIR, videoUpload } = deps;
   const router = express.Router();
 
+  // Auth guards that run *before* multer, so an unauthenticated request is
+  // rejected before up to 250 MB is written to VIDEOS_DIR.
+  function requireUserMw(req, res, next) {
+    const user = authFromReq(req);
+    if (!user) return res.status(401).json({ error: "unauthenticated" });
+    req.authUser = user;
+    next();
+  }
+  function requireOwnerMw(req, res, next) {
+    const user = authFromReq(req);
+    if (!user) return res.status(401).json({ error: "unauthenticated" });
+    if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+    req.authUser = user;
+    next();
+  }
+
   // ── Inbox: real-time notifications (likes, comments, replies, moderation) ──
   // Declared before the `/:id/*` routes below so `/notifications*` can never be
   // captured as a video id.
@@ -681,10 +697,9 @@ module.exports = function registerPixieRoutes(app, deps) {
   }
 
   // ── Upload a video ──
-  router.post("/", videoUpload.single("video"), (req, res) => {
+  router.post("/", requireUserMw, videoUpload.single("video"), (req, res) => {
     try {
-      const user = authFromReq(req);
-      if (!user) return res.status(401).json({ error: "unauthenticated" });
+      const user = req.authUser;
 
       if (!req.file) {
         return res.status(400).json({ error: "No video provided" });
@@ -731,11 +746,9 @@ module.exports = function registerPixieRoutes(app, deps) {
   });
 
   // ── Admin upload with custom author (owner only) ──
-  router.post("/admin", videoUpload.single("video"), async (req, res) => {
+  router.post("/admin", requireOwnerMw, videoUpload.single("video"), async (req, res) => {
     try {
-      const user = authFromReq(req);
-      if (!user) return res.status(401).json({ error: "unauthenticated" });
-      if (!isOwner(user)) return res.status(403).json({ error: "forbidden" });
+      const user = req.authUser;
 
       const cleanupFile = () => {
         if (!req.file) return;

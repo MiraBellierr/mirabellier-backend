@@ -36,17 +36,23 @@ function mapImageMetadata(imagesDir, filename) {
 }
 
 module.exports = function registerImageRoutes(app, deps) {
-  const { IMAGES_DIR } = deps;
+  const { IMAGES_DIR, authFromReq, isOwner } = deps;
 
+  // Full-directory enumeration (every user's avatar/banner, every blog image,
+  // anything meant to be unlisted). Owner-only.
   app.get("/images/list", (req, res) => {
     try {
+      const requester = typeof authFromReq === "function" ? authFromReq(req) : null;
+      if (!requester || (typeof isOwner === "function" && !isOwner(requester))) {
+        return res.status(403).json({ error: "forbidden" });
+      }
+
       const files = listImageFiles(IMAGES_DIR);
       const list = files
         .map((filename) => mapImageMetadata(IMAGES_DIR, filename))
         .sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
 
-      // Cache image list for 2 minutes
-      res.setHeader("Cache-Control", "public, max-age=120");
+      res.setHeader("Cache-Control", "private, no-store");
       res.json(list);
     } catch {
       res.status(500).json({ error: "Failed to read images" });
