@@ -1,5 +1,6 @@
 const path = require("path");
 const fs = require("fs");
+const fsp = fs.promises;
 
 function isSafeFilename(filename) {
   return Boolean(
@@ -10,29 +11,37 @@ function isSafeFilename(filename) {
   );
 }
 
-function listImageFiles(imagesDir) {
-  if (!fs.existsSync(imagesDir)) return [];
+// Enumerate the images directory without blocking the event loop. `readdir`
+// with `withFileTypes` gives `isFile()` for free (no stat), then one async
+// `stat` per file supplies size / mtime — down from two synchronous stats per
+// entry. A file removed between the readdir and its stat is just skipped.
+async function readImageList(imagesDir) {
+  let entries;
+  try {
+    entries = await fsp.readdir(imagesDir, { withFileTypes: true });
+  } catch (err) {
+    if (err && err.code === "ENOENT") return [];
+    throw err;
+  }
 
-  return fs.readdirSync(imagesDir).filter((filename) => {
-    const fullPath = path.join(imagesDir, filename);
-    try {
-      return fs.statSync(fullPath).isFile();
-    } catch {
-      return false;
-    }
-  });
-}
+  const files = entries.filter((entry) => entry.isFile());
+  const settled = await Promise.all(
+    files.map(async (entry) => {
+      try {
+        const stat = await fsp.stat(path.join(imagesDir, entry.name));
+        return {
+          filename: entry.name,
+          url: `/images/${entry.name}`,
+          size: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
 
-function mapImageMetadata(imagesDir, filename) {
-  const fullPath = path.join(imagesDir, filename);
-  const stat = fs.statSync(fullPath);
-
-  return {
-    filename,
-    url: `/images/${filename}`,
-    size: stat.size,
-    modifiedAt: stat.mtime.toISOString(),
-  };
+  return settled.filter(Boolean);
 }
 
 module.exports = function registerImageRoutes(app, deps) {
@@ -40,17 +49,16 @@ module.exports = function registerImageRoutes(app, deps) {
 
   // Full-directory enumeration (every user's avatar/banner, every blog image,
   // anything meant to be unlisted). Owner-only.
-  app.get("/images/list", (req, res) => {
+  app.get("/images/list", async (req, res) => {
     try {
       const requester = typeof authFromReq === "function" ? authFromReq(req) : null;
       if (!requester || (typeof isOwner === "function" && !isOwner(requester))) {
         return res.status(403).json({ error: "forbidden" });
       }
 
-      const files = listImageFiles(IMAGES_DIR);
-      const list = files
-        .map((filename) => mapImageMetadata(IMAGES_DIR, filename))
-        .sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+      const list = (await readImageList(IMAGES_DIR)).sort(
+        (a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt),
+      );
 
       res.setHeader("Cache-Control", "private, no-store");
       res.json(list);

@@ -93,6 +93,13 @@ function sanitizeGuestName(value) {
   return collapseWhitespace(value).slice(0, MAX_GUEST_NAME_LENGTH);
 }
 
+// The guest token is supplied by the client (generated + stored in the
+// browser's localStorage) and used as the `guest` identity key for the
+// "one answer per question" check. It is not a real uniqueness guarantee: a
+// visitor can clear storage or send a fresh `qotd:guest:<random>` value and
+// answer again. The per-IP write cap is the only hard limit. If guest answer
+// counts ever need to be trustworthy, key them on a server-issued signed
+// cookie (`signSessionId` in lib/users.js) rather than this token.
 function sanitizeGuestToken(value) {
   const trimmed = collapseWhitespace(value);
   return GUEST_TOKEN_PATTERN.test(trimmed) ? trimmed : null;

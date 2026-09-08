@@ -117,6 +117,14 @@ function readSingleHeader(value) {
   return typeof value === "string" ? value : "";
 }
 
+// NOTE ON TRUST: the anonymous like identity below arrives in a client-set
+// header (`x-like-anonymous-id` / `x-like-client-id`) that the browser generates
+// and persists in localStorage. It is a dedup *hint*, not proof of a unique
+// person — a caller can mint a fresh value per request and like a post
+// repeatedly. The 60-writes/min per-IP cap (app.js) is the only hard limit.
+// Blog like counts are treated as decorative here; if they ever need to be
+// trustworthy, key anonymous actors on a signed cookie (`signSessionId` in
+// lib/users.js) or an IP+user-agent hash instead of this header.
 function normalizeAnonymousLikeId(value) {
   const trimmed = String(value || "").trim();
   if (!trimmed || trimmed.length > 128) return "";

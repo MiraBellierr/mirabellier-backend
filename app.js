@@ -199,6 +199,63 @@ function createWriteRateLimiter() {
   });
 }
 
+// `/auth/ws-token` mints a short-lived WebSocket credential. The 60/min write
+// limiter covers it (it's a POST), but that is loose for a credential mint — a
+// dedicated bucket holds it to ~10/min per authenticated user (falling back to
+// per-IP for the unauthenticated case, which 401s anyway). Resolving the user
+// here repeats the handler's `authFromReq` lookup; negligible at this volume.
+function createWsTokenRateLimiter() {
+  return rateLimit({
+    windowMs: 60_000,
+    limit: parsePositiveInt(process.env.RATE_LIMIT_WS_TOKEN_PER_MIN, 10),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      const user = authFromReq(req);
+      return user && user.id
+        ? `user:${user.id}`
+        : rateLimit.ipKeyGenerator(req.ip);
+    },
+    message: { error: "rate_limited" },
+  });
+}
+
+// Permissive-but-real CSP. The API, the SSR SEO/embed pages, and the built
+// SPA entry (`dist/index.html`) all share this origin, so the directives have
+// to cover everything those pages actually pull in:
+//   - the SPA entry ships two inline <script> blocks (boot-route + theme) and
+//     an inline critical-CSS <style>  -> 'unsafe-inline' for script/style
+//   - it also loads its bundle from /assets on this origin                -> 'self'
+//   - React renders `style={{…}}` as inline style attributes             -> covered by style-src
+//   - object URLs for video posters / avatar previews / downloads        -> blob:
+//   - remote images (Discord CDN avatars, proxied fan art)               -> https: data:
+//   - the realtime layer opens a WebSocket                               -> ws: wss:
+//   - Twitch player/clip and Ko-fi embeds are iframed                    -> frame-src https:
+// `script-src-attr 'none'` still blocks on*="" handler attributes, and
+// `frame-ancestors 'none'` keeps other sites from framing us (matches the
+// existing X-Frame-Options).
+//
+// Shipped as Content-Security-Policy-Report-Only first (see `reportOnly` below):
+// violations surface in the browser console without blocking anything. Once the
+// console is clean in prod, drop `reportOnly` to enforce.
+const CONTENT_SECURITY_POLICY_DIRECTIVES = {
+  "default-src": ["'self'"],
+  "base-uri": ["'self'"],
+  "object-src": ["'none'"],
+  "frame-ancestors": ["'none'"],
+  "form-action": ["'self'"],
+  "script-src": ["'self'", "'unsafe-inline'"],
+  "script-src-attr": ["'none'"],
+  "style-src": ["'self'", "'unsafe-inline'"],
+  "img-src": ["'self'", "data:", "blob:", "https:"],
+  "media-src": ["'self'", "data:", "blob:", "https:"],
+  "font-src": ["'self'", "data:"],
+  "connect-src": ["'self'", "https:", "ws:", "wss:"],
+  "worker-src": ["'self'", "blob:"],
+  "frame-src": ["'self'", "https:"],
+  // No `upgrade-insecure-requests`: local dev is served over http.
+};
+
 function registerMiddlewares(app) {
   // Behind Cloudflare (+ any reverse proxy): trust exactly the configured hop
   // count so req.ip is the real client and rate-limit buckets are per-visitor.
@@ -209,10 +266,11 @@ function registerMiddlewares(app) {
   app.use(createCorsMiddleware());
   app.use(
     helmet({
-      // API and server-rendered share this origin; a strict default CSP would
-      // break the SSR embed / SPA-entry HTML. nosniff, HSTS, frameguard,
-      // Referrer-Policy etc. still apply.
-      contentSecurityPolicy: false,
+      contentSecurityPolicy: {
+        useDefaults: false,
+        reportOnly: true,
+        directives: CONTENT_SECURITY_POLICY_DIRECTIVES,
+      },
       // The frontend loads /images and /videos from this (cross-origin) API.
       crossOriginResourcePolicy: { policy: "cross-origin" },
     }),
@@ -412,7 +470,7 @@ const ARENA_VERIFICATION_REQUIRED = "ARENA_VERIFICATION_REQUIRED";
 const ARENA_FIGHT_RATE_LIMIT = "ARENA_FIGHT_RATE_LIMIT";
 
 // WS auth token endpoint — returns a short-lived token for WebSocket connection
-app.post("/auth/ws-token", (req, res) => {
+app.post("/auth/ws-token", createWsTokenRateLimiter(), (req, res) => {
   try {
     const user = authFromReq(req);
     if (!user) return res.status(401).json({ error: "unauthenticated" });
@@ -423,6 +481,38 @@ app.post("/auth/ws-token", (req, res) => {
   } catch {
     res.status(500).json({ error: "failed" });
   }
+});
+
+// ── Terminal handlers ──
+// Every route above answers JSON. Without these two, an unmatched path or an
+// unhandled (or async-rejected) error falls through to Express's *default*
+// handler, which sends an HTML body — and, when NODE_ENV !== "production", the
+// full stack trace with it (see security #1). Frontend callers all do
+// `res.json()`, so that surfaces as an opaque parse failure instead of the
+// app's own `{ error }` shape. Registered last so they only see what nothing
+// else matched.
+app.use((req, res) => {
+  res.status(404).json({ error: "not found" });
+});
+
+// Four args: Express only treats a middleware as an error handler when its
+// arity is 4, so `req` stays in the signature even though it is unused here.
+app.use((err, req, res, next) => {
+  // A handler that already started the response can't be rescued — hand back to
+  // Express so it can abort the connection.
+  if (res.headersSent) return next(err);
+
+  const status =
+    Number.isInteger(err && err.status) && err.status >= 400 && err.status < 600
+      ? err.status
+      : 500;
+
+  // Log the real error server-side; never ship its details to the client.
+  if (status >= 500) {
+    console.error("[unhandled]", err);
+  }
+
+  res.status(status).json({ error: status >= 500 ? "internal" : "request failed" });
 });
 
 const httpServer = http.createServer(app);
