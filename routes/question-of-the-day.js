@@ -182,6 +182,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     authFromReq,
     getUserById,
     userPublic,
+    imagesDir = null,
     generateSitemap,
     notifyQuestionOfTheDayDrop = () => Promise.resolve({ skipped: true }),
   } = deps;
@@ -529,29 +530,34 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     });
   }
 
-  function resolveAnswerDisplayName(row) {
+  function resolveAnswerIdentity(row) {
     if (row.userId) {
       const publicUser = userPublic(getUserById(row.userId));
       if (publicUser?.username) {
-        return publicUser.username;
+        return {
+          displayName: publicUser.username,
+          avatar: publicUser.avatar || "",
+        };
       }
     }
 
-    return row.guestName || "Anonymous";
+    return { displayName: row.guestName || "Anonymous", avatar: "" };
   }
 
   function buildAnswerShareStateForRow(row) {
+    if (!row) {
+      return buildAnswerPreviewState({ answer: null });
+    }
+
+    const identity = resolveAnswerIdentity(row);
+
     return buildAnswerPreviewState({
-      answer: row
-        ? {
-            id: row.id,
-            recordedDate: row.recordedDate,
-            prompt: row.prompt,
-            answer: row.answer,
-            displayName: resolveAnswerDisplayName(row),
-            createdAt: row.createdAt,
-          }
-        : null,
+      answer: {
+        id: row.id,
+        answer: row.answer,
+        displayName: identity.displayName,
+        avatar: identity.avatar,
+      },
     });
   }
 
@@ -615,7 +621,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
         const row = selectAnswerWithQuestionById.get(String(req.params.id || ""));
         const state = buildAnswerShareStateForRow(row);
         const dimensions = getAnswerPreviewDimensions();
-        const imageBuffer = await renderAnswerPreviewBuffer(state);
+        const imageBuffer = await renderAnswerPreviewBuffer(state, { imagesDir });
 
         res.setHeader("Content-Type", "image/png");
         res.setHeader("Content-Length", String(imageBuffer.length));

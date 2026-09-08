@@ -382,6 +382,7 @@ function registerRoutes(app) {
     authFromReq,
     getUserById: users.getUserById,
     userPublic: users.userPublic,
+    imagesDir: uploads.IMAGES_DIR,
     generateSitemap,
     notifyQuestionOfTheDayDrop: () => maybeNotifyNewQuestionOfTheDayDrop(db),
   });

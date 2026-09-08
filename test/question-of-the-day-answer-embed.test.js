@@ -12,11 +12,9 @@ const {
 
 const SAMPLE_ANSWER = {
   id: "1717171717171-ab12cd",
-  recordedDate: "2026-09-08",
-  prompt: "What tiny thing made today better?",
   answer: "A stranger held the door and wished me a good morning.",
   displayName: "mirabelle",
-  createdAt: "2026-09-08T09:30:00.000Z",
+  avatar: "/images/avatars/mirabelle.webp",
 };
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -27,11 +25,15 @@ test("buildAnswerPreviewState normalizes a populated answer", () => {
   assert.equal(state.variant, "answer");
   assert.equal(state.id, SAMPLE_ANSWER.id);
   assert.equal(state.displayName, "mirabelle");
-  assert.equal(state.displayDate, "September 8, 2026");
+  assert.equal(state.answer, SAMPLE_ANSWER.answer);
+  assert.equal(state.avatar, SAMPLE_ANSWER.avatar);
   assert.match(state.title, /mirabelle/);
-  assert.match(state.title, /Question of the Day/);
-  assert.match(state.description, /held the door/);
   assert.ok(state.version && state.version.length === 12);
+});
+
+test("buildAnswerPreviewState carries no description field", () => {
+  const state = buildAnswerPreviewState({ answer: SAMPLE_ANSWER });
+  assert.equal(state.description, undefined);
 });
 
 test("buildAnswerPreviewState is deterministic for the same input", () => {
@@ -41,13 +43,27 @@ test("buildAnswerPreviewState is deterministic for the same input", () => {
   assert.equal(a.version, b.version);
 });
 
-test("buildAnswerPreviewState version changes when the answer text changes", () => {
-  const a = buildAnswerPreviewState({ answer: SAMPLE_ANSWER });
-  const b = buildAnswerPreviewState({
-    answer: { ...SAMPLE_ANSWER, answer: "Something else entirely." },
-  });
+test("buildAnswerPreviewState version reacts to answer, name and avatar", () => {
+  const base = buildAnswerPreviewState({ answer: SAMPLE_ANSWER });
 
-  assert.notEqual(a.version, b.version);
+  assert.notEqual(
+    base.version,
+    buildAnswerPreviewState({
+      answer: { ...SAMPLE_ANSWER, answer: "Something else entirely." },
+    }).version,
+  );
+  assert.notEqual(
+    base.version,
+    buildAnswerPreviewState({
+      answer: { ...SAMPLE_ANSWER, displayName: "someone else" },
+    }).version,
+  );
+  assert.notEqual(
+    base.version,
+    buildAnswerPreviewState({
+      answer: { ...SAMPLE_ANSWER, avatar: "/images/avatars/other.webp" },
+    }).version,
+  );
 });
 
 test("buildAnswerPreviewState falls back to the missing variant", () => {
@@ -75,7 +91,7 @@ test("getAnswerPreviewDimensions is a 1.91:1 card", () => {
   assert.deepEqual(getAnswerPreviewDimensions(), { width: 1200, height: 630 });
 });
 
-test("buildAnswerShareHtml embeds Open Graph tags for crawlers", () => {
+test("buildAnswerShareHtml embeds the image but no description meta", () => {
   const state = buildAnswerPreviewState({ answer: SAMPLE_ANSWER });
   const html = buildAnswerShareHtml({
     state,
@@ -95,13 +111,17 @@ test("buildAnswerShareHtml embeds Open Graph tags for crawlers", () => {
   );
   assert.match(html, /<meta property="og:image:width" content="1200"/);
   assert.match(html, /<meta name="twitter:card" content="summary_large_image"/);
-  assert.match(html, /<meta property="og:type" content="article"/);
-  assert.match(html, /held the door/);
+  assert.doesNotMatch(html, /og:description/);
+  assert.doesNotMatch(html, /twitter:description/);
+  assert.doesNotMatch(html, /<meta name="description"/);
+  // The answer text must not appear as rendered body copy (only in JSON-LD).
+  const body = html.slice(html.indexOf("<body"));
+  assert.doesNotMatch(body, /held the door/);
 });
 
 test("renderAnswerPreviewBuffer produces a PNG for both variants", async () => {
   const answerBuffer = await renderAnswerPreviewBuffer(
-    buildAnswerPreviewState({ answer: SAMPLE_ANSWER }),
+    buildAnswerPreviewState({ answer: { ...SAMPLE_ANSWER, avatar: "" } }),
   );
   assert.ok(Buffer.isBuffer(answerBuffer));
   assert.ok(answerBuffer.length > 1000);
@@ -113,14 +133,21 @@ test("renderAnswerPreviewBuffer produces a PNG for both variants", async () => {
   assert.ok(missingBuffer.subarray(0, 4).equals(PNG_SIGNATURE));
 });
 
-test("renderAnswerPreviewBuffer handles very long answers without throwing", async () => {
-  const longAnswer = {
-    ...SAMPLE_ANSWER,
-    answer: "word ".repeat(400).trim(),
-  };
-
+test("renderAnswerPreviewBuffer tolerates an unresolvable avatar path", async () => {
   const buffer = await renderAnswerPreviewBuffer(
-    buildAnswerPreviewState({ answer: longAnswer }),
+    buildAnswerPreviewState({
+      answer: { ...SAMPLE_ANSWER, avatar: "/images/nope/missing.webp" },
+    }),
+    { imagesDir: "/tmp/definitely-not-here" },
+  );
+  assert.ok(buffer.subarray(0, 4).equals(PNG_SIGNATURE));
+});
+
+test("renderAnswerPreviewBuffer handles very long answers without throwing", async () => {
+  const buffer = await renderAnswerPreviewBuffer(
+    buildAnswerPreviewState({
+      answer: { ...SAMPLE_ANSWER, answer: "word ".repeat(400).trim() },
+    }),
   );
   assert.ok(buffer.subarray(0, 4).equals(PNG_SIGNATURE));
 });
