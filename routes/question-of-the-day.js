@@ -10,6 +10,12 @@ const {
   renderQuestionPreviewBuffer,
 } = require("../lib/question-of-the-day-embed");
 const {
+  buildAnswerPreviewState,
+  buildAnswerShareHtml,
+  getAnswerPreviewDimensions,
+  renderAnswerPreviewBuffer,
+} = require("../lib/question-of-the-day-answer-embed");
+const {
   isLikelyCrawler,
   resolveProtocol,
 } = require("../lib/share-preview-utils");
@@ -233,6 +239,19 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     `SELECT id, recordedDate, userId, guestName, answer, createdAt
      FROM daily_question_answers
      WHERE id = ?`,
+  );
+  const selectAnswerWithQuestionById = db.prepare(
+    `SELECT
+       a.id,
+       a.recordedDate,
+       a.userId,
+       a.guestName,
+       a.answer,
+       a.createdAt,
+       q.prompt
+     FROM daily_question_answers a
+     JOIN daily_questions q ON q.recordedDate = a.recordedDate
+     WHERE a.id = ?`,
   );
   const insertAnswer = db.prepare(
     `INSERT INTO daily_question_answers (
@@ -510,6 +529,32 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     });
   }
 
+  function resolveAnswerDisplayName(row) {
+    if (row.userId) {
+      const publicUser = userPublic(getUserById(row.userId));
+      if (publicUser?.username) {
+        return publicUser.username;
+      }
+    }
+
+    return row.guestName || "Anonymous";
+  }
+
+  function buildAnswerShareStateForRow(row) {
+    return buildAnswerPreviewState({
+      answer: row
+        ? {
+            id: row.id,
+            recordedDate: row.recordedDate,
+            prompt: row.prompt,
+            answer: row.answer,
+            displayName: resolveAnswerDisplayName(row),
+            createdAt: row.createdAt,
+          }
+        : null,
+    });
+  }
+
   app.get("/question-of-the-day", async (req, res) => {
     try {
       if (shouldRedirectToSpa(req)) {
@@ -557,6 +602,75 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       res.send(imageBuffer);
     } catch {
       res.status(500).send("Failed to render question preview image");
+    }
+  });
+
+  // Per-answer share link. Crawlers (Discord, etc.) get an Open Graph document
+  // whose og:image renders the answer in the Question of the Day style; humans
+  // are handed off to the SPA, deep-linked to the day that holds the answer.
+  app.get(
+    "/question-of-the-day/answers/:id/embed-image.png",
+    async (req, res) => {
+      try {
+        const row = selectAnswerWithQuestionById.get(String(req.params.id || ""));
+        const state = buildAnswerShareStateForRow(row);
+        const dimensions = getAnswerPreviewDimensions();
+        const imageBuffer = await renderAnswerPreviewBuffer(state);
+
+        res.setHeader("Content-Type", "image/png");
+        res.setHeader("Content-Length", String(imageBuffer.length));
+        res.setHeader("X-Preview-Version", String(state.version || "fallback"));
+        res.setHeader("X-Preview-Width", String(dimensions.width));
+        res.setHeader("X-Preview-Height", String(dimensions.height));
+        setEmbedImageCacheHeaders(
+          res,
+          typeof req.query.v === "string" && req.query.v.trim().length > 0,
+        );
+        res.send(imageBuffer);
+      } catch {
+        res.status(500).send("Failed to render answer preview image");
+      }
+    },
+  );
+
+  app.get("/question-of-the-day/answers/:id", async (req, res) => {
+    try {
+      const answerId = String(req.params.id || "");
+      const row = selectAnswerWithQuestionById.get(answerId);
+
+      if (shouldRedirectToSpa(req)) {
+        let spaPath = "/question-of-the-day";
+
+        if (row) {
+          const activeRecordedDate = getActiveQuestionRow(
+            getCurrentRecordedDate(),
+          )?.recordedDate;
+          const encodedAnswerId = encodeURIComponent(answerId);
+          // buildFrontendTargetUrl treats the whole spaPath (path + query) as the
+          // redirect pathname, so appending ?answer= here carries it through.
+          spaPath =
+            row.recordedDate === activeRecordedDate
+              ? `/question-of-the-day?answer=${encodedAnswerId}`
+              : `/question-of-the-day/archive/${row.recordedDate}?answer=${encodedAnswerId}`;
+        }
+
+        if (handleHumanSpaRequest(req, res, spaPath)) return;
+        return sendFrontendRedirectConfigError(req, res, spaPath);
+      }
+
+      const host = req.get("host") || "mirabellier.com";
+      const protocol = resolveProtocol(req);
+      const state = buildAnswerShareStateForRow(row);
+      const html = buildAnswerShareHtml({ state, protocol, host });
+
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      if (!row) {
+        res.status(404);
+      }
+      setNoStoreHeaders(res);
+      res.send(html);
+    } catch {
+      res.status(500).send("Server error");
     }
   });
 
