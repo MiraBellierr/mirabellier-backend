@@ -554,9 +554,11 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     return buildAnswerPreviewState({
       answer: {
         id: row.id,
+        prompt: row.prompt,
         answer: row.answer,
         displayName: identity.displayName,
         avatar: identity.avatar,
+        createdAt: row.createdAt,
       },
     });
   }

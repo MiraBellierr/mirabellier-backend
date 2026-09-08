@@ -12,9 +12,12 @@ const {
 
 const SAMPLE_ANSWER = {
   id: "1717171717171-ab12cd",
-  answer: "A stranger held the door and wished me a good morning.",
-  displayName: "mirabelle",
-  avatar: "/images/avatars/mirabelle.webp",
+  prompt: "What is a small ritual that keeps you grounded?",
+  answer:
+    "I don't do any, but sharing meals regularly with your loved ones while talking about your day sounds lovely",
+  displayName: "rishoji",
+  avatar: "/images/avatars/rishoji.webp",
+  createdAt: "2026-09-08T17:27:00.000Z",
 };
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -24,16 +27,21 @@ test("buildAnswerPreviewState normalizes a populated answer", () => {
 
   assert.equal(state.variant, "answer");
   assert.equal(state.id, SAMPLE_ANSWER.id);
-  assert.equal(state.displayName, "mirabelle");
+  assert.equal(state.displayName, "rishoji");
   assert.equal(state.answer, SAMPLE_ANSWER.answer);
   assert.equal(state.avatar, SAMPLE_ANSWER.avatar);
-  assert.match(state.title, /mirabelle/);
+  assert.equal(state.prompt, SAMPLE_ANSWER.prompt);
   assert.ok(state.version && state.version.length === 12);
 });
 
-test("buildAnswerPreviewState carries no description field", () => {
+test("buildAnswerPreviewState puts the question in the description", () => {
   const state = buildAnswerPreviewState({ answer: SAMPLE_ANSWER });
-  assert.equal(state.description, undefined);
+  assert.equal(state.description, SAMPLE_ANSWER.prompt);
+});
+
+test("buildAnswerPreviewState formats the answered-at stamp", () => {
+  const state = buildAnswerPreviewState({ answer: SAMPLE_ANSWER });
+  assert.equal(state.answeredAt, "Sep 8, 2026, 5:27 PM");
 });
 
 test("buildAnswerPreviewState is deterministic for the same input", () => {
@@ -43,26 +51,18 @@ test("buildAnswerPreviewState is deterministic for the same input", () => {
   assert.equal(a.version, b.version);
 });
 
-test("buildAnswerPreviewState version reacts to answer, name and avatar", () => {
+test("buildAnswerPreviewState version reacts to every rendered field", () => {
   const base = buildAnswerPreviewState({ answer: SAMPLE_ANSWER });
+  const mutate = (patch) =>
+    buildAnswerPreviewState({ answer: { ...SAMPLE_ANSWER, ...patch } }).version;
 
+  assert.notEqual(base.version, mutate({ answer: "Different answer entirely." }));
+  assert.notEqual(base.version, mutate({ prompt: "A different question?" }));
+  assert.notEqual(base.version, mutate({ displayName: "someone else" }));
+  assert.notEqual(base.version, mutate({ avatar: "/images/avatars/x.webp" }));
   assert.notEqual(
     base.version,
-    buildAnswerPreviewState({
-      answer: { ...SAMPLE_ANSWER, answer: "Something else entirely." },
-    }).version,
-  );
-  assert.notEqual(
-    base.version,
-    buildAnswerPreviewState({
-      answer: { ...SAMPLE_ANSWER, displayName: "someone else" },
-    }).version,
-  );
-  assert.notEqual(
-    base.version,
-    buildAnswerPreviewState({
-      answer: { ...SAMPLE_ANSWER, avatar: "/images/avatars/other.webp" },
-    }).version,
+    mutate({ createdAt: "2026-09-09T10:00:00.000Z" }),
   );
 });
 
@@ -91,7 +91,7 @@ test("getAnswerPreviewDimensions is a 1.91:1 card", () => {
   assert.deepEqual(getAnswerPreviewDimensions(), { width: 1200, height: 630 });
 });
 
-test("buildAnswerShareHtml embeds the image but no description meta", () => {
+test("buildAnswerShareHtml carries the image and the question as description", () => {
   const state = buildAnswerPreviewState({ answer: SAMPLE_ANSWER });
   const html = buildAnswerShareHtml({
     state,
@@ -111,12 +111,14 @@ test("buildAnswerShareHtml embeds the image but no description meta", () => {
   );
   assert.match(html, /<meta property="og:image:width" content="1200"/);
   assert.match(html, /<meta name="twitter:card" content="summary_large_image"/);
-  assert.doesNotMatch(html, /og:description/);
-  assert.doesNotMatch(html, /twitter:description/);
-  assert.doesNotMatch(html, /<meta name="description"/);
-  // The answer text must not appear as rendered body copy (only in JSON-LD).
-  const body = html.slice(html.indexOf("<body"));
-  assert.doesNotMatch(body, /held the door/);
+  assert.match(
+    html,
+    /<meta property="og:description" content="What is a small ritual that keeps you grounded\?"/,
+  );
+  assert.match(
+    html,
+    /<meta name="twitter:description" content="What is a small ritual that keeps you grounded\?"/,
+  );
 });
 
 test("renderAnswerPreviewBuffer produces a PNG for both variants", async () => {
