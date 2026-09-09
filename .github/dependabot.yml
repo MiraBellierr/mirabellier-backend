@@ -12,3 +12,15 @@ updates:
         update-types:
           - minor
           - patch
+
+  # Keeps the SHA-pinned actions in .github/workflows current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types:
+          - major
+          - minor
+          - patch

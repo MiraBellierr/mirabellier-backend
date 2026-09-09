@@ -8,6 +8,7 @@ const {
   handleHumanSpaRequest,
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
+const { isLikelyCrawler } = require("../lib/share-preview-utils");
 
 const MAX_TAGS = 10;
 
@@ -332,13 +333,6 @@ function buildPostExcerpt(post, maxLength = 320) {
   }
 
   return "";
-}
-
-function isLikelyCrawler(userAgent) {
-  const value = String(userAgent || "").toLowerCase();
-  return /bot|crawler|spider|google-inspectiontool|googlebot|bingbot|slurp|duckduckbot|baiduspider|yandex|facebookexternalhit|twitterbot|linkedinbot|slackbot|discordbot/.test(
-    value,
-  );
 }
 
 function shouldRedirectToSpa(req) {

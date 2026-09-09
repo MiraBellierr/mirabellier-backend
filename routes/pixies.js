@@ -6,6 +6,7 @@ const {
   handleHumanSpaRequest,
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
+const { isLikelyCrawler } = require("../lib/share-preview-utils");
 const {
   normalizeTikTokUrl,
   normalizeTikTokQueueEntry,
@@ -180,16 +181,6 @@ function escapeHtml(value) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-function isLikelyCrawler(userAgent) {
-  const value = String(userAgent || "").toLowerCase();
-  if (/whatsapp/.test(value) && !value.includes("mozilla")) {
-    return true;
-  }
-  return /bot|crawler|spider|preview|pinterest|redditbot|embedly|viber|kakaotalk|facebookexternalhit|twitterbot|discordbot|slackbot|linkedinbot|google-inspectiontool|googlebot|bingbot|slurp|duckduckbot|baiduspider|yandex/.test(
-    value,
-  );
 }
 
 function trimSeoCaption(raw) {

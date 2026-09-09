@@ -28,6 +28,7 @@ The frontend gets the sparkles, but this is the quiet engine room. It stores the
 - Serves anime and quote SEO/share pages + embed images
 - Stores quote snapshots and MyAnimeList currently-watching snapshots
 - Handles image uploads and optimization
+- Collects real-user Core Web Vitals + uncaught client errors from the SPA (`POST /telemetry/vitals`, `POST /telemetry/errors`; 30-day retention)
 - Generates sitemap data and supports IndexNow submission
 - Verifies humans with Cloudflare Turnstile before sensitive actions
 - Hardens requests with Helmet, CORS allow-listing, and per-IP rate limiting
@@ -142,6 +143,12 @@ If `PORT` is missing, `app.js` falls back to `5000`.
 - `npm run export:arena` / `export:levels` - dump Arena data to CSV
 
 More one-off maintenance and migration scripts live in `scripts/`; run them directly with `node scripts/<name>` (for example `node scripts/mirror-discord-avatars.cjs` to backfill mirrored avatars).
+
+## CI / Deployment
+
+`.github/workflows/deploy.yml` runs `npm ci && npm test` on every push and PR to `main`. On a push to `main`, once tests pass, it ships an **atomic release** to the VPS: the source is uploaded to `/srv/mirabellier.com/api/releases/<sha>/`, `npm ci --omit=dev` runs there, `.env` + the SQLite DB + `images/` + `videos/` + the runtime `data/*` files are symlinked in from a persistent `shared/` tree, the `current` symlink is flipped with a single `rename(2)`, and pm2 (`mirabellier-api`, see `ecosystem.config.cjs`) is reloaded. A failed build or health check rolls back to the previous release; the last five are kept.
+
+Full details, the required GitHub secrets, and one-time server setup are in [`DEPLOY.md`](DEPLOY.md).
 
 ## Real-time (WebSocket)
 

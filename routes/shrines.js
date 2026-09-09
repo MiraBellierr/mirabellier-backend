@@ -7,6 +7,7 @@ const {
   handleHumanSpaRequest,
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
+const { isLikelyCrawler } = require("../lib/share-preview-utils");
 const { isOwner } = require("../lib/authz");
 
 function setNoStoreHeaders(res) {
@@ -88,13 +89,6 @@ function mapShrineRow(row) {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
-}
-
-function isLikelyCrawler(userAgent) {
-  const value = String(userAgent || "").toLowerCase();
-  return /bot|crawler|spider|google-inspectiontool|googlebot|bingbot|slurp|duckduckbot|baiduspider|yandex|facebookexternalhit|twitterbot|linkedinbot|slackbot|discordbot/.test(
-    value,
-  );
 }
 
 function shouldRedirectToSpa(req) {

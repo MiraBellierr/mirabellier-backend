@@ -367,6 +367,7 @@ function registerRoutes(app) {
 
   require("./routes/anime")(app, { db, authFromReq });
   require("./routes/fanart")(app);
+  require("./routes/telemetry")(app, { db });
   require("./routes/twitch")(app, { db, authFromReq });
   require("./routes/arena")(app, { db, authFromReq });
   require("./routes/tcg")(app, { db, authFromReq });
@@ -451,6 +452,12 @@ app.post("/posts-img", requireOwner, (req, res) => {
 
 // Serve static files with long cache headers. `nosniff` keeps the browser from
 // re-interpreting an uploaded file as HTML/script regardless of its extension.
+// The resize middleware only engages for `?w=<allow-listed>` and otherwise
+// falls straight through to the static handler.
+const {
+  createImageResizeMiddleware,
+} = require("./lib/image-resize");
+app.use("/images", createImageResizeMiddleware(uploads.IMAGES_DIR));
 app.use("/images", createStaticMiddleware(uploads.IMAGES_DIR));
 
 // Serve uploaded pixie video files with range request support. These live under
