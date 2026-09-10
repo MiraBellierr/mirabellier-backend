@@ -349,6 +349,7 @@ function registerRoutes(app) {
   require("./routes/shrines")(app, { db, authFromReq });
   require("./routes/site-now")(app, { db, authFromReq });
   require("./routes/site-changelog")(app, { db, authFromReq });
+  require("./routes/site-links")(app, { db, authFromReq });
 
   require("./routes/auth")(app, {
     db,
