@@ -5,6 +5,11 @@ const {
   verifyTurnstileToken,
 } = require("../lib/turnstile");
 const { sanitizeWebsite } = require("../lib/sanitize-website");
+const {
+  getOnThisDayKey,
+  normalizeOnThisDayLimit,
+  queryOnThisDayRows,
+} = require("../lib/guestbook-on-this-day");
 
 const MAX_ENTRIES = 100;
 const MAX_NAME_LENGTH = 40;
@@ -125,6 +130,24 @@ module.exports = function registerGuestbookRoutes(app, deps) {
       );
     } catch {
       res.status(500).json({ error: "Failed to fetch guestbook entries" });
+    }
+  });
+
+  router.get("/on-this-day", (req, res) => {
+    try {
+      const { monthDay, year } = getOnThisDayKey();
+      const limit = normalizeOnThisDayLimit(req.query?.limit);
+      const rows = queryOnThisDayRows(db, { monthDay, year, limit });
+
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        date: monthDay,
+        entries: rows.map((row, index) =>
+          mapEntryRow(row, getUserById, userPublic, index),
+        ),
+      });
+    } catch {
+      res.status(500).json({ error: "Failed to fetch guestbook memories" });
     }
   });
 
