@@ -10,6 +10,15 @@ const {
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
 const { isLikelyCrawler } = require("../lib/share-preview-utils");
+const {
+  OG_WIDTH,
+  OG_HEIGHT,
+  buildPostOgImagePath,
+  buildPostOgState,
+  buildPostOgVersion,
+  renderPostOgBuffer,
+} = require("../lib/post-og-image");
+const { sanitizeSeries } = require("../lib/post-series");
 
 const MAX_TAGS = 10;
 
@@ -21,6 +30,17 @@ function setNoStoreHeaders(res) {
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
   res.setHeader("Surrogate-Control", "no-store");
+}
+
+// A versioned card URL (`?v=<updatedAt digest>`) never changes meaning, so it can
+// be cached hard; a bare URL might be a stale edit, so keep that one short-lived.
+function setOgImageCacheHeaders(res, hasVersionQuery) {
+  res.setHeader(
+    "Cache-Control",
+    hasVersionQuery
+      ? "public, max-age=31536000, immutable"
+      : "public, max-age=300",
+  );
 }
 
 function sanitizeTag(value) {
@@ -186,6 +206,7 @@ function mapPostRow(row, getUserById, userPublic) {
     comments: parseCommentsForList(row.comments, getUserById, userPublic),
     shortDescription: row.shortDescription || null,
     thumbnail: row.thumbnail || null,
+    series: row.series || null,
     userId: row.userId,
     author: row.userId
       ? row.authorName || row.author || "Unknown"
@@ -345,6 +366,8 @@ function buildBlogRedirectPage({
   description,
   excerpt,
   imageUrl,
+  imageWidth,
+  imageHeight,
   authorName,
   authorUrl,
   publishedTime,
@@ -395,6 +418,8 @@ function buildBlogRedirectPage({
     <meta property="og:site_name" content="Mirabellier" />
     ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}" />` : ""}
     ${imageUrl ? `<meta property="og:image:alt" content="${escapeHtml(title)}" />` : ""}
+    ${imageUrl && imageWidth ? `<meta property="og:image:width" content="${escapeHtml(String(imageWidth))}" />` : ""}
+    ${imageUrl && imageHeight ? `<meta property="og:image:height" content="${escapeHtml(String(imageHeight))}" />` : ""}
     <meta property="og:url" content="${canonicalUrl}" />
     ${publishedTime ? `<meta property="article:published_time" content="${escapeHtml(publishedTime)}" />` : ""}
     ${modifiedTime ? `<meta property="article:modified_time" content="${escapeHtml(modifiedTime)}" />` : ""}
@@ -576,12 +601,23 @@ module.exports = function registerPostsRoutes(app, deps) {
       const protocol =
         req.headers["x-forwarded-proto"] || req.protocol || "http";
       const frontendOrigin = resolveFrontendOrigin(protocol, host);
-      const imageUrl = buildImageUrl(post.thumbnail || null, protocol, host);
       const authorUrl = post.userId
         ? buildProfileUrl(authorName, frontendOrigin)
         : "";
 
       const spaPath = buildBlogPath(title, id);
+
+      // Hand-picked thumbnail wins; otherwise fall back to a generated title
+      // card so the link never unfurls with just the site background.
+      const thumbnailUrl = buildImageUrl(post.thumbnail || null, protocol, host);
+      const ogSlug = spaPath.replace(/^\/blog\//, "");
+      const generatedOgUrl = `${protocol}://${host}${buildPostOgImagePath(
+        ogSlug,
+        buildPostOgVersion({ updatedAt: modifiedTime, createdAt: publishedTime }),
+      )}`;
+      const imageUrl = thumbnailUrl || generatedOgUrl;
+      const generatedImage = !thumbnailUrl;
+
       if (shouldRedirectToSpa(req)) {
         if (handleHumanSpaRequest(req, res, spaPath)) return;
         return sendFrontendRedirectConfigError(req, res, spaPath);
@@ -594,6 +630,8 @@ module.exports = function registerPostsRoutes(app, deps) {
         description,
         excerpt,
         imageUrl,
+        imageWidth: generatedImage ? OG_WIDTH : undefined,
+        imageHeight: generatedImage ? OG_HEIGHT : undefined,
         authorName,
         authorUrl,
         publishedTime,
@@ -607,6 +645,45 @@ module.exports = function registerPostsRoutes(app, deps) {
       res.send(html);
     } catch {
       res.status(500).send("Server error");
+    }
+  });
+
+  // Generated Open Graph title card for a post. The `:slug` carries the full
+  // human-readable `<slug>-<id>` from the blog URL (plus a `.png` suffix); only
+  // the trailing id is used to look the post up.
+  app.get("/og/post/:slug", async (req, res) => {
+    try {
+      const slug = String(req.params.slug || "").replace(/\.png$/i, "");
+      const id = parseBlogId(slug) || slug;
+      const post = db
+        .prepare(
+          "SELECT p.*, u.username as authorName FROM posts p LEFT JOIN users u ON p.userId = u.id WHERE p.id = ?",
+        )
+        .get(id);
+
+      if (!post) return res.status(404).send("Not found");
+
+      const state = buildPostOgState({
+        title: post.title,
+        tags: parseStoredTags(post.tags),
+        createdAt: post.createdAt,
+        updatedAt: post.updatedAt,
+        author: post.userId
+          ? post.authorName || post.author || ""
+          : post.author || "",
+      });
+      const imageBuffer = await renderPostOgBuffer(state);
+
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("Content-Length", String(imageBuffer.length));
+      res.setHeader("X-Preview-Version", state.version);
+      setOgImageCacheHeaders(
+        res,
+        typeof req.query.v === "string" && req.query.v.trim().length > 0,
+      );
+      res.send(imageBuffer);
+    } catch {
+      res.status(500).send("Failed to render post preview image");
     }
   });
 
@@ -655,12 +732,13 @@ module.exports = function registerPostsRoutes(app, deps) {
       const shortDescription =
         req.body.shortDescription || req.body.description || null;
       const thumbnail = req.body.thumbnail || null;
+      const series = sanitizeSeries(req.body.series);
       const tags = normalizeTags(parseTagsInput(req.body.tags));
       const createdAt = new Date().toISOString();
       const updatedAt = createdAt;
 
       db.prepare(
-        "INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, tags, likes, comments, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, series, tags, likes, comments, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         id,
         title,
@@ -669,6 +747,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         null,
         shortDescription,
         thumbnail,
+        series,
         JSON.stringify(tags),
         JSON.stringify([]),
         JSON.stringify([]),
@@ -683,6 +762,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         content: contentObj,
         shortDescription,
         thumbnail,
+        series,
         tags,
         likes: [],
         comments: [],
@@ -728,6 +808,10 @@ module.exports = function registerPostsRoutes(app, deps) {
         req.body.thumbnail !== undefined
           ? req.body.thumbnail
           : existing.thumbnail;
+      const series =
+        req.body.series !== undefined
+          ? sanitizeSeries(req.body.series)
+          : existing.series || null;
       const rawTags =
         req.body.tags !== undefined
           ? parseTagsInput(req.body.tags)
@@ -738,12 +822,13 @@ module.exports = function registerPostsRoutes(app, deps) {
       const updatedAt = new Date().toISOString();
 
       db.prepare(
-        "UPDATE posts SET title = ?, content = ?, shortDescription = ?, thumbnail = ?, tags = ?, updatedAt = ? WHERE id = ?",
+        "UPDATE posts SET title = ?, content = ?, shortDescription = ?, thumbnail = ?, series = ?, tags = ?, updatedAt = ? WHERE id = ?",
       ).run(
         title,
         JSON.stringify(contentObj),
         shortDescription,
         thumbnail,
+        series,
         JSON.stringify(tags),
         updatedAt,
         id,
@@ -756,6 +841,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         content: contentObj,
         shortDescription: shortDescription || null,
         thumbnail: thumbnail || null,
+        series,
         tags: tags || [],
         likes: parseLikesForList(existing.likes),
         comments: parseCommentsForList(
