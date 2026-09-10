@@ -191,7 +191,7 @@ test("question feed builders use the questions metadata", () => {
   const items = collectQuestionFeedItems(fakeDb(questionRows));
 
   const xml = buildAtomFeed(items, QUESTIONS_FEED);
-  assert.match(xml, /<title>Mirabellier — Question of the Day<\/title>/);
+  assert.match(xml, /<title>Mirabellier Question of the Day<\/title>/);
   assert.match(
     xml,
     /<link href="https:\/\/mirabellier\.com\/feed\/questions\.xml" rel="self"/,
