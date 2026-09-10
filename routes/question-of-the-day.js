@@ -184,6 +184,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     userPublic,
     imagesDir = null,
     generateSitemap,
+    generateFeeds = () => {},
     notifyQuestionOfTheDayDrop = () => Promise.resolve({ skipped: true }),
   } = deps;
   const router = express.Router();
@@ -731,6 +732,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       }
 
       generateSitemap(db);
+      generateFeeds(db);
       void notifyQuestionOfTheDayDrop();
       setNoStoreHeaders(res);
       res.json({
@@ -880,6 +882,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       });
 
       generateSitemap(db);
+      generateFeeds(db);
       void notifyQuestionOfTheDayDrop();
       setNoStoreHeaders(res);
       res.status(201).json({
@@ -917,6 +920,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
       archiveQuestion.run(now, now, activeQuestion.recordedDate);
 
       generateSitemap(db);
+      generateFeeds(db);
       void notifyQuestionOfTheDayDrop();
       setNoStoreHeaders(res);
       res.json({

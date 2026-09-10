@@ -1,4 +1,5 @@
 const { generateSitemap } = require("../lib/sitemap");
+const { generateFeeds } = require("../lib/feed");
 const { isOwner } = require("../lib/authz");
 const {
   getWebsiteBase,
@@ -430,6 +431,7 @@ function resolveAuthorAvatar(existingUserId, user) {
 
 function refreshSearchDiscovery(db, urls = []) {
   generateSitemap(db);
+  generateFeeds(db);
   if (urls.length) {
     void queueIndexNowSubmission(urls);
   }

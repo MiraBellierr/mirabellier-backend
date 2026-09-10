@@ -293,6 +293,7 @@ const users = require("./lib/users");
 const uploads = require("./lib/uploads");
 const { isOwner } = require("./lib/authz");
 const { generateSitemap } = require("./lib/sitemap");
+const { generateFeeds } = require("./lib/feed");
 const { ensureIndexNowKeyFile } = require("./lib/indexnow");
 const { startQuoteOfTheDayScheduler } = require("./lib/quote-of-the-day");
 const {
@@ -346,6 +347,7 @@ function registerRoutes(app) {
   });
   require("./routes/quotes")(app);
   require("./routes/shrines")(app, { db, authFromReq });
+  require("./routes/site-now")(app, { db, authFromReq });
 
   require("./routes/auth")(app, {
     db,
@@ -385,6 +387,7 @@ function registerRoutes(app) {
     userPublic: users.userPublic,
     imagesDir: uploads.IMAGES_DIR,
     generateSitemap,
+    generateFeeds,
     notifyQuestionOfTheDayDrop: () => maybeNotifyNewQuestionOfTheDayDrop(db),
   });
 }
@@ -423,6 +426,7 @@ function createStaticMiddleware(directory) {
 registerMiddlewares(app);
 registerRoutes(app);
 generateSitemap(db);
+generateFeeds(db);
 startQuoteOfTheDayScheduler();
 startQuestionOfTheDayDiscordScheduler(db);
 const { startHallOfFameScheduler } = require("./lib/arena-hall-of-fame-scheduler");

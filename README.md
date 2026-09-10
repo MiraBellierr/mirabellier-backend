@@ -30,6 +30,8 @@ The frontend gets the sparkles, but this is the quiet engine room. It stores the
 - Handles image uploads and optimization
 - Collects real-user Core Web Vitals + uncaught client errors from the SPA (`POST /telemetry/vitals`, `POST /telemetry/errors`; 30-day retention)
 - Generates sitemap data and supports IndexNow submission
+- Publishes syndication feeds — blog (`/feed.xml` Atom + `/feed.json` JSON Feed) and Question of the Day (`/feed/questions.xml` + `/feed/questions.json`) — regenerated on every relevant content change
+- Serves the hand-edited `/now` page content (`GET /now` public, `PUT /now` owner-only)
 - Verifies humans with Cloudflare Turnstile before sensitive actions
 - Hardens requests with Helmet, CORS allow-listing, and per-IP rate limiting
 
