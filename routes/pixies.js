@@ -41,6 +41,7 @@ const {
   deletePixieCommentsForVideo,
 } = require("../lib/pixie-comments");
 const { getFollowingIds } = require("../lib/user-follows");
+const { notifyFollowersOfNewPixie } = require("../lib/push-subscriptions");
 
 const VIDEO_TITLE_MAX_LENGTH = 4000;
 const MAX_VIDEO_TAGS = 10;
@@ -725,6 +726,13 @@ module.exports = function registerPixieRoutes(app, deps) {
       );
 
       finalizeUploadedVideo(id, path.join(VIDEOS_DIR, req.file.filename));
+
+      void notifyFollowersOfNewPixie(db, {
+        posterId: user.id,
+        posterUsername: user.username,
+        videoId: id,
+        title,
+      });
 
       setNoStoreHeaders(res);
       res.status(201).json(mapVideoRow(selectVideoById.get(id), user.id));

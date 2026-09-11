@@ -52,6 +52,8 @@ const {
   setActiveArenaTitle,
   getLeaderboard,
   getPlaybackFightState,
+  getActiveArenaFighters,
+  getArenaFightById,
   incrementDailyOpponentCount,
   resetDailyOpponentCount,
   getCurrentRecordedDate,
@@ -5465,4 +5467,97 @@ test("combat consumable durations are tactical windows and clamp to EFFECT_DURAT
     const effects = normalizeArenaEffects({ [field]: 99999 });
     assert.equal(effects[field], cap, `${field} should clamp to ${cap}`);
   });
+});
+
+// ── Spectator mode (suggestion #16) ──
+
+test("getActiveArenaFighters lists only in-progress fights, newest first, with usernames", async () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "R") });
+  insertProfile(db, { userId: "u2", selectedCard: makeCard(2, "R") });
+  insertProfile(db, { userId: "u3", selectedCard: makeCard(3, "R") });
+
+  assert.deepEqual(getActiveArenaFighters(db), []);
+
+  await startPlaybackFight(db, "u1");
+  const fighters = getActiveArenaFighters(db);
+  assert.equal(fighters.length, 1);
+  assert.equal(fighters[0].userId, "u1");
+  assert.equal(fighters[0].username, "player1");
+
+  // A finished fight drops off the list.
+  let fight = getPlaybackFightState(db, "u1");
+  while (!fight.isFinished) {
+    fight = advancePlaybackFightTurn(db, "u1");
+  }
+  assert.deepEqual(getActiveArenaFighters(db), []);
+});
+
+test("advancing/starting/skipping a fight broadcasts to spectators watching that fighter's room", async (t) => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "R") });
+  insertProfile(db, { userId: "u2", selectedCard: makeCard(2, "R") });
+
+  const broadcasts = [];
+  const wsModule = require("../lib/websocket-server");
+  const previousGetter = wsModule.getWebSocketManager;
+  wsModule.getWebSocketManager = () => ({
+    broadcastToRoom: (room, message) => broadcasts.push({ room, message }),
+  });
+  t.after(() => {
+    wsModule.getWebSocketManager = previousGetter;
+  });
+
+  const started = await startPlaybackFight(db, "u1");
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0].room, "arena:fight:u1");
+  assert.equal(broadcasts[0].message.type, "arena:fight:spectator-update");
+  assert.deepEqual(broadcasts[0].message.data, started);
+
+  const advanced = advancePlaybackFightTurn(db, "u1");
+  assert.equal(broadcasts.length, 2);
+  assert.deepEqual(broadcasts[1].message.data, advanced);
+});
+
+test("spectator broadcast failures never break the fighter's own turn", async (t) => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "R") });
+  insertProfile(db, { userId: "u2", selectedCard: makeCard(2, "R") });
+
+  const wsModule = require("../lib/websocket-server");
+  const previousGetter = wsModule.getWebSocketManager;
+  wsModule.getWebSocketManager = () => {
+    throw new Error("boom");
+  };
+  t.after(() => {
+    wsModule.getWebSocketManager = previousGetter;
+  });
+
+  const started = await startPlaybackFight(db, "u1");
+  assert.ok(started.fightId);
+});
+
+// ── Replay links (suggestion #17) ──
+
+test("getArenaFightById returns a completed fight's rounds, result, and fighter username", async () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "R") });
+  insertProfile(db, { userId: "u2", selectedCard: makeCard(2, "R") });
+
+  const result = await runFight(db, "u1");
+  const stored = db.prepare("SELECT id FROM arena_fights WHERE userId = ?").get("u1");
+
+  const fight = getArenaFightById(db, stored.id);
+  assert.equal(fight.id, stored.id);
+  assert.equal(fight.userId, "u1");
+  assert.equal(fight.username, "player1");
+  assert.equal(fight.result, result.result);
+  assert.ok(Array.isArray(fight.rounds));
+  assert.ok(fight.rounds.length > 0);
+  assert.equal(fight.rounds[0].attackerName, result.rounds[0].attackerName);
+});
+
+test("getArenaFightById returns null for an unknown id", () => {
+  const db = createTestDb();
+  assert.equal(getArenaFightById(db, "no-such-fight"), null);
 });

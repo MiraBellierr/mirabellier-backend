@@ -21,6 +21,7 @@ const {
   getFollowState,
   toggleFollow,
 } = require("../lib/user-follows");
+const { getUserActivity } = require("../lib/user-activity");
 
 function configureDiscordStrategy(findOrCreateDiscordUser) {
   passport.use(
@@ -662,6 +663,21 @@ module.exports = function registerAuthRoutes(app, deps) {
         commentsCount: interactions.commentsCount,
         recentPosts,
       });
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  // Merged "what this user has done" timeline — see lib/user-activity.js
+  // for why likes are excluded (no per-like timestamp exists to sort by).
+  app.get("/user/:id/activity", (req, res) => {
+    try {
+      const id = req.params.id;
+      const user = getUserById(id);
+      if (!user) return res.status(404).json({ error: "not found" });
+
+      res.setHeader("Cache-Control", "public, max-age=60");
+      res.json({ events: getUserActivity(db, id) });
     } catch {
       res.status(500).json({ error: "failed" });
     }

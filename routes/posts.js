@@ -19,6 +19,7 @@ const {
   renderPostOgBuffer,
 } = require("../lib/post-og-image");
 const { sanitizeSeries } = require("../lib/post-series");
+const { sendToTopic, TOPIC_NEW_POST } = require("../lib/push-subscriptions");
 
 const MAX_TAGS = 10;
 
@@ -812,6 +813,11 @@ module.exports = function registerPostsRoutes(app, deps) {
       };
 
       refreshSearchDiscovery(db, buildIndexNowUrlsForPost(title, id));
+      void sendToTopic(db, TOPIC_NEW_POST, {
+        title: "New post on Mirabellier",
+        body: title,
+        url: `https://mirabellier.com/blog/${id}`,
+      });
       res.status(201).json(response);
     } catch {
       res.status(500).json({ error: "failed to save post" });

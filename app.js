@@ -300,6 +300,10 @@ const {
   maybeNotifyNewQuestionOfTheDayDrop,
   startQuestionOfTheDayDiscordScheduler,
 } = require("./lib/question-of-the-day-discord");
+const {
+  maybeNotifyNewQuestionOfTheDayPush,
+  startQuestionOfTheDayPushScheduler,
+} = require("./lib/question-of-the-day-push");
 
 function authFromReq(req) {
   const bearerToken = getBearerTokenFromReq(req);
@@ -350,6 +354,8 @@ function registerRoutes(app) {
   require("./routes/site-now")(app, { db, authFromReq });
   require("./routes/site-changelog")(app, { db, authFromReq });
   require("./routes/site-links")(app, { db, authFromReq });
+  require("./routes/search")(app, { db });
+  require("./routes/site-stats")(app, { db });
 
   require("./routes/auth")(app, {
     db,
@@ -390,8 +396,13 @@ function registerRoutes(app) {
     imagesDir: uploads.IMAGES_DIR,
     generateSitemap,
     generateFeeds,
-    notifyQuestionOfTheDayDrop: () => maybeNotifyNewQuestionOfTheDayDrop(db),
+    notifyQuestionOfTheDayDrop: () =>
+      Promise.allSettled([
+        maybeNotifyNewQuestionOfTheDayDrop(db),
+        maybeNotifyNewQuestionOfTheDayPush(db),
+      ]),
   });
+  require("./routes/push")(app, { db, authFromReq });
 }
 
 function imageUploadHandler(req, res) {
@@ -431,6 +442,7 @@ generateSitemap(db);
 generateFeeds(db);
 startQuoteOfTheDayScheduler();
 startQuestionOfTheDayDiscordScheduler(db);
+startQuestionOfTheDayPushScheduler(db);
 const { startHallOfFameScheduler } = require("./lib/arena-hall-of-fame-scheduler");
 startHallOfFameScheduler(db);
 const { startTwitchScheduler } = require("./lib/twitch-scheduler");
@@ -475,7 +487,12 @@ app.use("/videos", createStaticMiddleware(uploads.VIDEOS_DIR));
 
 const WebSocketEvents = require("./lib/websocket-events");
 const { initWebSocketServer } = require("./lib/websocket-server");
-const { startPlaybackFight, advancePlaybackFightTurn, skipPlaybackFightToEnd } = require("./lib/arena/playback");
+const {
+  startPlaybackFight,
+  advancePlaybackFightTurn,
+  skipPlaybackFightToEnd,
+  getPlaybackFightState,
+} = require("./lib/arena/playback");
 const { isArenaFightVerified } = require("./lib/arena-fight-verification");
 const { checkArenaFightRateLimit, checkArenaPlaybackRateLimit } = require("./lib/arena-fight-guard");
 const { getCurrentlyWatchingAnimeFeed } = require("./lib/mal-anime");
@@ -533,7 +550,28 @@ const httpServer = http.createServer(app);
 
 initWebSocketServer(httpServer, {
   db,
-  handleMessage(userId, msg, reply) {
+  handleMessage(userId, msg, reply, socket) {
+    if (msg.type === WebSocketEvents.C2S.ARENA_FIGHT_SPECTATE_JOIN) {
+      const fighterUserId = String(msg.data?.userId || "").trim();
+      if (!fighterUserId) return;
+      socket.join(`arena:fight:${fighterUserId}`);
+      // Send the current state immediately so the spectator isn't staring
+      // at nothing until the fighter's next turn.
+      const state = getPlaybackFightState(db, fighterUserId);
+      reply({
+        type: state
+          ? WebSocketEvents.S2C.ARENA_FIGHT_SPECTATOR_UPDATE
+          : WebSocketEvents.S2C.ARENA_FIGHT_ERROR,
+        data: state || { code: "ARENA_FIGHT_NOT_FOUND", message: "No active fight." },
+      });
+      return;
+    }
+    if (msg.type === WebSocketEvents.C2S.ARENA_FIGHT_SPECTATE_LEAVE) {
+      const fighterUserId = String(msg.data?.userId || "").trim();
+      if (fighterUserId) socket.leave(`arena:fight:${fighterUserId}`);
+      return;
+    }
+
     const isFightMessage =
       msg.type === WebSocketEvents.C2S.ARENA_FIGHT_START ||
       msg.type === WebSocketEvents.C2S.ARENA_FIGHT_ADVANCE ||

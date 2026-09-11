@@ -6,8 +6,8 @@ const { acceptTradeRequest, cancelTradeRequest, cancelTradeSession, confirmTrade
   getTradeRequestForUser, getTradeSession, offerCardInTrade, removeCardFromTrade, offerCoinInTrade,
   removeCoinFromTrade, sendTradeRequest, unconfirmTrade } = require("../../lib/arena/trade");
 const { searchArenaTradeCards, searchArenaUsers } = require("../../lib/arena/archive");
-const { advancePlaybackFightTurn, getPlaybackFightState, hasActiveFight,
-  skipPlaybackFightToEnd, startPlaybackFight } = require("../../lib/arena/playback");
+const { advancePlaybackFightTurn, getActiveArenaFighters, getPlaybackFightState,
+  hasActiveFight, skipPlaybackFightToEnd, startPlaybackFight } = require("../../lib/arena/playback");
 const { activateArenaSkill, getArenaSkillTreePayload, resetArenaSkills } = require("../../lib/arena/skill-tree");
 const { getArenaTitlesPayload, buyArenaTitle, setActiveArenaTitle } = require("../../lib/arena/titles");
 const { buyArenaMarketListing, cancelArenaMarketListing, createArenaMarketListing,
@@ -26,7 +26,7 @@ const { getArenaArchivePayload } = require("../../lib/arena/archive");
 const { getMintDuplicates, mintRainbowCard } = require("../../lib/arena/mint");
 const { getArenaNotifications, getArenaNotificationUnreadCount,
   markAllArenaNotificationsRead, markArenaNotificationRead } = require("../../lib/arena/notifications");
-const { getArenaProfilePayload } = require("../../lib/arena/profile");
+const { getArenaProfilePayload, getArenaFightById } = require("../../lib/arena/profile");
 const { getHallOfFame } = require("../../lib/arena/hall-of-fame");
 const { getLeaderboard } = require("../../lib/arena/leaderboard");
 const { runFight } = require("../../lib/arena/combat");
@@ -440,6 +440,50 @@ module.exports = function registerArenaRoutes(app, deps) {
       const payload = skipPlaybackFightToEnd(db, user.id);
       setNoStoreHeaders(res);
       res.json(payload);
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  // ── Spectator mode (read-only, public — no verification/rate-limit gate,
+  // those exist to slow down the fighter's own actions, not viewers) ──
+
+  router.get("/spectate/active", async (req, res) => {
+    try {
+      setNoStoreHeaders(res);
+      res.json({ fighters: getActiveArenaFighters(db) });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.get("/spectate/:userId", async (req, res) => {
+    try {
+      const state = getPlaybackFightState(db, req.params.userId);
+      if (!state) {
+        throw new ArenaHttpError(
+          404,
+          "No active fight for this user.",
+          "ARENA_FIGHT_NOT_FOUND",
+        );
+      }
+      setNoStoreHeaders(res);
+      res.json({ activeFight: state });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  // ── Replay links (read-only, public — see suggestion #17) ──
+
+  router.get("/fights/:id", async (req, res) => {
+    try {
+      const fight = getArenaFightById(db, req.params.id);
+      if (!fight) {
+        throw new ArenaHttpError(404, "Fight not found.", "ARENA_FIGHT_NOT_FOUND");
+      }
+      setNoStoreHeaders(res);
+      res.json({ fight });
     } catch (error) {
       handleArenaError(error, res);
     }
