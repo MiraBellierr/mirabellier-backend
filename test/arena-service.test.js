@@ -36,6 +36,7 @@ const {
   enhanceEquipmentPiece,
   equipShopItem,
   ensureArenaProfile,
+  claimDailyLoginBonus,
   getArenaCardShopPayload,
   getArenaArchivePayload,
   getArenaCollectionPayload,
@@ -54,9 +55,11 @@ const {
   getPlaybackFightState,
   getActiveArenaFighters,
   getArenaFightById,
+  readRecentFights,
   incrementDailyOpponentCount,
   resetDailyOpponentCount,
   getCurrentRecordedDate,
+  addDaysToRecordedDate,
   toRecordedIso,
   finalizePlaybackFightRewards,
   fodderEquipmentPiece,
@@ -678,6 +681,91 @@ test("profile totals expose and include selected card IV combat bonuses", () => 
     speed: 16,
     effectHit: 12,
   });
+});
+
+test("profile exposes an unclaimed daily login preview without mutating anything", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 0 });
+
+  const before = getArenaProfilePayload(db, "u1");
+  assert.equal(before.loginStreak, 0);
+  assert.equal(before.lastLoginDate, null);
+  assert.equal(before.canClaimDailyLogin, true);
+  assert.deepEqual(before.dailyLoginPreview, { streak: 1, coins: 10 });
+
+  const after = getArenaProfilePayload(db, "u1");
+  assert.equal(after.coins, 0);
+  assert.equal(after.canClaimDailyLogin, true);
+});
+
+test("claiming the daily login bonus grants coins, starts a streak, and notifies once", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 0 });
+
+  const result = claimDailyLoginBonus(db, "u1");
+  assert.deepEqual(result, { streak: 1, coins: 10, coinsTotal: 10 });
+
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.equal(profile.loginStreak, 1);
+  assert.equal(profile.lastLoginDate, getCurrentRecordedDate());
+  assert.equal(profile.coins, 10);
+  assert.equal(profile.canClaimDailyLogin, false);
+
+  const notifications = getArenaNotifications(db, "u1").notifications;
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].type, "daily_login");
+});
+
+test("claiming twice the same day is rejected and does not double-grant", () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", coins: 0 });
+
+  claimDailyLoginBonus(db, "u1");
+  assert.throws(() => claimDailyLoginBonus(db, "u1"), (error) => {
+    assert.equal(error.code, "ARENA_DAILY_LOGIN_ALREADY_CLAIMED");
+    return true;
+  });
+
+  const profile = getArenaProfilePayload(db, "u1");
+  assert.equal(profile.loginStreak, 1);
+  assert.equal(profile.coins, 10);
+});
+
+test("daily login streak continues on a consecutive day and resets after a gap", () => {
+  const db = createTestDb();
+  const yesterday = addDaysToRecordedDate(getCurrentRecordedDate(), -1);
+  insertProfile(db, { userId: "u1", coins: 0 });
+  db.prepare("UPDATE arena_profiles SET loginStreak = 3, lastLoginDate = ? WHERE userId = ?").run(
+    yesterday,
+    "u1",
+  );
+
+  const consecutive = claimDailyLoginBonus(db, "u1");
+  assert.equal(consecutive.streak, 4);
+  assert.equal(consecutive.coins, 25);
+
+  const longAgo = addDaysToRecordedDate(getCurrentRecordedDate(), -5);
+  db.prepare("UPDATE arena_profiles SET loginStreak = 4, lastLoginDate = ? WHERE userId = ?").run(
+    longAgo,
+    "u1",
+  );
+
+  const gapped = claimDailyLoginBonus(db, "u1");
+  assert.equal(gapped.streak, 1);
+  assert.equal(gapped.coins, 10);
+});
+
+test("daily login bonus caps at 50 coins", () => {
+  const db = createTestDb();
+  const yesterday = addDaysToRecordedDate(getCurrentRecordedDate(), -1);
+  insertProfile(db, { userId: "u1", coins: 0 });
+  db.prepare("UPDATE arena_profiles SET loginStreak = 20, lastLoginDate = ? WHERE userId = ?").run(
+    yesterday,
+    "u1",
+  );
+
+  const result = claimDailyLoginBonus(db, "u1");
+  assert.equal(result.coins, 50);
 });
 
 test("card sacrifice pays balanced coins and removes only confirmed cards", () => {
@@ -5555,6 +5643,37 @@ test("getArenaFightById returns a completed fight's rounds, result, and fighter 
   assert.ok(Array.isArray(fight.rounds));
   assert.ok(fight.rounds.length > 0);
   assert.equal(fight.rounds[0].attackerName, result.rounds[0].attackerName);
+});
+
+test("getArenaFightById includes both fighters' card snapshots for a newly recorded fight", async () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "R") });
+  insertProfile(db, { userId: "u2", selectedCard: makeCard(2, "R") });
+
+  await runFight(db, "u1");
+  const stored = db.prepare("SELECT id FROM arena_fights WHERE userId = ?").get("u1");
+
+  const fight = getArenaFightById(db, stored.id);
+  assert.ok(fight.playerCard);
+  assert.equal(fight.playerCard.malId, 1);
+  // The opponent is chosen at random (NPC pool or a real user) — just check
+  // a real card snapshot came through, not which one.
+  assert.ok(fight.opponentCard);
+  assert.equal(typeof fight.opponentCard.malId, "number");
+  assert.equal(typeof fight.opponentCard.imageUrl, "string");
+});
+
+test("readRecentFights also carries card snapshots", async () => {
+  const db = createTestDb();
+  insertProfile(db, { userId: "u1", selectedCard: makeCard(1, "R") });
+  insertProfile(db, { userId: "u2", selectedCard: makeCard(2, "R") });
+
+  await runFight(db, "u1");
+  const [recent] = readRecentFights(db, "u1", 1);
+  assert.ok(recent.playerCard);
+  assert.equal(recent.playerCard.malId, 1);
+  assert.ok(recent.opponentCard);
+  assert.equal(typeof recent.opponentCard.malId, "number");
 });
 
 test("getArenaFightById returns null for an unknown id", () => {

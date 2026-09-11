@@ -26,7 +26,7 @@ const { getArenaArchivePayload } = require("../../lib/arena/archive");
 const { getMintDuplicates, mintRainbowCard } = require("../../lib/arena/mint");
 const { getArenaNotifications, getArenaNotificationUnreadCount,
   markAllArenaNotificationsRead, markArenaNotificationRead } = require("../../lib/arena/notifications");
-const { getArenaProfilePayload, getArenaFightById } = require("../../lib/arena/profile");
+const { getArenaProfilePayload, getArenaFightById, claimDailyLoginBonus } = require("../../lib/arena/profile");
 const { getHallOfFame } = require("../../lib/arena/hall-of-fame");
 const { getLeaderboard } = require("../../lib/arena/leaderboard");
 const { runFight } = require("../../lib/arena/combat");
@@ -52,6 +52,17 @@ module.exports = function registerArenaRoutes(app, deps) {
       const activeFight = getPlaybackFightState(db, user.id);
       setNoStoreHeaders(res);
       res.json({ ...profile, activeFight });
+    } catch (error) {
+      handleArenaError(error, res);
+    }
+  });
+
+  router.post("/daily-login/claim", (req, res) => {
+    try {
+      const user = requireAuthUser(req, authFromReq);
+      const result = claimDailyLoginBonus(db, user.id);
+      setNoStoreHeaders(res);
+      res.json(result);
     } catch (error) {
       handleArenaError(error, res);
     }
