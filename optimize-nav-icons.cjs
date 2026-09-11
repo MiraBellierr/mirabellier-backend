@@ -9,6 +9,8 @@ const iconSizes = [
   { name: "img3", size: 360 },
   { name: "img4", size: 360 },
   { name: "cats", size: 631 },
+  { name: "twitch", size: 256 },
+  { name: "discord-login", size: 256 },
 ];
 
 const assetsDir = path.join(__dirname, "..", "src", "assets");
