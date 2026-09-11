@@ -574,6 +574,44 @@ module.exports = function registerPostsRoutes(app, deps) {
     }
   });
 
+  // Bare /blog list page. Without this, requests land on the terminal 404
+  // handler in app.js instead of reaching the SPA — same fix as the sibling
+  // list routes (/anime, /fanart, /quotes, etc.).
+  app.get("/blog", (req, res) => {
+    if (!isLikelyCrawler(req.get("user-agent"))) {
+      if (handleHumanSpaRequest(req, res, "/blog")) return;
+      return sendFrontendRedirectConfigError(req, res, "/blog");
+    }
+
+    const canonicalUrl = buildSiteUrl("/blog");
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Blog | Mirabellier</title>
+    <meta name="description" content="Blog posts from Mirabellier." />
+    <meta name="robots" content="index,follow" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Blog | Mirabellier" />
+    <meta property="og:description" content="Blog posts from Mirabellier." />
+    <meta property="og:site_name" content="Mirabellier" />
+    <meta property="og:url" content="${canonicalUrl}" />
+    <link rel="canonical" href="${canonicalUrl}" />
+  </head>
+  <body>
+    <main>
+      <h1>Blog</h1>
+      <p><a href="${canonicalUrl}">View all posts</a></p>
+    </main>
+  </body>
+</html>`;
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    setNoStoreHeaders(res);
+    res.send(html);
+  });
+
   // Server-side SEO page for individual blog post (for social crawlers)
   app.get("/blog/:id", (req, res) => {
     try {
