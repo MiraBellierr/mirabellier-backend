@@ -280,3 +280,7 @@ This is a summary of the busier groups, not an exhaustive list. Routes are shown
 
 I wanted the backend to stay understandable while still doing real app work.
 Soft attitude, practical behavior, and sturdy enough to keep adding new little features without turning into spaghetti.
+
+## License
+
+Licensed under the [MIT License](./LICENSE).
