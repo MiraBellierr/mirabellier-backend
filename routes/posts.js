@@ -207,6 +207,7 @@ function mapPostRow(row, getUserById, userPublic) {
     comments: parseCommentsForList(row.comments, getUserById, userPublic),
     shortDescription: row.shortDescription || null,
     thumbnail: row.thumbnail || null,
+    audioUrl: row.audioUrl || null,
     series: row.series || null,
     userId: row.userId,
     author: row.userId
@@ -771,13 +772,14 @@ module.exports = function registerPostsRoutes(app, deps) {
       const shortDescription =
         req.body.shortDescription || req.body.description || null;
       const thumbnail = req.body.thumbnail || null;
+      const audioUrl = req.body.audioUrl || null;
       const series = sanitizeSeries(req.body.series);
       const tags = normalizeTags(parseTagsInput(req.body.tags));
       const createdAt = new Date().toISOString();
       const updatedAt = createdAt;
 
       db.prepare(
-        "INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, series, tags, likes, comments, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO posts (id, title, content, userId, author, shortDescription, thumbnail, audioUrl, series, tags, likes, comments, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         id,
         title,
@@ -786,6 +788,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         null,
         shortDescription,
         thumbnail,
+        audioUrl,
         series,
         JSON.stringify(tags),
         JSON.stringify([]),
@@ -801,6 +804,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         content: contentObj,
         shortDescription,
         thumbnail,
+        audioUrl,
         series,
         tags,
         likes: [],
@@ -852,6 +856,10 @@ module.exports = function registerPostsRoutes(app, deps) {
         req.body.thumbnail !== undefined
           ? req.body.thumbnail
           : existing.thumbnail;
+      const audioUrl =
+        req.body.audioUrl !== undefined
+          ? req.body.audioUrl
+          : existing.audioUrl;
       const series =
         req.body.series !== undefined
           ? sanitizeSeries(req.body.series)
@@ -866,12 +874,13 @@ module.exports = function registerPostsRoutes(app, deps) {
       const updatedAt = new Date().toISOString();
 
       db.prepare(
-        "UPDATE posts SET title = ?, content = ?, shortDescription = ?, thumbnail = ?, series = ?, tags = ?, updatedAt = ? WHERE id = ?",
+        "UPDATE posts SET title = ?, content = ?, shortDescription = ?, thumbnail = ?, audioUrl = ?, series = ?, tags = ?, updatedAt = ? WHERE id = ?",
       ).run(
         title,
         JSON.stringify(contentObj),
         shortDescription,
         thumbnail,
+        audioUrl,
         series,
         JSON.stringify(tags),
         updatedAt,
@@ -885,6 +894,7 @@ module.exports = function registerPostsRoutes(app, deps) {
         content: contentObj,
         shortDescription: shortDescription || null,
         thumbnail: thumbnail || null,
+        audioUrl: audioUrl || null,
         series,
         tags: tags || [],
         likes: parseLikesForList(existing.likes),

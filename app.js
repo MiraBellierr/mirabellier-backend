@@ -468,6 +468,24 @@ app.post("/posts-img", requireOwner, (req, res) => {
   });
 });
 
+// Read-aloud mp3 upload for blog posts — replaces the browser TTS voice with
+// this file when a post has one. Same auth-then-multer ordering as /posts-img.
+app.post("/posts-audio", requireOwner, (req, res) => {
+  uploads.audioUpload.single("audio")(req, res, (err) => {
+    if (err) {
+      if (req.file && req.file.path) {
+        fs.promises.unlink(req.file.path).catch(() => {});
+      }
+      const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+      return res.status(status).json({ error: err.message || "Upload failed" });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "No audio provided" });
+    }
+    return res.json({ path: `/audio/${req.file.filename}` });
+  });
+});
+
 // Serve static files with long cache headers. `nosniff` keeps the browser from
 // re-interpreting an uploaded file as HTML/script regardless of its extension.
 // The resize middleware only engages for `?w=<allow-listed>` and otherwise
@@ -482,6 +500,9 @@ app.use("/images", createStaticMiddleware(uploads.IMAGES_DIR));
 // /videos/ (kept as-is): the JSON API moved to /pixies, but the raw media path
 // stays here to avoid colliding with the `/pixies/:videoId` share-link route.
 app.use("/videos", createStaticMiddleware(uploads.VIDEOS_DIR));
+
+// Uploaded read-aloud mp3s for blog posts.
+app.use("/audio", createStaticMiddleware(uploads.AUDIO_DIR));
 
 // ── WebSocket infrastructure ──
 

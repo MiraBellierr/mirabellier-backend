@@ -4,6 +4,7 @@ images
 database.sqlite3*
 database-backup*
 videos
+audio
 data/tiktok-cookies.txt
 data/instagram-cookies.txt
 data/youtube-cookies.txt
