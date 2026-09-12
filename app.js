@@ -468,8 +468,9 @@ app.post("/posts-img", requireOwner, (req, res) => {
   });
 });
 
-// Read-aloud mp3 upload for blog posts — replaces the browser TTS voice with
-// this file when a post has one. Same auth-then-multer ordering as /posts-img.
+// Read-aloud mp3/wav upload for blog posts — replaces the browser TTS voice
+// with this file when a post has one. Same auth-then-multer ordering as
+// /posts-img.
 app.post("/posts-audio", requireOwner, (req, res) => {
   uploads.audioUpload.single("audio")(req, res, (err) => {
     if (err) {
@@ -501,7 +502,7 @@ app.use("/images", createStaticMiddleware(uploads.IMAGES_DIR));
 // stays here to avoid colliding with the `/pixies/:videoId` share-link route.
 app.use("/videos", createStaticMiddleware(uploads.VIDEOS_DIR));
 
-// Uploaded read-aloud mp3s for blog posts.
+// Uploaded read-aloud mp3/wav files for blog posts.
 app.use("/audio", createStaticMiddleware(uploads.AUDIO_DIR));
 
 // ── WebSocket infrastructure ──
