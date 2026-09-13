@@ -22,6 +22,10 @@ const { sanitizeSeries } = require("../lib/post-series");
 const { sendToTopic, TOPIC_NEW_POST } = require("../lib/push-subscriptions");
 
 const MAX_TAGS = 10;
+// `/posts?view=list` excerpt length. Matches `buildPostExcerpt`'s default and
+// the SPA's search/preview needs — long enough for a two-line card and a term
+// match, short enough that the whole list stays ~7 kB even with many posts.
+const SUMMARY_EXCERPT_LENGTH = 320;
 
 function setNoStoreHeaders(res) {
   res.setHeader(
@@ -31,6 +35,19 @@ function setNoStoreHeaders(res) {
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
   res.setHeader("Surrogate-Control", "no-store");
+}
+
+// `?view=list` is public, cacheable data (titles/excerpts/counts — nothing
+// viewer-specific and no drafts), so it gets a short shared TTL instead of
+// `no-store`. A new post appears within a minute, `stale-while-revalidate`
+// keeps repeat visits off origin while the edge refreshes in the background,
+// and the CDN is free to hold it (no `Surrogate-Control` opt-out). The bare
+// `/posts` route stays `no-store`: the editor reads it while editing.
+function setListCacheHeaders(res) {
+  res.setHeader(
+    "Cache-Control",
+    "public, max-age=60, stale-while-revalidate=300",
+  );
 }
 
 // A versioned card URL (`?v=<updatedAt digest>`) never changes meaning, so it can
@@ -209,6 +226,81 @@ function mapPostRow(row, getUserById, userPublic) {
     thumbnail: row.thumbnail || null,
     audioUrl: row.audioUrl || null,
     series: row.series || null,
+    userId: row.userId,
+    author: row.userId
+      ? row.authorName || row.author || "Unknown"
+      : row.author || "Unknown",
+    authorAvatar: row.userId
+      ? row.authorAvatar || null
+      : row.authorAvatar || null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt || row.createdAt,
+  };
+}
+
+// Word counts per text node / image caption, mirroring the SPA's
+// `countWords` in `src/lib/blog-reading.ts`. Counting per node (rather than
+// splitting the flattened text) keeps words from merging across block joins.
+function countWordsInNodes(nodes) {
+  if (!Array.isArray(nodes)) return 0;
+
+  let total = 0;
+  for (const node of nodes) {
+    if (!node || typeof node !== "object") continue;
+
+    if (node.type === "text") {
+      total += String(node.text || "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length;
+      continue;
+    }
+    if (node.type === "image") {
+      total += String((node.attrs && node.attrs.caption) || "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length;
+      continue;
+    }
+
+    total += countWordsInNodes(node.content);
+  }
+
+  return total;
+}
+
+function toChildNodes(content) {
+  if (Array.isArray(content)) return content;
+  if (content && typeof content === "object" && content.type === "doc") {
+    return content.content;
+  }
+  return [];
+}
+
+// The list projection: everything a blog index / latest-post widget needs and
+// nothing else. Crucially, `content` (the full tiptap JSON — ~277 kB of the
+// baseline payload for 12 posts) and the per-comment user objects are replaced
+// by the derived fields below, so the whole archive serializes to a few kB.
+function mapPostRowSummary(row) {
+  const content = parseStoredContent(row.content);
+  const excerpt = content
+    ? extractPlainText(content).replace(/\s+/g, " ").trim()
+    : "";
+  const words = countWordsInNodes(toChildNodes(content));
+  const commentCount = parseCommentsForMutation(row.comments).length;
+
+  return {
+    id: row.id,
+    title: row.title,
+    excerpt: excerpt.slice(0, SUMMARY_EXCERPT_LENGTH),
+    readingMinutes: words ? Math.max(1, Math.round(words / 200)) : 0,
+    shortDescription: row.shortDescription || null,
+    thumbnail: row.thumbnail || null,
+    audioUrl: row.audioUrl || null,
+    series: row.series || null,
+    tags: parseStoredTags(row.tags),
+    likeCount: parseLikesForList(row.likes).length,
+    commentCount,
     userId: row.userId,
     author: row.userId
       ? row.authorName || row.author || "Unknown"
@@ -475,8 +567,20 @@ module.exports = function registerPostsRoutes(app, deps) {
         )
         .all();
 
-      const posts = rows.map((row) => mapPostRow(row, getUserById, userPublic));
-      setNoStoreHeaders(res);
+      // `?view=list` returns lightweight summaries (no tiptap `content`, no
+      // comment bodies) for the blog index, Home's latest-post card and
+      // BlogPost's prev/next. The bare route keeps the full documents for the
+      // editor and the build-time SEO fetch.
+      const listView =
+        String(req.query.view || "").toLowerCase() === "list";
+      const posts = listView
+        ? rows.map(mapPostRowSummary)
+        : rows.map((row) => mapPostRow(row, getUserById, userPublic));
+      if (listView) {
+        setListCacheHeaders(res);
+      } else {
+        setNoStoreHeaders(res);
+      }
       res.json(posts);
     } catch {
       res.status(500).json({ error: "failed to fetch posts" });
