@@ -121,6 +121,25 @@ test("buildAnswerShareHtml carries the image and the question as description", (
   );
 });
 
+test("buildAnswerShareHtml noindexes a missing answer and avoids a dead canonical", () => {
+  const html = buildAnswerShareHtml({
+    state: buildAnswerPreviewState({ answer: null }),
+    protocol: "https",
+    host: "mirabellier.com",
+  });
+
+  assert.match(html, /<meta name="robots" content="noindex,follow" \/>/);
+  assert.match(
+    html,
+    /<link rel="canonical" href="https:\/\/mirabellier\.com\/question-of-the-day" \/>/,
+  );
+  assert.doesNotMatch(
+    html,
+    /<link rel="canonical" href="https:\/\/mirabellier\.com\/question-of-the-day\/answers\/"/,
+  );
+  assert.doesNotMatch(html, /"image":/);
+});
+
 test("renderAnswerPreviewBuffer produces a PNG for both variants", async () => {
   const answerBuffer = await renderAnswerPreviewBuffer(
     buildAnswerPreviewState({ answer: { ...SAMPLE_ANSWER, avatar: "" } }),
