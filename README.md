@@ -150,6 +150,23 @@ More one-off maintenance and migration scripts live in `scripts/`; run them dire
 
 `.github/workflows/deploy.yml` runs `npm ci && npm test` on every push and PR to `main`. On a push to `main`, once tests pass, it ships an **atomic release** to the VPS: the source is uploaded to `/srv/mirabellier.com/api/releases/<sha>/`, `npm ci --omit=dev` runs there, `.env` + the SQLite DB + `images/` + `videos/` + the runtime `data/*` files are symlinked in from a persistent `shared/` tree, the `current` symlink is flipped with a single `rename(2)`, and pm2 (`mirabellier-api`, see `ecosystem.config.cjs`) is reloaded. A failed build or health check rolls back to the previous release; the last five are kept.
 
+### nginx config
+
+The main site block (`mirabellier.com` + `api.mirabellier.com`) is versioned at
+`deploy/nginx/mirabellier.com.conf` and is the source of truth. On deploy the
+workflow compares it against `/etc/nginx/sites-available/mirabellier.com` and,
+when it differs, installs the candidate, runs `nginx -t`, and reloads nginx.
+If validation fails the previous file is restored and the deploy aborts, so a
+bad edit can never take the site down.
+
+The `location /` block uses `try_files $uri $uri/index.html /index.html`. The
+middle candidate is required: the frontend prerenders a real `index.html` per
+route (`about/`, `blog/`, `arena/`, every blog post, every archived question
+day, ...), and the usual `try_files $uri $uri/ /index.html` would match the bare
+directory and answer `301 /about/` — contradicting the route's slash-less
+canonical and og:url. Dropping `$uri/` also keeps directories without an
+`index.html` on the SPA fallback instead of 301-ing into a 403.
+
 Full details, the required GitHub secrets, and one-time server setup are in [`DEPLOY.md`](DEPLOY.md).
 
 ## Real-time (WebSocket)

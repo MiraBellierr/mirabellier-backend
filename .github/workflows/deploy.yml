@@ -141,6 +141,30 @@ jobs:
             # --- dependencies (native, built against this host) --------------
             npm ci --omit=dev --no-audit --no-fund
 
+            # --- sync the nginx site config when it changed ------------------
+            # `deploy/nginx/mirabellier.com.conf` is the source of truth for the
+            # main site block. Validate the candidate *in place* and restore the
+            # previous file if `nginx -t` rejects it, so a bad edit aborts the
+            # deploy without ever taking the site down.
+            nginx_src="$release/deploy/nginx/mirabellier.com.conf"
+            nginx_dst="/etc/nginx/sites-available/mirabellier.com"
+            if [ -f "$nginx_src" ] && ! cmp -s "$nginx_src" "$nginx_dst"; then
+              echo "nginx: config changed, validating candidate..."
+              cp "$nginx_dst" "${nginx_dst}.prev"
+              cp "$nginx_src" "$nginx_dst"
+              if nginx -t; then
+                systemctl reload nginx
+                echo "nginx: config updated and reloaded."
+                rm -f "${nginx_dst}.prev"
+              else
+                echo "nginx: candidate config invalid; restoring previous." >&2
+                cp "${nginx_dst}.prev" "$nginx_dst"
+                rm -f "${nginx_dst}.prev"
+                nginx -t
+                exit 1
+              fi
+            fi
+
             # --- link persistent state from shared/ ------------------------—-
             ln -sfn "$base/shared/.env"             "$release/.env"
             ln -sfn "$base/shared/database.sqlite3" "$release/database.sqlite3"
