@@ -10,6 +10,7 @@ const {
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
 const { isLikelyCrawler } = require("../lib/share-preview-utils");
+const { buildBreadcrumbList } = require("../lib/breadcrumbs");
 const {
   OG_WIDTH,
   OG_HEIGHT,
@@ -490,6 +491,11 @@ function buildBlogRedirectPage({
     },
     ...(imageUrl ? { image: [imageUrl] } : {}),
     ...(tags && tags.length ? { keywords: tags.join(", ") } : {}),
+    breadcrumb: buildBreadcrumbList([
+      { name: "Home", url: "https://mirabellier.com/" },
+      { name: "Blog", url: "https://mirabellier.com/blog" },
+      { name: title, url: canonicalUrl },
+    ]),
   };
   const articleTagMeta = (tags || [])
     .map(

@@ -7,7 +7,12 @@ const { collectSitemapEntries } = require("../lib/sitemap");
 // public archive route (`getArchiveCutoffRecordedDate`): the active carried
 // question, not today. Using today published URLs whose route 404s and leaked
 // queued prompts (the live sitemap carried 94 such soft-404s).
-function fakeDb({ activeRecordedDate = "2026-06-12", archiveRows = [] } = {}) {
+function fakeDb({
+  activeRecordedDate = "2026-06-12",
+  archiveRows = [],
+  postRows = [],
+  shrineRows = [],
+} = {}) {
   const calls = [];
 
   return {
@@ -17,7 +22,8 @@ function fakeDb({ activeRecordedDate = "2026-06-12", archiveRows = [] } = {}) {
         all(...args) {
           calls.push({ sql, args });
           if (/FROM daily_questions/.test(sql)) return archiveRows;
-          if (/FROM posts/.test(sql)) return [];
+          if (/FROM posts/.test(sql)) return postRows;
+          if (/FROM shrine_pages/.test(sql)) return shrineRows;
           return [];
         },
         get(...args) {
@@ -92,4 +98,131 @@ test("no archive entries are listed when the archive is empty", () => {
       .length,
     0,
   );
+});
+
+test("/home is not listed (it is a client-side alias of /)", () => {
+  const entries = collectSitemapEntries(fakeDb());
+  assert.equal(
+    entries.some((entry) => entry.url === "https://mirabellier.com/home"),
+    false,
+  );
+  assert.equal(
+    entries.some((entry) => entry.url === "https://mirabellier.com/"),
+    true,
+  );
+});
+
+test("posts carry an image entry when they have a thumbnail", () => {
+  const db = fakeDb({
+    postRows: [
+      {
+        id: "1",
+        title: "With thumbnail",
+        thumbnail: "/images/hero.png",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "2",
+        title: "Without thumbnail",
+        thumbnail: null,
+        createdAt: "2026-01-02T00:00:00.000Z",
+      },
+    ],
+  });
+
+  const entries = collectSitemapEntries(db);
+  const withImage = entries.find((entry) => entry.url.endsWith("/blog/with-thumbnail-1"));
+  const withoutImage = entries.find((entry) =>
+    entry.url.endsWith("/blog/without-thumbnail-2"),
+  );
+
+  assert.ok(withImage, "expected the post URL to use the canonical slug shape");
+  assert.deepEqual(withImage.images, [
+    { url: "https://mirabellier.com/images/hero.png", title: "With thumbnail" },
+  ]);
+  assert.equal(withoutImage.images, undefined);
+});
+
+test("blog slugs match the canonical NFKD + 80-char shape", () => {
+  // 100+ characters, accented — the naive slugifier used here previously kept
+  // the accents and an unbounded length, so the sitemap URL disagreed with the
+  // page's own canonical.
+  const longTitle =
+    "Café Naïve — Ünicode Résumé " + "a".repeat(100);
+  const db = fakeDb({
+    postRows: [
+      { id: "9", title: longTitle, thumbnail: null, createdAt: "2026-01-01T00:00:00.000Z" },
+    ],
+  });
+
+  const entries = collectSitemapEntries(db);
+  const post = entries.find((entry) => entry.url.includes("-9"));
+
+  assert.ok(post, "expected a post entry");
+  assert.match(post.url, /^https:\/\/mirabellier\.com\/blog\/[a-z0-9-]+-9$/);
+  const slug = post.url.replace("https://mirabellier.com/blog/", "").replace(/-9$/, "");
+  assert.ok(slug.length <= 80, `slug should be capped at 80 chars, got ${slug.length}`);
+  assert.ok(!/[^\x00-\x7F]/.test(slug), "slug should be ASCII");
+});
+
+test("built-in and database shrines are merged, database winning on a path", () => {
+  const db = fakeDb({
+    shrineRows: [
+      {
+        path: "/shrine/kanna",
+        title: "Kanna (owner edit)",
+        image: "https://cdn.example/edited.jpg",
+        priority: "0.9",
+        changefreq: "weekly",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+      },
+      {
+        path: "/shrine/kana",
+        title: "Arima Kana",
+        image: null,
+        priority: "0.7",
+        changefreq: "monthly",
+        updatedAt: "2026-04-10T00:00:00.000Z",
+      },
+    ],
+  });
+
+  const entries = collectSitemapEntries(db);
+  const shrines = entries.filter((entry) => entry.url.includes("/shrine/"));
+  const urls = shrines.map((entry) => entry.url);
+
+  // Built-in rossina survives alongside the two database rooms...
+  assert.ok(urls.includes("https://mirabellier.com/shrine/rossina"));
+  assert.ok(urls.includes("https://mirabellier.com/shrine/kana"));
+  // ...and the duplicate kanna path is deduped, with the DB row's values.
+  assert.equal(urls.filter((url) => url.endsWith("/shrine/kanna")).length, 1);
+  const kanna = shrines.find((entry) => entry.url.endsWith("/shrine/kanna"));
+  assert.equal(kanna.priority, "0.9");
+  assert.equal(kanna.changefreq, "weekly");
+  assert.equal(kanna.lastmod, "2026-05-01");
+  assert.deepEqual(kanna.images, [
+    { url: "https://cdn.example/edited.jpg", title: "Kanna (owner edit)" },
+  ]);
+});
+
+test("shrine art is added as a sitemap image when present", () => {
+  const db = fakeDb({
+    shrineRows: [
+      {
+        path: "/shrine/kana",
+        title: "Arima Kana",
+        image: "https://i.pinimg.com/kana.jpg",
+        priority: "0.7",
+        changefreq: "monthly",
+        updatedAt: "2026-04-10T00:00:00.000Z",
+      },
+    ],
+  });
+
+  const entries = collectSitemapEntries(db);
+  const kana = entries.find((entry) => entry.url.endsWith("/shrine/kana"));
+
+  assert.deepEqual(kana.images, [
+    { url: "https://i.pinimg.com/kana.jpg", title: "Arima Kana" },
+  ]);
 });

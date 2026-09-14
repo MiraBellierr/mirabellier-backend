@@ -9,6 +9,7 @@ const {
 } = require("../lib/spa-entry");
 const { isLikelyCrawler } = require("../lib/share-preview-utils");
 const { isOwner } = require("../lib/authz");
+const { buildBreadcrumbList } = require("../lib/breadcrumbs");
 
 function setNoStoreHeaders(res) {
   res.setHeader(
@@ -147,6 +148,18 @@ function buildShrineSeoPage({
         }
       : {}),
     ...(keywords && keywords.length ? { keywords: keywords.join(", ") } : {}),
+    // The shrine hub is the only parent; individual rooms sit directly under
+    // it, so the trail is Home -> Shrines -> this room. The hub itself is its
+    // own last crumb.
+    breadcrumb: buildBreadcrumbList(
+      spaPath === "/shrine"
+        ? [{ name: "Home", url: "https://mirabellier.com/" }, { name: title, url: canonicalUrl }]
+        : [
+            { name: "Home", url: "https://mirabellier.com/" },
+            { name: "Shrines", url: "https://mirabellier.com/shrine" },
+            { name: title, url: canonicalUrl },
+          ],
+    ),
   };
 
   return `<!doctype html>
