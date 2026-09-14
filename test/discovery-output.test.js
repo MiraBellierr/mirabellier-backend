@@ -52,9 +52,13 @@ test("falls back to the frontend public/ directory in development", (t) => {
   setEnv(t, "FRONTEND_DEPLOY_PATH", "");
   setEnv(t, "WEBSITE_DIST_DIR", "");
 
-  const resolved = resolveDiscoveryOutputDir();
-  assert.equal(resolved, path.join(__dirname, "..", "..", "public"));
-  assert.ok(fs.existsSync(resolved), "frontend public/ should exist on a dev box");
+  // The fallback points at the frontend repo's `public/` when the backend is
+  // checked out inside it. It is returned even when absent — callers mkdir it —
+  // so only the path shape is asserted (CI runs from the standalone repo).
+  assert.equal(
+    resolveDiscoveryOutputDir(),
+    path.join(__dirname, "..", "..", "public"),
+  );
 });
 
 test("generateSitemap and generateFeeds write into an explicit directory", (t) => {
