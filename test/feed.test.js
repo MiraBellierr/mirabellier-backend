@@ -13,14 +13,20 @@ const {
 
 // Minimal stand-in for the better-sqlite3 handle: `prepare(...).all(...args)`
 // returns whatever rows we hand it (honouring a trailing LIMIT argument), so
-// the tests never touch a real database.
-function fakeDb(rows) {
+// the tests never touch a real database. `options.activeRecordedDate` backs the
+// `.get()` lookup that resolves the archive cutoff.
+function fakeDb(rows, options = {}) {
   return {
     prepare() {
       return {
         all(...args) {
           const limit = args[args.length - 1];
           return typeof limit === "number" ? rows.slice(0, limit) : rows;
+        },
+        get() {
+          return options.activeRecordedDate === null
+            ? undefined
+            : { recordedDate: options.activeRecordedDate ?? "2026-03-01" };
         },
       };
     },
@@ -187,9 +193,34 @@ test("collectQuestionFeedItems anchors dates to the recorded day", () => {
   assert.deepEqual(collectQuestionFeedItems(throwingDb), []);
 });
 
+test("collectQuestionFeedItems uses the active question as the archive cutoff", () => {
+  // The query must be `recordedDate < <active day>`, not `< today`: queued
+  // prompts after the active day are not published yet, and `recordedDate`
+  // values between the active day and today would otherwise leak into the feed.
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        all(...args) {
+          calls.push({ sql, args });
+          return [];
+        },
+        get() {
+          return { recordedDate: "2026-06-12" };
+        },
+      };
+    },
+  };
+
+  collectQuestionFeedItems(db);
+
+  const archiveCall = calls.find((call) => /FROM daily_questions/.test(call.sql));
+  assert.ok(archiveCall, "expected the archive query to run");
+  assert.equal(archiveCall.args[0], "2026-06-12");
+});
+
 test("question feed builders use the questions metadata", () => {
   const items = collectQuestionFeedItems(fakeDb(questionRows));
-
   const xml = buildAtomFeed(items, QUESTIONS_FEED);
   assert.match(xml, /<title>Mirabellier Question of the Day<\/title>/);
   assert.match(
