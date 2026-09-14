@@ -31,6 +31,11 @@ module.exports = {
       kill_timeout: 8000,
       env: {
         NODE_ENV: "production",
+        // The frontend release tree served by nginx. Runtime sitemap / feed /
+        // IndexNow-key regeneration writes here (see lib/discovery-output.js);
+        // without it those files land in the retired /var/www/mirabellier/dist
+        // path and never reach visitors.
+        FRONTEND_DEPLOY_PATH: "/var/www/mirabellier.com/current",
       },
       error_file: "/srv/mirabellier.com/api/shared/logs/pm2-error.log",
       out_file: "/srv/mirabellier.com/api/shared/logs/pm2-out.log",
