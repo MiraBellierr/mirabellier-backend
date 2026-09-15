@@ -10,6 +10,10 @@ const compression = require("compression");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { DEV_ORIGINS, devOriginsEnabled } = require("./lib/dev-origins");
+const {
+  DEFAULT_JSON_LIMIT,
+  createJsonBodyParser,
+} = require("./lib/body-limits");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -278,12 +282,14 @@ function registerMiddlewares(app) {
   app.use(createGlobalRateLimiter());
   app.use(createWriteRateLimiter());
   app.use(varyUserAgentForSpaPreviewRoutes);
-  // Generous headroom for the largest real payload (a rich-text blog post — its
-  // images are uploaded separately as URLs) without leaving a "buffer up to 1GB
-  // per POST" DoS surface. A route that genuinely needs more can mount its own
-  // express.json({ limit }) ahead of its handler.
-  app.use(bodyParser.json({ limit: "2mb" }));
-  app.use(bodyParser.urlencoded({ limit: "2mb", extended: true }));
+  // JSON parsing with a per-route size cap: post save gets headroom for a
+  // whole inline document (and is owner-gated before the body is buffered),
+  // everything else stays on the small default that keeps the "buffer up to
+  // 1GB per POST" DoS surface away. lib/body-limits.js has the full rationale.
+  app.use(createJsonBodyParser({ authFromReq }));
+  app.use(
+    bodyParser.urlencoded({ limit: DEFAULT_JSON_LIMIT, extended: true }),
+  );
   app.use(passport.initialize());
   app.use(serverTimingMiddleware);
 }
