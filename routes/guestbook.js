@@ -10,18 +10,18 @@ const {
   normalizeOnThisDayLimit,
   queryOnThisDayRows,
 } = require("../lib/guestbook-on-this-day");
+const {
+  BOARD_HEIGHT,
+  BOARD_WIDTH,
+  NOTE_SIZE,
+  findOpenPosition,
+  positionsOverlap,
+  sanitizeCoordinate,
+} = require("../lib/guestbook-position");
 
 const MAX_ENTRIES = 100;
 const MAX_NAME_LENGTH = 40;
 const MAX_MESSAGE_LENGTH = 400;
-const NOTE_SIZE = 280;
-const BOARD_IMAGE_WIDTH = 1199;
-const BOARD_IMAGE_HEIGHT = 678;
-const BOARD_SCALE = 3;
-const BOARD_WIDTH = BOARD_IMAGE_WIDTH * BOARD_SCALE;
-const BOARD_HEIGHT = BOARD_IMAGE_HEIGHT * BOARD_SCALE;
-const BOARD_PADDING = 48;
-const GRID_COLUMNS = 6;
 const ALLOWED_MOODS = new Set([
   "sparkly",
   "cozy",
@@ -53,52 +53,70 @@ function sanitizeMood(value) {
   return ALLOWED_MOODS.has(normalized) ? normalized : "sparkly";
 }
 
-function clampNumber(value, min, max) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function sanitizeCoordinate(value, max) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return null;
-  return Math.round(clampNumber(parsed, 0, max));
-}
-
-function getFallbackPosition(index) {
-  const column = index % GRID_COLUMNS;
-  const row = Math.floor(index / GRID_COLUMNS);
-  const x = BOARD_PADDING + column * (NOTE_SIZE + 32);
-  const y = BOARD_PADDING + row * (NOTE_SIZE + 42);
-
-  return {
-    x: clampNumber(x, 0, BOARD_WIDTH - NOTE_SIZE),
-    y: clampNumber(y, 0, BOARD_HEIGHT - NOTE_SIZE),
-  };
-}
-
 function pickWebsite(row, user) {
   if (user && user.website) return user.website;
   return row.website || null;
 }
 
-function mapEntryRow(row, getUserById, userPublic, index = 0) {
+/**
+ * Resolve a board position for every row in one pass.
+ *
+ * A row's stored coordinate is kept when it is usable and does not sit on a
+ * note that already took that spot. Anything else — a NULL coordinate, or one
+ * of the rows the old `(0, 0)` bug wrote to the same corner — is moved to the
+ * first free grid slot. A board saved before this fix therefore fans out on
+ * first load instead of rendering one readable note over a pile of hidden
+ * ones, without rewriting the database.
+ */
+function resolveEntryPositions(rows) {
+  const taken = [];
+
+  return rows.map((row) => {
+    const x = sanitizeCoordinate(row.x, BOARD_WIDTH - NOTE_SIZE);
+    const y = sanitizeCoordinate(row.y, BOARD_HEIGHT - NOTE_SIZE);
+
+    const stored = x === null || y === null ? null : { x, y };
+    const position =
+      stored && !taken.some((placed) => positionsOverlap(placed, stored))
+        ? stored
+        : findOpenPosition(taken);
+
+    taken.push(position);
+    return position;
+  });
+}
+
+/**
+ * Every stored board position, normalized and clamped. Rows with an unusable
+ * coordinate are skipped rather than treated as `(0, 0)`, so a legacy NULL does
+ * not make the corner look occupied.
+ */
+function getOccupiedPositions(db) {
+  const rows = db
+    .prepare(
+      "SELECT x, y FROM guestbook_entries WHERE x IS NOT NULL AND y IS NOT NULL",
+    )
+    .all();
+
+  return rows
+    .map((row) => ({
+      x: sanitizeCoordinate(row.x, BOARD_WIDTH - NOTE_SIZE),
+      y: sanitizeCoordinate(row.y, BOARD_HEIGHT - NOTE_SIZE),
+    }))
+    .filter((position) => position.x !== null && position.y !== null);
+}
+
+function mapEntryRow(row, getUserById, userPublic, position = { x: 0, y: 0 }) {
   const user = row.userId ? userPublic(getUserById(row.userId)) : null;
-  const fallbackPosition = getFallbackPosition(index);
-  const x =
-    typeof row.x === "number"
-      ? sanitizeCoordinate(row.x, BOARD_WIDTH - NOTE_SIZE)
-      : fallbackPosition.x;
-  const y =
-    typeof row.y === "number"
-      ? sanitizeCoordinate(row.y, BOARD_HEIGHT - NOTE_SIZE)
-      : fallbackPosition.y;
+
   return {
     id: row.id,
     author: user?.username || row.author || "Anonymous",
     message: row.message,
     website: pickWebsite(row, user),
     mood: sanitizeMood(row.mood),
-    x,
-    y,
+    x: position.x,
+    y: position.y,
     createdAt: row.createdAt,
     user: user
       ? {
@@ -122,10 +140,12 @@ module.exports = function registerGuestbookRoutes(app, deps) {
         )
         .all(MAX_ENTRIES);
 
+      const positions = resolveEntryPositions(rows);
+
       res.setHeader("Cache-Control", "no-store");
       res.json(
         rows.map((row, index) =>
-          mapEntryRow(row, getUserById, userPublic, index),
+          mapEntryRow(row, getUserById, userPublic, positions[index]),
         ),
       );
     } catch {
@@ -138,12 +158,13 @@ module.exports = function registerGuestbookRoutes(app, deps) {
       const { monthDay, year } = getOnThisDayKey();
       const limit = normalizeOnThisDayLimit(req.query?.limit);
       const rows = queryOnThisDayRows(db, { monthDay, year, limit });
+      const positions = resolveEntryPositions(rows);
 
       res.setHeader("Cache-Control", "no-store");
       res.json({
         date: monthDay,
         entries: rows.map((row, index) =>
-          mapEntryRow(row, getUserById, userPublic, index),
+          mapEntryRow(row, getUserById, userPublic, positions[index]),
         ),
       });
     } catch {
@@ -159,16 +180,6 @@ module.exports = function registerGuestbookRoutes(app, deps) {
       const message = sanitizeMessage(req.body?.message);
       const website = user ? null : sanitizeWebsite(req.body?.website);
       const mood = sanitizeMood(req.body?.mood);
-      const existingCount =
-        db.prepare("SELECT COUNT(*) as count FROM guestbook_entries").get()
-          ?.count || 0;
-      const fallbackPosition = getFallbackPosition(existingCount);
-      const x =
-        sanitizeCoordinate(req.body?.x, BOARD_WIDTH - NOTE_SIZE) ??
-        fallbackPosition.x;
-      const y =
-        sanitizeCoordinate(req.body?.y, BOARD_HEIGHT - NOTE_SIZE) ??
-        fallbackPosition.y;
 
       if (!author) {
         return res.status(400).json({ error: "Name is required" });
@@ -177,6 +188,24 @@ module.exports = function registerGuestbookRoutes(app, deps) {
       if (!message) {
         return res.status(400).json({ error: "Message is required" });
       }
+
+      // Placement is server-owned. The sign form has no board on screen, so a
+      // coordinate from the client is either absent or a placeholder like
+      // `0,0` — and `(0, 0)` is a real spot, which is how every new note ended
+      // up piled in the corner. A client coordinate is honored only when it is
+      // valid and lands somewhere free; otherwise the note takes the first
+      // open grid slot.
+      const occupied = getOccupiedPositions(db);
+      const requestedX = sanitizeCoordinate(req.body?.x, BOARD_WIDTH - NOTE_SIZE);
+      const requestedY = sanitizeCoordinate(req.body?.y, BOARD_HEIGHT - NOTE_SIZE);
+      const position =
+        requestedX !== null &&
+        requestedY !== null &&
+        !occupied.some((taken) =>
+          positionsOverlap(taken, { x: requestedX, y: requestedY }),
+        )
+          ? { x: requestedX, y: requestedY }
+          : findOpenPosition(occupied);
 
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const createdAt = new Date().toISOString();
@@ -190,8 +219,8 @@ module.exports = function registerGuestbookRoutes(app, deps) {
         message,
         website,
         mood,
-        x,
-        y,
+        position.x,
+        position.y,
         createdAt,
       );
 
@@ -201,7 +230,7 @@ module.exports = function registerGuestbookRoutes(app, deps) {
         )
         .get(id);
 
-      res.status(201).json(mapEntryRow(row, getUserById, userPublic, 0));
+      res.status(201).json(mapEntryRow(row, getUserById, userPublic, position));
     } catch (error) {
       if (error instanceof TurnstileError) {
         return res.status(error.status).json({
@@ -236,7 +265,7 @@ module.exports = function registerGuestbookRoutes(app, deps) {
         )
         .get(req.params.id);
 
-      res.json(mapEntryRow(row, getUserById, userPublic, 0));
+      res.json(mapEntryRow(row, getUserById, userPublic, { x, y }));
     } catch {
       res.status(500).json({ error: "Failed to move the note" });
     }
