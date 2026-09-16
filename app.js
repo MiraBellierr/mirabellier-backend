@@ -11,6 +11,9 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { DEV_ORIGINS, devOriginsEnabled } = require("./lib/dev-origins");
 const {
+  createApiHostNoindexMiddleware,
+} = require("./lib/indexable-hosts");
+const {
   DEFAULT_JSON_LIMIT,
   createJsonBodyParser,
 } = require("./lib/body-limits");
@@ -267,6 +270,10 @@ function registerMiddlewares(app) {
   app.use(createCompressionMiddleware());
   app.use(keepAliveMiddleware);
   app.use(normalizeApiPrefixMiddleware);
+  // Registered before the rate limiters and every route so error, 404, and
+  // 429 responses carry the directive too. See lib/indexable-hosts.js for why
+  // this is host-gated rather than blanket, and why media is exempt.
+  app.use(createApiHostNoindexMiddleware());
   app.use(createCorsMiddleware());
   app.use(
     helmet({

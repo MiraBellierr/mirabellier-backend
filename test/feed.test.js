@@ -219,6 +219,49 @@ test("collectQuestionFeedItems uses the active question as the archive cutoff", 
   assert.equal(archiveCall.args[0], "2026-06-12");
 });
 
+// The feed previously re-derived the cutoff as "oldest unarchived row", which
+// disagrees with the archive route (and the sitemap) whenever the carried
+// question has answers from an earlier day: the live feed carried zero entries
+// while the archive listed 26 public days. Sharing the resolver keeps all three
+// on one definition.
+test("the feed cutoff matches the public archive route's predicate", () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        all(...args) {
+          calls.push({ sql, args });
+          return [];
+        },
+        get(...args) {
+          calls.push({ sql, args });
+          // Only the grouped carried-question query may answer with a row; a
+          // plain "oldest unarchived" lookup must not.
+          if (/GROUP BY/.test(sql)) return { recordedDate: "2026-04-30" };
+          return { recordedDate: "2026-04-04" };
+        },
+      };
+    },
+  };
+
+  collectQuestionFeedItems(db);
+
+  const cutoffCall = calls.find(
+    (call) => /FROM daily_questions/.test(call.sql) && /GROUP BY/.test(call.sql),
+  );
+  assert.ok(cutoffCall, "expected the carried-question query");
+
+  // The archive read is the one that selects prompt text.
+  const archiveCall = calls.find(
+    (call) => /FROM daily_questions/.test(call.sql) && /SELECT recordedDate, prompt/.test(call.sql),
+  );
+  assert.ok(archiveCall, "expected the archive query");
+  assert.equal(archiveCall.args[0], "2026-04-30", "must use the carried day, not the oldest row");
+  // The public set is `archivedAt IS NOT NULL OR recordedDate < ?`, matching the
+  // route, rather than `recordedDate < ?` alone.
+  assert.match(archiveCall.sql, /archivedAt IS NOT NULL OR recordedDate < \?/);
+});
+
 test("question feed builders use the questions metadata", () => {
   const items = collectQuestionFeedItems(fakeDb(questionRows));
   const xml = buildAtomFeed(items, QUESTIONS_FEED);
