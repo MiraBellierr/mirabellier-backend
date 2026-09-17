@@ -460,6 +460,15 @@ const { startHallOfFameScheduler } = require("./lib/arena-hall-of-fame-scheduler
 startHallOfFameScheduler(db);
 const { startTwitchScheduler } = require("./lib/twitch-scheduler");
 startTwitchScheduler(db);
+// Auto-import the newest video from each tracked TikTok creator every few
+// minutes. Authors are managed at /admin/pixies; TIKTOK_FEED_AUTHOR seeds the
+// list on boot. Needs the Pixies import queue from routes/pixies.js.
+const {
+  seedAuthorsFromEnv: seedTikTokFeedAuthors,
+  startTikTokFeedScheduler,
+} = require("./lib/tiktok-feed-scheduler");
+seedTikTokFeedAuthors(db);
+startTikTokFeedScheduler({ db, importQueue: app.locals.pixieImport });
 const indexNowKeyResult = ensureIndexNowKeyFile();
 if (indexNowKeyResult.ok === false) {
   console.warn(`[indexnow] ${indexNowKeyResult.error}`);

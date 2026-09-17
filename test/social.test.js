@@ -9,6 +9,7 @@ const {
   stripHashtags,
   mimeTypeForFile,
   mapYtDlpInfo,
+  parseYtDlpPrintLine,
 } = require("../lib/social");
 
 test("classifyPlatform detects each supported platform", () => {
@@ -160,4 +161,34 @@ test("mapYtDlpInfo handles null and missing durations", () => {
   const mapped = mapYtDlpInfo({ title: "x" }, "youtube");
   assert.equal(mapped.username, "");
   assert.equal(mapped.durationSeconds, null);
+});
+
+test("parseYtDlpPrintLine reads a TikTok feed line", () => {
+  const item = parseYtDlpPrintLine(
+    "7683195368279985438\ttiktok\tTikTok\thear how @Palina rocks #live #techno\t68",
+  );
+  assert.ok(item);
+  assert.equal(item.videoId, "7683195368279985438");
+  assert.equal(item.handle, "tiktok");
+  assert.equal(item.username, "TikTok");
+  assert.equal(item.caption, "hear how @Palina rocks #live #techno");
+  assert.equal(item.durationSeconds, 68);
+  assert.deepEqual(item.tags, ["live", "techno"]);
+  assert.equal(
+    item.url,
+    "https://www.tiktok.com/@tiktok/video/7683195368279985438",
+  );
+});
+
+test("parseYtDlpPrintLine tolerates missing fields and rejects junk", () => {
+  // Only id + handle: caption/duration simply come back empty.
+  const sparse = parseYtDlpPrintLine("7683195368279985438\ttiktok\tTikTok\t\t");
+  assert.ok(sparse);
+  assert.equal(sparse.caption, "");
+  assert.equal(sparse.durationSeconds, null);
+  assert.deepEqual(sparse.tags, []);
+
+  assert.equal(parseYtDlpPrintLine(""), null);
+  assert.equal(parseYtDlpPrintLine("not-a-video-line"), null);
+  assert.equal(parseYtDlpPrintLine("123\tx"), null, "too-short id rejected");
 });

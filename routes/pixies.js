@@ -26,6 +26,15 @@ const {
 } = require("../lib/avatar-png");
 const { createPixieImportQueue } = require("../lib/pixie-import-queue");
 const {
+  addAuthor: addFeedAuthor,
+  isValidHandle: isValidFeedHandle,
+  listAuthors: listFeedAuthors,
+  normalizeHandle: normalizeFeedHandle,
+  pollAuthorOnce: pollFeedAuthorOnce,
+  removeAuthor: removeFeedAuthor,
+  updateAuthor: updateFeedAuthor,
+} = require("../lib/tiktok-feed-scheduler");
+const {
   createPixieNotification,
   getPixieNotifications,
   getPixieNotificationUnreadCount,
@@ -1772,6 +1781,14 @@ module.exports = function registerPixieRoutes(app, deps) {
   });
   importQueue.recover();
 
+  // Auto-import scheduler hook: enqueue a scraped TikTok home-feed clip on the
+  // admin's behalf. See lib/tiktok-feed-scheduler.js.
+  app.locals.pixieImport = {
+    enqueue: (params) =>
+      importQueue.enqueue({ ...params, enqueuedBy: params.enqueuedBy || null }),
+    list: (limit) => importQueue.list(limit),
+  };
+
   function requireOwner(req, res) {
     const user = authFromReq(req);
     if (!user) {
@@ -1863,6 +1880,131 @@ module.exports = function registerPixieRoutes(app, deps) {
     if (!requireOwner(req, res)) return;
     setNoStoreHeaders(res);
     res.json({ removed: importQueue.clearFinished() });
+  });
+
+  // ── TikTok feed authors (owner only) ────────────────────────────────────
+  // Creators whose newest clip is auto-imported by lib/tiktok-feed-scheduler.
+
+  function mapFeedAuthor(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      handle: row.handle,
+      displayName: row.displayName || "",
+      avatarUrl: localAvatarOrNull(row.avatarUrl) || "",
+      enabled: row.enabled === 1,
+      profileUrl: `https://www.tiktok.com/@${row.handle}`,
+      lastCheckedAt: row.lastCheckedAt || null,
+      lastVideoId: row.lastVideoId || null,
+      lastStatus: row.lastStatus || null,
+      lastError: row.lastError || null,
+      importedCount: Number(row.importedCount) || 0,
+      createdAt: row.createdAt,
+    };
+  }
+
+  router.get("/admin/tiktok/authors", (req, res) => {
+    if (!requireOwner(req, res)) return;
+    setNoStoreHeaders(res);
+    try {
+      res.json({ authors: listFeedAuthors(db).map(mapFeedAuthor) });
+    } catch {
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  router.post("/admin/tiktok/authors", (req, res) => {
+    const user = requireOwner(req, res);
+    if (!user) return;
+    setNoStoreHeaders(res);
+    try {
+      const handle = normalizeFeedHandle(req.body?.handle);
+      if (!isValidFeedHandle(handle)) {
+        return res.status(400).json({
+          error:
+            "Enter a TikTok handle (letters, numbers, underscore or dot) — e.g. @mira",
+        });
+      }
+
+      const result = addFeedAuthor(db, { handle, addedBy: user.id });
+      if (result.error === "already-tracked") {
+        return res
+          .status(409)
+          .json({ error: `@${handle} is already being tracked` });
+      }
+      if (result.error) {
+        return res.status(400).json({ error: "Could not add that handle" });
+      }
+
+      res.status(201).json({ author: mapFeedAuthor(result.author) });
+    } catch {
+      res.status(500).json({ error: "Could not add that handle" });
+    }
+  });
+
+  router.patch("/admin/tiktok/authors/:id", (req, res) => {
+    if (!requireOwner(req, res)) return;
+    setNoStoreHeaders(res);
+    try {
+      const fields = {};
+      if (req.body?.enabled !== undefined) {
+        fields.enabled = req.body.enabled === true || req.body.enabled === 1;
+      }
+      if (req.body?.displayName !== undefined) {
+        fields.displayName = req.body.displayName;
+      }
+      if (req.body?.avatarUrl !== undefined) {
+        fields.avatarUrl = req.body.avatarUrl;
+      }
+
+      const result = updateFeedAuthor(db, req.params.id, fields);
+      if (result.error === "not-found") {
+        return res.status(404).json({ error: "Not found" });
+      }
+      res.json({ author: mapFeedAuthor(result.author) });
+    } catch {
+      res.status(500).json({ error: "Could not update that handle" });
+    }
+  });
+
+  router.delete("/admin/tiktok/authors/:id", (req, res) => {
+    if (!requireOwner(req, res)) return;
+    setNoStoreHeaders(res);
+    try {
+      const result = removeFeedAuthor(db, req.params.id);
+      if (result.error === "not-found") {
+        return res.status(404).json({ error: "Not found" });
+      }
+      res.json({ ok: true, handle: result.handle });
+    } catch {
+      res.status(500).json({ error: "Could not remove that handle" });
+    }
+  });
+
+  // Poll one author immediately instead of waiting for the next tick — handy
+  // for verifying a handle works before leaving the page.
+  router.post("/admin/tiktok/authors/:id/poll", async (req, res) => {
+    if (!requireOwner(req, res)) return;
+    setNoStoreHeaders(res);
+    try {
+      const author = listFeedAuthors(db).find(
+        (row) => String(row.id) === String(req.params.id),
+      );
+      if (!author) return res.status(404).json({ error: "Not found" });
+
+      const result = await pollFeedAuthorOnce({
+        db,
+        importQueue,
+        author,
+        logger: console,
+      });
+      const fresh = listFeedAuthors(db).find(
+        (row) => String(row.id) === String(req.params.id),
+      );
+      res.json({ result, author: mapFeedAuthor(fresh) });
+    } catch {
+      res.status(500).json({ error: "Could not poll that handle" });
+    }
   });
 
   // Mount the API router BEFORE the SPA/share `app.get` routes below, so the

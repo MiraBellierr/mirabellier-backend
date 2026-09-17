@@ -130,6 +130,8 @@ test("normalizeTikTokQueueEntry accepts objects and plain url strings", () => {
     }),
     {
       url: "https://www.tiktok.com/@a/video/1",
+      // Parsed out of the URL when the entry does not carry it explicitly.
+      videoId: "1",
       username: "a",
       avatarUrl: "https://example.com/av.png",
       caption: "hi #cats",
@@ -139,8 +141,20 @@ test("normalizeTikTokQueueEntry accepts objects and plain url strings", () => {
     },
   );
 
+  // An explicit videoId (the resolver's shape) wins over the URL parse.
+  assert.equal(
+    normalizeTikTokQueueEntry({
+      url: "https://www.tiktok.com/@a/video/1",
+      videoId: "7654321",
+    }).videoId,
+    "7654321",
+  );
+
+  // A plain URL string also gets its video id extracted (the feed
+  // scheduler relies on it for the dedupe key).
   assert.deepEqual(normalizeTikTokQueueEntry("https://www.tiktok.com/@b/video/2"), {
     url: "https://www.tiktok.com/@b/video/2",
+    videoId: "2",
     tags: [],
   });
 
