@@ -416,6 +416,7 @@ function registerRoutes(app) {
       ]),
   });
   require("./routes/push")(app, { db, authFromReq });
+  require("./routes/hsr")(app, {});
 }
 
 function imageUploadHandler(req, res) {
@@ -469,6 +470,11 @@ const {
 } = require("./lib/tiktok-feed-scheduler");
 seedTikTokFeedAuthors(db);
 startTikTokFeedScheduler({ db, importQueue: app.locals.pixieImport });
+// Daily Honkai: Star Rail character/team sync from prydwen.gg. Fetches only the
+// characters whose roster entry changed, with a periodic full sweep; JSON
+// lands in data/hsr/ and images in images/hsr/. HSR_SYNC_DISABLED=1 turns it off.
+const { startHsrSyncScheduler } = require("./lib/hsr-sync-scheduler");
+startHsrSyncScheduler();
 const indexNowKeyResult = ensureIndexNowKeyFile();
 if (indexNowKeyResult.ok === false) {
   console.warn(`[indexnow] ${indexNowKeyResult.error}`);

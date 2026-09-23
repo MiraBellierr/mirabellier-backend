@@ -9,6 +9,8 @@
     "dev": "nodemon app.js",
     "generate:sitemap": "node scripts/generate-sitemap.cjs",
     "scrape:mal:characters": "node scripts/scrape-mal-characters.cjs",
+    "sync:hsr": "node scripts/sync-hsr.cjs",
+    "sync:hsr:full": "node scripts/sync-hsr.cjs --full",
     "add-element-to-catalog": "node scripts/add-element-to-catalog.cjs",
     "test": "node --test",
     "export:arena": "node scripts/export-arena-csv.cjs",

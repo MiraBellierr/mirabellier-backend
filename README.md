@@ -26,6 +26,7 @@ The frontend gets the sparkles, but this is the quiet engine room. It stores the
 - Tracks Twitch channels: live status, stream predictions, accuracy stats, and "notify me when live" web-push
 - Serves shrine admin/content APIs and shrine SEO/share pages
 - Serves anime and quote SEO/share pages + embed images
+- Syncs Honkai: Star Rail characters, teams, and images from prydwen.gg daily (`data/hsr/`, `images/hsr/`) and serves the team index behind the site's team planner
 - Stores quote snapshots and MyAnimeList currently-watching snapshots
 - Handles image uploads and optimization
 - Collects real-user Core Web Vitals + uncaught client errors from the SPA (`POST /telemetry/vitals`, `POST /telemetry/errors`; 30-day retention)
@@ -115,6 +116,64 @@ MAL_CHARACTERS_FILE=./data/mal-characters.json
 Card rarity follows the character's position in that ranked file: top 1% UR,
 next 4% SSR, next 10% SR, next 25% R, and the remaining 60% C.
 
+### Honkai: Star Rail data (prydwen.gg)
+
+`lib/hsr-sync.js` mirrors the Honkai: Star Rail roster and the global endgame
+team usage table from [prydwen.gg](https://www.prydwen.gg/star-rail/characters)
+into JSON plus local images:
+
+```bash
+cd mirabellier-backend
+npm run sync:hsr          # incremental: only characters whose listing changed
+npm run sync:hsr:full     # re-fetch every character page
+node scripts/sync-hsr.cjs --slug=acheron   # one character
+```
+
+prydwen.gg is behind Cloudflare's managed challenge, so the sync drives a
+headless Chromium through Playwright (the backend already depended on it for
+social video import — run `npx playwright install chromium` if the browser is
+missing). The site is a Next.js app, and all page data lives in its
+`self.__next_f.push` RSC payload; `lib/hsr-prydwen.js` parses that, including
+the listing JSON and the `analytics.{moc,pf,as,aa}Teams` arrays the character
+pages carry.
+
+Every character page carries the same usage table sliced so that character is
+always one of the four slots, which means a team appears on each of its
+members' pages with identical rank and app rate. `buildTeamIndex` reads the
+union, dedupes by the sorted member set, drops rows that are not a full
+four-character lineup, and sorts by prydwen's rank — 1,952 teams for Memory of
+Chaos, ~1,800-1,900 for each of the other modes.
+
+Outputs:
+
+- `data/hsr/characters.json` - the roster: name, rarity, element, path, role, release state, tier ratings, and image URLs (remote + local)
+- `data/hsr/team-index.json` - every distinct team per mode, ranked, with its phase metadata
+- `data/hsr/characters/<slug>.json` - per-character detail (the sync's incremental unit; also the source the index is rebuilt from)
+- `data/hsr/.meta.json` - roster hashes, per-character timestamps, and failures
+- `images/hsr/characters/*`, `images/hsr/icons/*` - mirrored card/icon/full art and element/path icons
+
+A run fetches the listing, hashes each entry, and only loads detail pages whose
+hash moved (plus anything that previously failed) — usually zero page loads,
+after which the team index is rebuilt from the cached detail files. Every
+`HSR_SYNC_FULL_DAYS` (default 7) it sweeps the whole roster instead, since
+prydwen can edit a detail page without touching the listing. The same sync runs
+on its own schedule while the server is up (`HSR_SYNC_INTERVAL_HOURS`, default
+24; `HSR_SYNC_DISABLED=1` turns it off).
+
+The results are served under `/hsr`:
+
+- `GET /hsr/characters` - full roster (what the planner offers as "characters you own")
+- `GET /hsr/teams` - the ranked team index, every mode in one read
+- `GET /hsr/team-index` - alias of `/hsr/teams`
+- `GET /hsr/status` - last sync timestamps and source revision
+
+`/hsr` in the frontend is the team planner: pick the characters you own, take
+the highest-ranked team you can field, lock it, and the next suggestion draws
+only from the characters that are still free. Selections and locks persist in
+`localStorage`, and locks consume their members across every mode. A clean sync
+also stamps `external_sync_state` in SQLite so the sitemap can give `/hsr` a
+real `lastmod`.
+
 ### 3. Start the server
 
 For development:
@@ -139,7 +198,7 @@ If `PORT` is missing, `app.js` falls back to `5000`.
 - `npm test` - run the Node test suite (`node --test`)
 - `npm run generate:sitemap` - regenerate sitemap data
 - `npm run scrape:mal:characters` - refresh the ranked local Arena character catalog
-- `npm run migrate:card-rarities` - preview rank-based rarity updates for stored cards
+- `npm run sync:hsr` / `sync:hsr:full` - refresh Honkai: Star Rail characters, teams, and images from prydwen.gg- `npm run migrate:card-rarities` - preview rank-based rarity updates for stored cards
 - `npm run prune:db-backups` / `:apply` - list (or delete) stale local DB backups
 - `npm run repair:videos` - re-encode non-playable imported Pixie videos
 - `npm run export:arena` / `export:levels` - dump Arena data to CSV
@@ -274,6 +333,7 @@ This is a summary of the busier groups, not an exhaustive list. Routes are shown
 
 - `GET /anime` - SEO/share page; `GET /anime/currently-watching` - MAL-backed feed; `GET /anime/currently-watching/embed-image.png`
 - `GET /quotes` - SEO/share page; `GET /quotes/embed-image.png`; `GET /quote-of-the-day` - snapshot payload
+- `GET /hsr/characters`, `GET /hsr/teams`, `GET /hsr/team-index`, `GET /hsr/status` - Honkai: Star Rail roster and ranked team index from prydwen.gg
 - `GET /shrines/pages`, `GET /shrines/pages/:slug`, `POST /shrines/pages` (owner), `PUT /shrines/pages/:slug` (owner)
 - `GET /shrine`, `GET /shrine/:slug` - shrine SEO/share pages
 - `GET /images/list`, `GET /images/meta/:filename`, `GET /images/:filename` - static image serving
