@@ -141,6 +141,25 @@ jobs:
             # --- dependencies (native, built against this host) --------------
             npm ci --omit=dev --no-audit --no-fund
 
+            # --- provision the Playwright browser -----------------------------
+            # `npm ci` runs with PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1, so the
+            # Chromium build this Playwright version needs is never fetched
+            # automatically. The browser cache is keyed by revision, and a
+            # `playwright` bump can point at a newer one — the launch in
+            # lib/hsr-browser.js would then fail, the boot sync would leave
+            # data/hsr empty, and /hsr/* would serve 503 until a human ran the
+            # install by hand. Run it here instead; it is a ~2s no-op when the
+            # revision is already present.
+            #
+            # `--only-shell` matches the headless-only launch the app performs.
+            # This runs before `current` is flipped, so `set -eu` aborts the
+            # deploy on failure and the previous (working) release stays live.
+            npx playwright install --only-shell chromium
+
+            # Prove the app can actually launch it — a downloaded binary with
+            # missing system libraries passes the install but fails at runtime.
+            node -e "require('playwright').chromium.launch({ headless: true }).then(b => b.close()).then(() => console.log('playwright: chromium launches'))"
+
             # --- sync the nginx site config when it changed ------------------
             # `deploy/nginx/mirabellier.com.conf` is the source of truth for the
             # main site block. Validate the candidate *in place* and restore the
