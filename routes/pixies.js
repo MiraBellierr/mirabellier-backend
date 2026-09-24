@@ -6,7 +6,10 @@ const {
   handleHumanSpaRequest,
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
-const { isLikelyCrawler } = require("../lib/share-preview-utils");
+const {
+  escapeJsonForHtml,
+  isLikelyCrawler,
+} = require("../lib/share-preview-utils");
 const {
   normalizeTikTokUrl,
   normalizeTikTokQueueEntry,
@@ -266,7 +269,7 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
     <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
     <meta name="twitter:image:alt" content="${escapeHtml(imageAlt)}" />`;
 
-  const structuredData = JSON.stringify({
+  const structuredData = {
     "@context": "https://schema.org",
     "@type": "VideoObject",
     name: pageTitle,
@@ -285,7 +288,7 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
       name: "Mirabellier",
       url: `${protocol}://${host}`,
     },
-  });
+  };
 
   return `<!doctype html>
 <html>
@@ -314,7 +317,7 @@ ${imageTags}
     <meta name="twitter:title" content="${escapeHtml(pageTitle)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     <link rel="canonical" href="${escapeHtml(pageUrl)}" />
-    <script type="application/ld+json">${escapeHtml(structuredData)}</script>
+    <script type="application/ld+json">${escapeJsonForHtml(structuredData)}</script>
   </head>
   <body></body>
 </html>`;
@@ -326,7 +329,7 @@ function buildPixiesFeedSeoPage({ protocol, host }) {
   const imageUrl = `${protocol}://${host}/pixies.png`;
   const title = "Pixies · Mirabellier";
   const description = "Pixies - Short videos and clips from the community";
-  const structuredData = JSON.stringify({
+  const structuredData = {
     "@context": "https://schema.org",
     "@type": "CollectionPage",
     name: title,
@@ -337,7 +340,7 @@ function buildPixiesFeedSeoPage({ protocol, host }) {
       name: "Mirabellier",
       url: `${protocol}://${host}`,
     },
-  });
+  };
   return `<!doctype html>
 <html>
   <head>
@@ -359,7 +362,7 @@ function buildPixiesFeedSeoPage({ protocol, host }) {
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
     <link rel="canonical" href="${escapeHtml(pageUrl)}" />
-    <script type="application/ld+json">${escapeHtml(structuredData)}</script>
+    <script type="application/ld+json">${escapeJsonForHtml(structuredData)}</script>
   </head>
   <body></body>
 </html>`;
