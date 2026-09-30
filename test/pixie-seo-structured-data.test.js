@@ -158,3 +158,63 @@ test("crawl shells never emit HTML entities inside the ld+json block", async () 
     server.close();
   }
 });
+
+// Discord folds the entire head into its unfurl — `<title>`/description land
+// as the card text and a JSON-LD VideoObject supplies the thumbnail — so a
+// shared pixie used to render as a full article card with the video tucked
+// underneath. The Discord shell must therefore carry the player metadata and
+// nothing Discord can turn into card chrome, while every other crawler keeps
+// the full page.
+const DISCORD_UA = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)";
+
+test("GET /pixies/<id> serves Discordbot a player-only shell", async () => {
+  const { server, port } = await startServer();
+  try {
+    const res = await request(port, "/pixies/vid1", {
+      "user-agent": DISCORD_UA,
+    });
+
+    assert.equal(res.status, 200);
+
+    // What makes Discord render the inline player.
+    assert.match(res.body, /<meta property="og:video" content="[^"]*vid1\.mp4" \/>/);
+    assert.match(res.body, /<meta property="og:video:url" content="[^"]*vid1\.mp4" \/>/);
+    assert.match(res.body, /<meta property="og:video:secure_url" content="[^"]*vid1\.mp4" \/>/);
+    assert.match(res.body, /<meta property="og:video:type" content="video\/mp4" \/>/);
+    assert.match(res.body, /<meta property="og:video:width" content="\d+" \/>/);
+    assert.match(res.body, /<meta property="og:video:height" content="\d+" \/>/);
+    assert.match(res.body, /<meta property="og:type" content="video\.other" \/>/);
+
+    // Nothing Discord can fold into a title/description/thumbnail.
+    assert.doesNotMatch(res.body, /property="og:title"/i);
+    assert.doesNotMatch(res.body, /property="og:description"/i);
+    assert.doesNotMatch(res.body, /property="og:image"/i);
+    assert.doesNotMatch(res.body, /property="og:site_name"/i);
+    assert.doesNotMatch(res.body, /name="twitter:/i);
+    assert.doesNotMatch(res.body, /name="description"/i);
+    // A JSON-LD VideoObject would hand Discord the thumbnail + card text.
+    assert.doesNotMatch(res.body, /application\/ld\+json/i);
+  } finally {
+    server.close();
+  }
+});
+
+test("non-Discord crawlers still get the full pixie card", async () => {
+  const { server, port } = await startServer();
+  try {
+    for (const ua of [
+      GOOGLEBOT_UA,
+      "Mozilla/5.0 (compatible; Twitterbot/1.0)",
+      "Mozilla/5.0 (compatible; Slackbot-LinkExpanding 1.0)",
+    ]) {
+      const res = await request(port, "/pixies/vid1", { "user-agent": ua });
+      assert.equal(res.status, 200);
+      assert.match(res.body, /property="og:title"/i, ua);
+      assert.match(res.body, /property="og:image"/i, ua);
+      assert.match(res.body, /application\/ld\+json/i, ua);
+      assert.match(res.body, /<meta name="description"/i, ua);
+    }
+  } finally {
+    server.close();
+  }
+});

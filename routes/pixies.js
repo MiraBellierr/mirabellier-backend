@@ -8,6 +8,7 @@ const {
 } = require("../lib/spa-entry");
 const {
   escapeJsonForHtml,
+  isDiscordCrawler,
   isLikelyCrawler,
 } = require("../lib/share-preview-utils");
 const {
@@ -213,7 +214,34 @@ function isoDuration(seconds) {
   return n > 0 ? `PT${n}S` : "";
 }
 
-function buildVideoSeoPage({ row, protocol, host, requestPath }) {
+// Discord folds the whole `<head>` into its unfurl: the `<title>` /
+// `<meta name="description">` pair becomes the card text and a JSON-LD
+// `VideoObject` supplies the thumbnail, so a share link lands as a full
+// article card with the video tucked underneath. Answering `Discordbot` with
+// just the player metadata makes Discord render the bare inline video exactly
+// like a direct `.mp4` link, while every other unfurler (Slack, Twitter/X) and
+// search engine still gets the full card below. `forDiscord` picks the shell.
+function buildDiscordVideoPage({
+  pageTitle,
+  pageUrl,
+  videoMeta,
+}) {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>${escapeHtml(pageTitle)}</title>
+    <meta property="og:type" content="video.other" />
+    <meta property="og:url" content="${escapeHtml(pageUrl)}" />
+${videoMeta}
+    <link rel="canonical" href="${escapeHtml(pageUrl)}" />
+  </head>
+  <body></body>
+</html>`;
+}
+
+function buildVideoSeoPage({ row, protocol, host, requestPath, forDiscord }) {
   const username = String(row.authorUsername || "unknown");
   const pageTitle = `@${username} · Pixies`;
   const caption = trimSeoCaption(row.title);
@@ -231,12 +259,8 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
   const videoHeight =
     row.height && row.height > 0 ? row.height : SEO_VIDEO_HEIGHT;
   const keywords = ["pixies", "mirabellier", `@${username}`, ...tags].join(", ");
-  const tagMeta = tags
-    .map(
-      (tag) =>
-        `    <meta property="og:video:tag" content="${escapeHtml(tag)}" />`,
-    )
-    .join("\n");
+  // The six tags Discord reads to build the inline player. Keeping the exact
+  // frame size lets it lay the player out without a second fetch.
   const videoMeta = [
     `    <meta property="og:video" content="${escapeHtml(videoUrl)}" />`,
     `    <meta property="og:video:url" content="${escapeHtml(videoUrl)}" />`,
@@ -244,6 +268,19 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
     `    <meta property="og:video:type" content="${escapeHtml(mimeType)}" />`,
     `    <meta property="og:video:width" content="${videoWidth}" />`,
     `    <meta property="og:video:height" content="${videoHeight}" />`,
+  ].join("\n");
+
+  if (forDiscord) {
+    return buildDiscordVideoPage({ pageTitle, pageUrl, videoMeta });
+  }
+
+  const tagMeta = tags
+    .map(
+      (tag) =>
+        `    <meta property="og:video:tag" content="${escapeHtml(tag)}" />`,
+    )
+    .join("\n");
+  const videoDetailMeta = [
     publishedAt
       ? `    <meta property="og:video:release_date" content="${escapeHtml(publishedAt)}" />`
       : "",
@@ -306,6 +343,7 @@ function buildVideoSeoPage({ row, protocol, host, requestPath }) {
     <meta property="og:description" content="${escapeHtml(description)}" />
     <meta property="og:url" content="${escapeHtml(pageUrl)}" />
 ${videoMeta}
+${videoDetailMeta}
 ${
   publishedAt
     ? `    <meta property="article:published_time" content="${escapeHtml(publishedAt)}" />`
@@ -2063,8 +2101,19 @@ module.exports = function registerPixieRoutes(app, deps) {
         req.headers["x-forwarded-proto"] || req.protocol || "http";
       const host = req.get("host");
       const requestPath = req.originalUrl || req.path || spaPath;
+      const userAgent = req.get("user-agent");
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(buildVideoSeoPage({ row, protocol, host, requestPath }));
+      res.send(
+        buildVideoSeoPage({
+          row,
+          protocol,
+          host,
+          requestPath,
+          // Discord gets the player-only shell so a shared pixie unfurls as
+          // just the video; everyone else gets the full card.
+          forDiscord: isDiscordCrawler(userAgent),
+        }),
+      );
     } catch {
       res.status(500).send("Server error");
     }
