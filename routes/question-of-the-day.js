@@ -24,6 +24,11 @@ const {
   sendFrontendRedirectConfigError,
 } = require("../lib/spa-entry");
 const { isOwner } = require("../lib/authz");
+const {
+  addDaysToRecordedDate,
+  createQuestionOfTheDayLiveStore,
+  getCurrentRecordedDate,
+} = require("../lib/question-of-the-day-active");
 
 const MAX_PROMPT_LENGTH = 240;
 const MAX_ANSWER_LENGTH = 500;
@@ -38,20 +43,6 @@ class HttpError extends Error {
     this.name = "HttpError";
     this.status = status;
   }
-}
-
-function getCurrentRecordedDate(date = new Date()) {
-  return date.toISOString().slice(0, 10);
-}
-
-function addDaysToRecordedDate(recordedDate, days) {
-  const [year, month, day] = String(recordedDate)
-    .split("-")
-    .map((value) => Number(value));
-
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + Number(days || 0));
-  return date.toISOString().slice(0, 10);
 }
 
 function isValidRecordedDate(value) {
@@ -143,6 +134,7 @@ function mapQuestionRow(row) {
     prompt: row.prompt,
     lockedAt: row.lockedAt || null,
     archivedAt: row.archivedAt || null,
+    carriedFromRecordedDate: row.carriedFromRecordedDate || null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -156,6 +148,7 @@ function mapAdminQuestionRow(row, activeRecordedDate) {
     prompt: row.prompt,
     lockedAt: row.lockedAt || null,
     archivedAt: row.archivedAt || null,
+    carriedFromRecordedDate: row.carriedFromRecordedDate || null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     answerCount: Number(row.answerCount) || 0,
@@ -190,12 +183,12 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
   const router = express.Router();
 
   const selectQuestionByRecordedDate = db.prepare(
-    `SELECT recordedDate, prompt, lockedAt, archivedAt, createdAt, updatedAt
+    `SELECT recordedDate, prompt, lockedAt, archivedAt, carriedFromRecordedDate, createdAt, updatedAt
      FROM daily_questions
      WHERE recordedDate = ?`,
   );
   const selectQuestionForMutationByRecordedDate = db.prepare(
-    `SELECT recordedDate, prompt, createdByUserId, lockedAt, archivedAt, createdAt, updatedAt
+    `SELECT recordedDate, prompt, createdByUserId, lockedAt, archivedAt, carriedFromRecordedDate, createdAt, updatedAt
      FROM daily_questions
      WHERE recordedDate = ?`,
   );
@@ -284,7 +277,7 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
      ORDER BY q.recordedDate DESC`,
   );
   const selectArchivedQuestionByRecordedDate = db.prepare(
-    `SELECT recordedDate, prompt, lockedAt, archivedAt, createdAt, updatedAt
+    `SELECT recordedDate, prompt, lockedAt, archivedAt, carriedFromRecordedDate, createdAt, updatedAt
      FROM daily_questions
      WHERE recordedDate = ? AND (archivedAt IS NOT NULL OR recordedDate < ?)`,
   );
@@ -305,13 +298,14 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
        q.prompt,
        q.lockedAt,
        q.archivedAt,
+       q.carriedFromRecordedDate,
        q.createdAt,
        q.updatedAt,
        COUNT(a.id) AS answerCount
      FROM daily_questions q
      LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
      WHERE q.recordedDate >= ? AND q.archivedAt IS NULL
-     GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt
+     GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.carriedFromRecordedDate, q.createdAt, q.updatedAt
      ORDER BY q.recordedDate ASC`,
   );
   const selectAdminQuestionsPageFromRecordedDate = db.prepare(
@@ -320,32 +314,23 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
        q.prompt,
        q.lockedAt,
        q.archivedAt,
+       q.carriedFromRecordedDate,
        q.createdAt,
        q.updatedAt,
        COUNT(a.id) AS answerCount
      FROM daily_questions q
      LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
      WHERE q.recordedDate >= ? AND q.archivedAt IS NULL
-     GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt
+     GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.carriedFromRecordedDate, q.createdAt, q.updatedAt
      ORDER BY q.recordedDate ASC
      LIMIT ? OFFSET ?`,
   );
-  const selectActiveCarriedQuestionThroughRecordedDate = db.prepare(
-    `SELECT
-       q.recordedDate,
-       q.prompt,
-       q.lockedAt,
-       q.archivedAt,
-       q.createdAt,
-       q.updatedAt
-     FROM daily_questions q
-     LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
-     WHERE q.recordedDate <= ? AND q.archivedAt IS NULL
-     GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt
-     HAVING COUNT(a.id) = 0 OR substr(q.lockedAt, 1, 10) = ?
-     ORDER BY q.recordedDate ASC
-     LIMIT 1`,
-  );
+
+  // Owns "which question is live today" and the carry-forward re-date; the
+  // Discord/push notifiers share the same store so the logic lives in exactly
+  // one place.
+  const questionStore = createQuestionOfTheDayLiveStore(db);
+  const getActiveQuestionRow = questionStore.getActiveQuestionRow;
 
   const createAnswerTransaction = db.transaction((payload) => {
     const question = selectQuestionForMutationByRecordedDate.get(
@@ -420,17 +405,6 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
     return selectAnswersByRecordedDate
       .all(recordedDate)
       .map((row) => mapAnswerRow(row, getUserById, userPublic));
-  }
-
-  function getActiveQuestionRow(currentRecordedDate) {
-    const todaysQuestion = selectQuestionByRecordedDate.get(currentRecordedDate);
-
-    return (
-      selectActiveCarriedQuestionThroughRecordedDate.get(
-        currentRecordedDate,
-        currentRecordedDate,
-      ) || (todaysQuestion && !todaysQuestion.archivedAt ? todaysQuestion : null)
-    );
   }
 
   function getArchiveCutoffRecordedDate(currentRecordedDate) {
@@ -874,6 +848,9 @@ module.exports = function registerQuestionOfTheDayRoutes(app, deps) {
 
       const currentRecordedDate = getCurrentRecordedDate();
       const now = new Date().toISOString();
+      // Resolve the active question first so a day's carry happens before new
+      // prompts are slotted, keeping the queue ordered behind it.
+      getActiveQuestionRow(currentRecordedDate);
       const addedRecordedDates = queueQuestionsTransaction({
         prompts,
         startRecordedDate: currentRecordedDate,

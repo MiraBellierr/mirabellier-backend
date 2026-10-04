@@ -452,6 +452,11 @@ function createStaticMiddleware(directory) {
 
 registerMiddlewares(app);
 registerRoutes(app);
+// Carry an unanswered question to today before the discovery files are
+// generated, so the sitemap and feeds ship today's date on a cold boot instead
+// of waiting for the first read of the live page.
+const { createQuestionOfTheDayLiveStore } = require("./lib/question-of-the-day-active");
+createQuestionOfTheDayLiveStore(db).getActiveQuestionRow();
 generateSitemap(db);
 generateFeeds(db);
 startQuoteOfTheDayScheduler();
